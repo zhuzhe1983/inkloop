@@ -6,7 +6,7 @@ export type ArtworkSpec = {
   mode: "generated" | "web";
   motif: "rainbow" | "sunburst" | "confetti" | "waves" | "grid";
   query: string;
-  layout: "background" | "hero";
+  layout: "background" | "hero" | "fullscreen";
   seed: number;
   rotateOnRefresh?: boolean;
 };
@@ -19,6 +19,7 @@ export type ClockSpec = {
 
 export type ScreenSpec = {
   kind: ScreenKind;
+  city?: string;
   eyebrow: string;
   title: string;
   value: string;
@@ -58,6 +59,7 @@ export const starterApp: InkApp = {
   prompt: starterPrompt,
   spec: {
     kind: "weather",
+    city: "上海",
     eyebrow: "上海 · 8月1日 周六",
     title: "今日天气",
     value: "29",
@@ -97,8 +99,49 @@ function promptSeed(source: string) {
   return (hash >>> 0) % 1_000_000 + 1;
 }
 
+export function inferWeatherCity(source: string) {
+  const namedCities = [
+    "上海", "北京", "深圳", "广州", "杭州", "成都", "重庆", "南京", "苏州", "武汉",
+    "西安", "天津", "青岛", "厦门", "长沙", "郑州", "昆明", "大连", "宁波", "香港",
+    "澳门", "台北", "东京", "大阪", "首尔", "新加坡", "伦敦", "巴黎", "纽约", "洛杉矶",
+  ];
+  const named = namedCities.find((city) => source.includes(city));
+  if (named) return named;
+  const matched = source.match(/([\u4e00-\u9fa5]{2,8})(?:市)?(?:天气|气温|温度)/)?.[1]
+    ?.replace(/^(?:显示|查看|更新|刷新|今天|今日)/, "")
+    .trim();
+  return matched?.slice(-6) || "上海";
+}
+
+function wantsFullscreenArtwork(source: string) {
+  return includesAny(source, ["全屏", "铺满", "满屏"])
+    && includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]);
+}
+
 function inferArtwork(source: string): ArtworkSpec | undefined {
   const seed = promptSeed(source);
+  const fullscreen = wantsFullscreenArtwork(source);
+  const rotateOnRefresh = includesAny(source, ["随机", "每次换", "换一张", "轮换"]);
+  if (includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])) {
+    return {
+      mode: "web",
+      motif: "grid",
+      query: "cute cat portrait photography",
+      layout: fullscreen ? "fullscreen" : "hero",
+      seed,
+      rotateOnRefresh,
+    };
+  }
+  if (includesAny(source, ["狗", "狗狗", "小狗", "宠物"])) {
+    return {
+      mode: "web",
+      motif: "grid",
+      query: "cute pet portrait photography",
+      layout: fullscreen ? "fullscreen" : "hero",
+      seed,
+      rotateOnRefresh,
+    };
+  }
   if (includesAny(source, ["美女", "女性", "女孩", "人物时钟"])) {
     const holdingBoard = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
     return {
@@ -149,7 +192,14 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
           : source.includes("产品")
             ? "minimal product photography"
             : "colorful editorial illustration";
-    return { mode: "web", motif: "grid", query, layout: "hero", seed };
+    return {
+      mode: "web",
+      motif: "grid",
+      query,
+      layout: fullscreen ? "fullscreen" : "hero",
+      seed,
+      rotateOnRefresh,
+    };
   }
   return undefined;
 }
@@ -167,6 +217,34 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     author: "我",
     createdAt: stableId ? "2026-08-01T00:00:00.000Z" : nowIso(),
   };
+
+  if (artwork?.layout === "fullscreen") {
+    const subject = includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])
+      ? "猫咪"
+      : includesAny(source, ["狗", "狗狗", "小狗", "宠物"])
+        ? "宠物"
+        : "主题";
+    return {
+      ...base,
+      title: `随机${subject}全屏`,
+      description: "一张铺满屏幕、没有文字遮挡的随机图片",
+      scheduleMode: "once",
+      spec: {
+        kind: "focus",
+        eyebrow: "",
+        title: "",
+        value: "",
+        unit: "",
+        detail: "",
+        footer: "",
+        accent: "blue",
+        artwork,
+      },
+      code: `export function render() {
+  return { artwork: { layout: "fullscreen", query: ${JSON.stringify(artwork.query)} } };
+}`,
+    };
+  }
 
   if (includesAny(source, ["时钟", "时间", "几点", "钟表"])) {
     const board = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
@@ -245,24 +323,28 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
   }
 
   if (includesAny(source, ["天气", "温度", "下雨", "通勤"])) {
+    const city = inferWeatherCity(source);
+    const explicitDaily = includesAny(source, ["每天", "早上", "上午", "下午", "晚上"]);
+    const explicitHourly = includesAny(source, ["每小时", "每个小时"]);
     return {
       ...base,
       title: "天气通勤卡",
       description: "天气、温度与出门建议一眼读完",
-      scheduleMode: includesAny(source, ["每天", "早上", "点"]) ? "daily" : "hourly",
+      scheduleMode: explicitDaily ? "daily" : explicitHourly ? "hourly" : "once",
       spec: {
         kind: "weather",
-        eyebrow: source.includes("北京") ? "北京 · 今日" : source.includes("深圳") ? "深圳 · 今日" : "上海 · 今日",
+        city,
+        eyebrow: `${city} · 今日`,
         title: "出门天气",
-        value: source.includes("北京") ? "27" : source.includes("深圳") ? "31" : "29",
+        value: "--",
         unit: "°C",
-        detail: "阵雨转多云  ·  26—32°C",
-        footer: source.includes("雨") ? "记得带伞 · 避开积水路段" : "午后可能有雨，建议随身带伞",
+        detail: "正在获取最新天气",
+        footer: "数据会在预览和写入前自动更新",
         accent: "red",
         artwork,
       },
       code: `export async function render(ctx) {
-  const city = ${JSON.stringify(source.includes("北京") ? "北京" : source.includes("深圳") ? "深圳" : "上海")};
+  const city = ${JSON.stringify(city)};
   const weather = await ctx.weather.get({ city });
   return {
     eyebrow: \`${"${city}"} · ${"${ctx.date.weekday}"}\`,

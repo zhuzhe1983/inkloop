@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type CSS
 import {
   featuredApps,
   generateInkApp,
+  inferWeatherCity,
   intervalFor,
   scheduleLabel,
   starterApp,
@@ -107,7 +108,11 @@ function replaceTimeVariables(value: string, now: Date) {
     minute,
     time: `${hour}:${minute}`,
   };
-  return value.replace(/\{\{(date|year|month|day|weekday|hour|minute|time)\}\}/g, (_, key: string) => variables[key]);
+  const resolved = value.replace(
+    /\{\{(date|year|month|day|weekday|hour|minute|time)\}\}/g,
+    (_, key: string) => variables[key],
+  );
+  return /\{\{|\}\}/.test(resolved) ? "—" : resolved;
 }
 
 function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
@@ -120,6 +125,59 @@ function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
     detail: replaceTimeVariables(spec.detail, now),
     footer: replaceTimeVariables(spec.footer, now),
   };
+}
+
+type WeatherPayload = {
+  city?: string;
+  temperature?: number;
+  low?: number;
+  high?: number;
+  rainProbability?: number;
+  condition?: string;
+};
+
+async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promise<ScreenSpec> {
+  const resolved = resolveTimeVariables(currentApp.spec, now);
+  if (resolved.kind !== "weather") return resolved;
+  const city = resolved.city || inferWeatherCity(currentApp.prompt);
+  try {
+    const response = await fetch(`/api/weather?city=${encodeURIComponent(city)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("weather unavailable");
+    const weather = (await response.json()) as WeatherPayload;
+    if (
+      typeof weather.temperature !== "number"
+      || typeof weather.low !== "number"
+      || typeof weather.high !== "number"
+    ) {
+      throw new Error("weather incomplete");
+    }
+    const rainProbability = typeof weather.rainProbability === "number" ? weather.rainProbability : 0;
+    const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now);
+    return {
+      ...resolved,
+      city: weather.city || city,
+      eyebrow: `${weather.city || city} · ${weekday}`,
+      title: "今日天气",
+      value: String(Math.round(weather.temperature)),
+      unit: "°C",
+      detail: `${weather.condition || "天气多变"} · ${Math.round(weather.low)}—${Math.round(weather.high)}°C`,
+      footer: rainProbability >= 45
+        ? `降雨${Math.round(rainProbability)}% · 带伞 · Open-Meteo`
+        : "少雨 · 适合出门 · Open-Meteo",
+      accent: rainProbability >= 45 ? "red" : "yellow",
+    };
+  } catch {
+    return {
+      ...resolved,
+      city,
+      eyebrow: resolved.eyebrow === "—" ? `${city} · 今日` : resolved.eyebrow,
+      title: resolved.title === "—" ? "今日天气" : resolved.title,
+      value: resolved.value === "—" ? "--" : resolved.value,
+      unit: "°C",
+      detail: resolved.detail === "—" ? "天气数据暂不可用" : resolved.detail,
+      footer: resolved.footer === "—" ? "稍后刷新重试" : resolved.footer,
+    };
+  }
 }
 
 function clockFontFamily(spec: ScreenSpec) {
@@ -223,6 +281,20 @@ function drawImageContain(
   const drawHeight = image.naturalHeight * scale;
   ctx.fillStyle = "#f4f0dc";
   ctx.fillRect(x, y, width, height);
+  ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+}
+
+function drawImageCover(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const drawWidth = image.naturalWidth * scale;
+  const drawHeight = image.naturalHeight * scale;
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
 }
 
@@ -531,17 +603,24 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       }
     : undefined);
   if (artwork) {
-    const area = artwork.layout === "hero"
+    const area = artwork.layout === "fullscreen"
+      ? { x: 0, y: 0, width, height }
+      : artwork.layout === "hero"
       ? { x: 48, y: 132, width: 432, height: 314 }
       : { x: 22, y: 22, width: width - 44, height: height - 44 };
     try {
       if (localImage || artwork.mode === "web") {
         const image = await loadArtwork(localImage || artworkUrl(artwork));
-        drawImageContain(ctx, image, area.x, area.y, area.width, area.height);
+        if (artwork.layout === "fullscreen") {
+          drawImageCover(ctx, image, area.x, area.y, area.width, area.height);
+        } else {
+          drawImageContain(ctx, image, area.x, area.y, area.width, area.height);
+        }
         quantizeRegion(ctx, area.x, area.y, area.width, area.height);
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
+      if (artwork.layout === "fullscreen") return true;
       drawArtworkCopy(ctx, spec, accent, artwork.layout);
       ctx.strokeStyle = ink;
       ctx.lineWidth = 3;
@@ -551,6 +630,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = paper;
       ctx.fillRect(0, 0, width, height);
+      if (artwork.layout === "fullscreen") return false;
     }
   }
 
@@ -683,6 +763,9 @@ function MiniScreen({ app }: { app: InkApp }) {
         backgroundPosition: "center",
       }
     : undefined;
+  if (artwork?.layout === "fullscreen") {
+    return <div className="mini-screen image-only" style={style} aria-label={`${app.title} 全屏图片预览`} />;
+  }
   return (
     <div className={`mini-screen mini-${spec.accent}${artwork ? " has-artwork" : ""}`} style={style}>
       <span className="mini-eyebrow">{spec.eyebrow}</span>
@@ -833,7 +916,7 @@ export default function InkStudio() {
     staging.height = 792;
     const hasArtwork = Boolean(app.spec.artwork || app.localImage);
     setPreviewStatus(hasArtwork ? "loading" : "ready");
-    drawScreen(staging, resolveTimeVariables(app.spec, new Date()), app.localImage).then((usedArtwork) => {
+    resolveRuntimeScreen(app, new Date()).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage)).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
       const context = canvas.getContext("2d");
       if (!context) return;
@@ -841,7 +924,7 @@ export default function InkStudio() {
       context.drawImage(staging, 0, 0);
       setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
     });
-  }, [app.spec, app.localImage, clockTick]);
+  }, [app.spec, app.localImage, app.prompt, clockTick]);
 
   const attachLocalImage = async (file?: File) => {
     if (!file) return;
@@ -996,7 +1079,7 @@ export default function InkStudio() {
     }
     setDeviceStatus("writing");
     try {
-      let runtimeSpec = resolveTimeVariables(app.spec, new Date());
+      let runtimeSpec = await resolveRuntimeScreen(app, new Date());
       let nextSeed: number | null = null;
       if (runtimeSpec.artwork?.rotateOnRefresh) {
         nextSeed = randomArtworkSeed();
@@ -1030,7 +1113,7 @@ export default function InkStudio() {
       showToast(message, "error");
       return false;
     }
-  }, [app.localImage, app.spec, previewStatus, showToast]);
+  }, [app.localImage, app.prompt, app.spec, previewStatus, showToast]);
 
   const scheduleFollowingRun = useCallback(() => {
     const delay = calculateNextDelay(app);
@@ -1212,7 +1295,9 @@ export default function InkStudio() {
                         528 × 792 · {previewStatus === "loading"
                           ? "正在获取并转换图片素材"
                           : previewStatus === "fallback"
-                            ? "素材暂不可用，已使用图形排版"
+                            ? app.spec.artwork?.layout === "fullscreen"
+                              ? "图片暂不可用，已保持纯图片模式"
+                              : "素材暂不可用，已使用图形排版"
                             : app.localImage
                               ? "本机图片已转换为实际六色"
                               : app.spec.artwork
