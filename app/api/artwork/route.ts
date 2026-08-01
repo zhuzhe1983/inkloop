@@ -2,6 +2,22 @@ const WIDTH = 528;
 const HEIGHT = 792;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+type CommonsResponse = {
+  query?: {
+    pages?: Array<{
+      imageinfo?: Array<{
+        thumburl?: string;
+        url?: string;
+        mime?: string;
+        width?: number;
+        height?: number;
+        thumbwidth?: number;
+        thumbheight?: number;
+      }>;
+    }>;
+  };
+};
+
 function cleanQuery(value: string | null) {
   return (value || "colorful editorial illustration")
     .slice(0, 100)
@@ -38,32 +54,95 @@ async function fetchImage(url: string) {
   return { body, contentType };
 }
 
+async function fetchCommonsImage(query: string, seed: number) {
+  const apiUrl = new URL("https://commons.wikimedia.org/w/api.php");
+  apiUrl.search = new URLSearchParams({
+    action: "query",
+    generator: "search",
+    gsrsearch: query,
+    gsrnamespace: "6",
+    gsrlimit: "16",
+    prop: "imageinfo",
+    iiprop: "url|mime|size",
+    iiurlwidth: "900",
+    format: "json",
+    formatversion: "2",
+  }).toString();
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/json",
+      "Api-User-Agent": "Inkloop/1.0 (TodooCard artwork preview)",
+    },
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) throw new Error(`Wikimedia Commons ${response.status}`);
+  const payload = (await response.json()) as CommonsResponse;
+  const targetRatio = WIDTH / HEIGHT;
+  const candidates = (payload.query?.pages || [])
+    .flatMap((page) => page.imageinfo || [])
+    .filter((info) => info.mime?.startsWith("image/") && info.mime !== "image/svg+xml" && (info.thumburl || info.url))
+    .sort((left, right) => {
+      const leftRatio = (left.thumbwidth || left.width || WIDTH) / (left.thumbheight || left.height || HEIGHT);
+      const rightRatio = (right.thumbwidth || right.width || WIDTH) / (right.thumbheight || right.height || HEIGHT);
+      return Math.abs(leftRatio - targetRatio) - Math.abs(rightRatio - targetRatio);
+    })
+    .slice(0, 6);
+  if (!candidates.length) return null;
+  const selected = candidates[seed % candidates.length];
+  return fetchImage(selected.thumburl || selected.url || "");
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = cleanQuery(url.searchParams.get("query"));
   const style = cleanStyle(url.searchParams.get("style"));
   const seed = cleanSeed(url.searchParams.get("seed"));
   const keywords = `${query} ${style}`.split(/[\s,]+/).filter(Boolean).slice(0, 10).join(",");
-  const providers = [
-    `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(keywords)}?lock=${seed}`,
-    `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`,
-  ];
+  const failures: string[] = [];
 
-  for (const provider of providers) {
-    try {
-      const image = await fetchImage(provider);
-      if (!image) continue;
+  try {
+    const image = await fetchCommonsImage(query, seed);
+    if (image) {
       return new Response(image.body, {
         headers: {
           "Content-Type": image.contentType,
           "Cache-Control": "public, max-age=86400, s-maxage=604800, immutable",
           "X-Content-Type-Options": "nosniff",
+          "X-Inkloop-Image-Source": "wikimedia-commons",
         },
       });
-    } catch {
+    }
+    failures.push("Wikimedia Commons returned no image");
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : "Wikimedia Commons failed");
+  }
+
+  const providers: Array<[string, string]> = [
+    ["loremflickr", `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(keywords)}?lock=${seed}`],
+    ["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`],
+  ];
+
+  for (const [name, provider] of providers) {
+    try {
+      const image = await fetchImage(provider);
+      if (!image) {
+        failures.push(`${name} returned no image`);
+        continue;
+      }
+      return new Response(image.body, {
+        headers: {
+          "Content-Type": image.contentType,
+          "Cache-Control": "public, max-age=86400, s-maxage=604800, immutable",
+          "X-Content-Type-Options": "nosniff",
+          "X-Inkloop-Image-Source": name,
+        },
+      });
+    } catch (error) {
+      failures.push(error instanceof Error ? `${name}: ${error.message}` : `${name} failed`);
       // Try the deterministic fallback provider.
     }
   }
 
+  console.warn("artwork-providers-unavailable", { query, failures });
   return Response.json({ error: "暂时无法获取图片素材" }, { status: 502 });
 }

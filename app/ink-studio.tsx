@@ -154,6 +154,7 @@ function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
 }
 
 type WeatherPayload = {
+  available?: boolean;
   city?: string;
   temperature?: number;
   low?: number;
@@ -175,6 +176,18 @@ async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promi
     const response = await fetch(`/api/weather?city=${encodeURIComponent(city)}`, { cache: "no-store" });
     if (!response.ok) throw new Error("weather unavailable");
     const weather = (await response.json()) as WeatherPayload;
+    if (weather.available === false) {
+      return {
+        ...resolved,
+        city,
+        eyebrow: `${city} · 今日`,
+        title: "今日天气",
+        value: "--",
+        unit: "°C",
+        detail: "天气服务暂时不可用",
+        footer: "稍后刷新会自动重试",
+      };
+    }
     if (
       typeof weather.temperature !== "number"
       || typeof weather.low !== "number"

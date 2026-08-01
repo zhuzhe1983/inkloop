@@ -51,37 +51,33 @@ export type InkApp = {
 const nowIso = () => new Date().toISOString();
 
 export const starterPrompt =
-  "每天早上 8 点显示上海天气、最高最低温和一句出门建议，雨天用红色提醒。";
+  "显示今天最重要的一件事和一句简短的专注提醒。";
 
 export const starterApp: InkApp = {
-  id: "starter-weather",
-  title: "今日天气卡",
-  description: "每天早上更新天气与通勤提醒",
+  id: "starter-focus",
+  title: "今日专注卡",
+  description: "把最重要的一件事留在屏幕上",
   prompt: starterPrompt,
   spec: {
-    kind: "weather",
-    city: "上海",
-    eyebrow: "上海 · 8月1日 周六",
-    title: "今日天气",
-    value: "29",
-    unit: "°C",
-    detail: "阵雨转多云  ·  26—32°C",
-    footer: "带伞出门，午后注意防晒",
-    accent: "red",
+    kind: "focus",
+    eyebrow: "ONE THING · TODAY",
+    title: "今天最重要",
+    value: "专注完成",
+    unit: "",
+    detail: "先完成，再完善",
+    footer: "一次只做一件事",
+    accent: "blue",
   },
-  code: `export async function render(ctx) {
-  const weather = await ctx.weather.get({ city: "上海" });
-  const isRainy = weather.rainProbability > 45;
-
+  code: `export async function render() {
   return {
-    title: "今日天气",
-    value: Math.round(weather.temperature),
-    detail: \`${"${weather.summary}"} · ${"${weather.low}"}—${"${weather.high}"}°C\`,
-    accent: isRainy ? "red" : "yellow",
-    footer: isRainy ? "带伞出门，路面湿滑" : "天气不错，适合步行"
+    title: "今天最重要",
+    value: "专注完成",
+    detail: "先完成，再完善",
+    accent: "blue",
+    footer: "一次只做一件事"
   };
 }`,
-  scheduleMode: "daily",
+  scheduleMode: "once",
   customMinutes: 30,
   dailyTime: "08:00",
   isPublic: false,
