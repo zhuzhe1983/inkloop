@@ -8,6 +8,13 @@ export type ArtworkSpec = {
   query: string;
   layout: "background" | "hero";
   seed: number;
+  rotateOnRefresh?: boolean;
+};
+
+export type ClockSpec = {
+  enabled: true;
+  board: boolean;
+  font: "sans" | "serif" | "rounded" | "mono" | "handwritten" | "random";
 };
 
 export type ScreenSpec = {
@@ -20,6 +27,7 @@ export type ScreenSpec = {
   footer: string;
   accent: "red" | "blue" | "green" | "yellow";
   artwork?: ArtworkSpec;
+  clock?: ClockSpec;
 };
 
 export type InkApp = {
@@ -90,6 +98,19 @@ function promptSeed(source: string) {
 
 function inferArtwork(source: string): ArtworkSpec | undefined {
   const seed = promptSeed(`${source}:${crypto.randomUUID()}`);
+  if (includesAny(source, ["美女", "女性", "女孩", "人物时钟"])) {
+    const holdingBoard = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
+    return {
+      mode: "web",
+      motif: "grid",
+      query: holdingBoard
+        ? "fashion woman portrait"
+        : "woman fashion editorial",
+      layout: "background",
+      seed,
+      rotateOnRefresh: true,
+    };
+  }
   if (includesAny(source, ["彩虹", "虹彩", "七彩"])) {
     return {
       mode: "generated",
@@ -145,6 +166,48 @@ export function generateInkApp(prompt: string): InkApp {
     author: "我",
     createdAt: nowIso(),
   };
+
+  if (includesAny(source, ["时钟", "时间", "几点", "钟表"])) {
+    const board = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
+    return {
+      ...base,
+      title: includesAny(source, ["美女", "女性", "女孩"]) ? "美女时钟" : "主题时钟",
+      description: "每分钟更新日期与时间，并可轮换主题背景",
+      scheduleMode: "custom",
+      customMinutes: 1,
+      spec: {
+        kind: "focus",
+        eyebrow: "{{weekday}} · {{date}}",
+        title: "现在时间",
+        value: "{{time}}",
+        unit: "",
+        detail: "{{year}}年{{month}}月{{day}}日",
+        footer: "愿今天的每一分钟都值得",
+        accent: "red",
+        artwork: artwork ?? {
+          mode: "generated",
+          motif: "sunburst",
+          query: "modern clock graphic background",
+          layout: "background",
+          seed: promptSeed(`${source}:${crypto.randomUUID()}`),
+          rotateOnRefresh: false,
+        },
+        clock: {
+          enabled: true,
+          board,
+          font: "random",
+        },
+      },
+      code: `export function render(ctx) {
+  const now = ctx.now;
+  return {
+    eyebrow: "{{weekday}} · {{date}}",
+    value: "{{time}}",
+    detail: "{{year}}年{{month}}月{{day}}日"
+  };
+}`,
+    };
+  }
 
   if (includesAny(source, ["鼓励", "加油", "你很棒", "你超棒", "彩虹"])) {
     return {

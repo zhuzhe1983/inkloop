@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import {
   generateInkApp,
   type ArtworkSpec,
+  type ClockSpec,
   type InkApp,
   type ScreenKind,
   type ScreenSpec,
@@ -27,6 +28,14 @@ const ALLOWED_ARTWORK_MOTIFS = new Set<ArtworkSpec["motif"]>([
   "grid",
 ]);
 const ALLOWED_ARTWORK_LAYOUTS = new Set<ArtworkSpec["layout"]>(["background", "hero"]);
+const ALLOWED_CLOCK_FONTS = new Set<ClockSpec["font"]>([
+  "sans",
+  "serif",
+  "rounded",
+  "mono",
+  "handwritten",
+  "random",
+]);
 
 const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根据用户需求生成一个 TodooCard 应用。
 
@@ -47,7 +56,13 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
       "mode": "none|generated|web",
       "motif": "rainbow|sunburst|confetti|waves|grid",
       "query": "用于联网找图的简短英文关键词",
-      "layout": "background|hero"
+      "layout": "background|hero",
+      "rotateOnRefresh": false
+    },
+    "clock": {
+      "enabled": false,
+      "board": true,
+      "font": "sans|serif|rounded|mono|handwritten|random"
     }
   },
   "code": "可供用户审阅的 JavaScript 业务逻辑源码字符串",
@@ -65,7 +80,10 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
 6. 用户要求图片、照片、背景、插画或明显视觉主题时，artwork.mode 不能是 none。
 7. 彩虹、放射、彩纸、波浪、网格等抽象图形使用 generated 并选择最接近的 motif；人物、城市、产品、动物、自然等真实题材使用 web。
 8. web 的 query 必须是 2—6 个具体英文关键词，准确概括用户要求的主体、场景和风格。例如 OOTD 可写为 "outfit of the day street style"，不要只写 image、random、beautiful 等泛词。
-9. 不返回图片 URL；系统会用 query 从主题图库随机取图并缓存素材。`;
+9. 不返回图片 URL；系统会用 query 从主题图库随机取图并缓存素材。
+10. 所有文本字段允许使用运行时变量：{{date}}、{{year}}、{{month}}、{{day}}、{{weekday}}、{{hour}}、{{minute}}、{{time}}。时钟的 value 通常使用 {{time}}，detail 使用 {{date}} 或年月日组合。
+11. 用户要求时钟时，clock.enabled=true；board 表示是否在画板中显示时间；不同字体或每页换字体使用 font=random。刷新计划用 custom，最小 customMinutes=1。
+12. 用户要求每次换背景时，artwork.rotateOnRefresh=true。女性人物主题使用 woman 而不是 girl，禁止生成或搜索未成年人；画板由 clock.board 控制，不要求照片本身带画板。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -108,12 +126,21 @@ function normalizeArtwork(
     mode,
     motif,
     query: query || "colorful editorial illustration",
-    layout: mode === "web"
-      ? "hero"
-      : ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout)
-        ? requestedLayout
-        : "background",
+    layout: ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout) ? requestedLayout : "background",
     seed: stableSeed(`${prompt}:${query}:${motif}:${crypto.randomUUID()}`),
+    rotateOnRefresh: candidate.rotateOnRefresh === true || fallback?.rotateOnRefresh === true,
+  };
+}
+
+function normalizeClock(value: unknown, fallback: ClockSpec | undefined): ClockSpec | undefined {
+  if (!value || typeof value !== "object") return fallback;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.enabled !== true) return fallback;
+  const font = candidate.font as ClockSpec["font"];
+  return {
+    enabled: true,
+    board: candidate.board !== false,
+    font: ALLOWED_CLOCK_FONTS.has(font) ? font : "sans",
   };
 }
 
@@ -161,10 +188,11 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
       footer: trimText(candidateSpec.footer, fallback.spec.footer, 48),
       accent: ALLOWED_ACCENTS.has(candidateAccent) ? candidateAccent : fallback.spec.accent,
       artwork: normalizeArtwork(candidateSpec.artwork, fallback.spec.artwork, prompt),
+      clock: normalizeClock(candidateSpec.clock, fallback.spec.clock),
     },
     code: trimText(value.code, fallback.code, 8000),
     scheduleMode: ALLOWED_SCHEDULES.has(candidateSchedule) ? candidateSchedule : fallback.scheduleMode,
-    customMinutes: Number.isFinite(rawMinutes) ? Math.max(5, Math.min(10080, Math.round(rawMinutes))) : fallback.customMinutes,
+    customMinutes: Number.isFinite(rawMinutes) ? Math.max(1, Math.min(10080, Math.round(rawMinutes))) : fallback.customMinutes,
     dailyTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(rawTime) ? rawTime : fallback.dailyTime,
     isPublic: false,
     author: "我",

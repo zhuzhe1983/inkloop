@@ -100,7 +100,7 @@ export async function POST(request: Request) {
 
     const id = cleanText(payload.id, 90) || crypto.randomUUID();
     const spec = JSON.stringify(payload.spec).slice(0, 5000);
-    const customMinutes = Math.max(5, Math.min(10080, Number(payload.customMinutes) || 30));
+    const customMinutes = Math.max(1, Math.min(10080, Number(payload.customMinutes) || 30));
     const dailyTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(payload.dailyTime ?? "")
       ? payload.dailyTime!
       : "08:00";

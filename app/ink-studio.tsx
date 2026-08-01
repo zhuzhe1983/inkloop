@@ -22,6 +22,7 @@ type GeneratorStatus = "checking" | "online" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
+const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
 
 const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
   { id: "studio", label: "创作台", glyph: "✦" },
@@ -34,6 +35,7 @@ const samplePrompts = [
   "每天 8 点显示上海天气和带伞提醒",
   "显示新品发布倒计时",
   "彩虹背景，中间写一句今天也很棒",
+  "美女时钟，每分钟换背景和字体",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
 ];
@@ -49,6 +51,74 @@ function fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, 
   let size = startSize;
   while (size > 24) {
     ctx.font = `800 ${size}px Arial, "PingFang SC", sans-serif`;
+    if (ctx.measureText(text).width <= maxWidth) break;
+    size -= 2;
+  }
+  return size;
+}
+
+function randomArtworkSeed() {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return (values[0] % 999_999) + 1;
+}
+
+function replaceTimeVariables(value: string, now: Date) {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  const year = String(now.getFullYear());
+  const month = pad(now.getMonth() + 1);
+  const day = pad(now.getDate());
+  const hour = pad(now.getHours());
+  const minute = pad(now.getMinutes());
+  const variables: Record<string, string> = {
+    date: `${year}-${month}-${day}`,
+    year,
+    month,
+    day,
+    weekday: new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now),
+    hour,
+    minute,
+    time: `${hour}:${minute}`,
+  };
+  return value.replace(/\{\{(date|year|month|day|weekday|hour|minute|time)\}\}/g, (_, key: string) => variables[key]);
+}
+
+function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
+  return {
+    ...spec,
+    eyebrow: replaceTimeVariables(spec.eyebrow, now),
+    title: replaceTimeVariables(spec.title, now),
+    value: replaceTimeVariables(spec.value, now),
+    unit: replaceTimeVariables(spec.unit, now),
+    detail: replaceTimeVariables(spec.detail, now),
+    footer: replaceTimeVariables(spec.footer, now),
+  };
+}
+
+function clockFontFamily(spec: ScreenSpec) {
+  const fonts = {
+    sans: 'Arial, "PingFang SC", sans-serif',
+    serif: 'Georgia, "Songti SC", serif',
+    rounded: '"Arial Rounded MT Bold", "PingFang SC", sans-serif',
+    mono: '"Courier New", "SFMono-Regular", monospace',
+    handwritten: '"Comic Sans MS", "Kaiti SC", cursive',
+  } as const;
+  const requested = spec.clock?.font ?? "sans";
+  if (requested !== "random") return fonts[requested];
+  const choices = Object.values(fonts);
+  return choices[(spec.artwork?.seed ?? 0) % choices.length];
+}
+
+function fitClockText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  startSize: number,
+  family: string,
+) {
+  let size = startSize;
+  while (size > 28) {
+    ctx.font = `900 ${size}px ${family}`;
     if (ctx.measureText(text).width <= maxWidth) break;
     size -= 2;
   }
@@ -241,6 +311,60 @@ function drawGeneratedArtwork(
   ctx.restore();
 }
 
+function drawClockCopy(ctx: CanvasRenderingContext2D, spec: ScreenSpec, accent: string) {
+  const ink = "#151816";
+  const paper = "#f4f0dc";
+  const family = clockFontFamily(spec);
+  const board = spec.clock?.board !== false;
+  const valueSize = fitClockText(ctx, spec.value, board ? 380 : 438, board ? 112 : 126, family);
+
+  ctx.textAlign = "center";
+  if (board) {
+    ctx.fillStyle = paper;
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 5;
+    ctx.fillRect(48, 226, 432, 282);
+    ctx.strokeRect(48, 226, 432, 282);
+    ctx.fillStyle = accent;
+    ctx.fillRect(72, 252, 76, 12);
+    ctx.fillStyle = ink;
+    ctx.font = '800 25px Arial, "PingFang SC", sans-serif';
+    ctx.fillText(spec.title, 264, 306);
+    ctx.font = `900 ${valueSize}px ${family}`;
+    ctx.fillText(spec.value, 264, 424);
+    ctx.font = '700 22px Arial, "PingFang SC", sans-serif';
+    ctx.fillText(spec.detail.slice(0, 28), 264, 474);
+  } else {
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 14;
+    ctx.strokeStyle = paper;
+    ctx.font = `900 ${valueSize}px ${family}`;
+    ctx.strokeText(spec.value, 264, 408);
+    ctx.fillStyle = ink;
+    ctx.fillText(spec.value, 264, 408);
+    ctx.fillStyle = paper;
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 3;
+    ctx.fillRect(62, 472, 404, 66);
+    ctx.strokeRect(62, 472, 404, 66);
+    ctx.fillStyle = ink;
+    ctx.font = '700 23px Arial, "PingFang SC", sans-serif';
+    ctx.fillText(spec.detail.slice(0, 28), 264, 514);
+  }
+
+  ctx.fillStyle = paper;
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = 3;
+  ctx.fillRect(48, 628, 432, 72);
+  ctx.strokeRect(48, 628, 432, 72);
+  ctx.fillStyle = accent;
+  ctx.fillRect(70, 652, 20, 20);
+  ctx.fillStyle = ink;
+  ctx.font = '700 20px Arial, "PingFang SC", sans-serif';
+  ctx.fillText(spec.footer.slice(0, 26), 286, 671);
+  ctx.textAlign = "left";
+}
+
 function drawArtworkCopy(
   ctx: CanvasRenderingContext2D,
   spec: ScreenSpec,
@@ -259,6 +383,17 @@ function drawArtworkCopy(
   ctx.fillText(spec.eyebrow.toUpperCase(), 56, 88);
   ctx.fillStyle = accent;
   ctx.fillRect(430, 65, 38, 14);
+
+  if (spec.clock?.enabled) {
+    drawClockCopy(ctx, spec, accent);
+    ctx.fillStyle = ink;
+    ctx.font = "700 15px Arial, sans-serif";
+    ctx.fillText("INKLOOP / CLOCK", 48, 736);
+    ctx.textAlign = "right";
+    ctx.fillText("LIVE TIME", 480, 736);
+    ctx.textAlign = "left";
+    return;
+  }
 
   if (layout === "background") {
     ctx.fillStyle = paper;
@@ -457,8 +592,21 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
   return false;
 }
 
+async function renderScreenToCanvas(canvas: HTMLCanvasElement, spec: ScreenSpec) {
+  const staging = document.createElement("canvas");
+  staging.width = 528;
+  staging.height = 792;
+  const usedArtwork = await drawScreen(staging, spec);
+  const context = canvas.getContext("2d");
+  if (!context) return usedArtwork;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(staging, 0, 0);
+  return usedArtwork;
+}
+
 function MiniScreen({ app }: { app: InkApp }) {
-  const artwork = app.spec.artwork;
+  const spec = resolveTimeVariables(app.spec, GALLERY_PREVIEW_DATE);
+  const artwork = spec.artwork;
   const generatedBackgrounds: Record<ArtworkSpec["motif"], string> = {
     rainbow: "linear-gradient(135deg, #dc3f2f 0 22%, #e5c900 22% 46%, #087c4e 46% 70%, #2756c7 70%)",
     sunburst: "conic-gradient(from 12deg, #e5c900, #dc3f2f, #f4f0dc, #2756c7, #e5c900)",
@@ -476,13 +624,13 @@ function MiniScreen({ app }: { app: InkApp }) {
       }
     : undefined;
   return (
-    <div className={`mini-screen mini-${app.spec.accent}${artwork ? " has-artwork" : ""}`} style={style}>
-      <span className="mini-eyebrow">{app.spec.eyebrow}</span>
+    <div className={`mini-screen mini-${spec.accent}${artwork ? " has-artwork" : ""}`} style={style}>
+      <span className="mini-eyebrow">{spec.eyebrow}</span>
       <i />
-      <b>{app.spec.value}</b>
-      <em>{app.spec.unit}</em>
-      <small>{app.spec.title}</small>
-      <span className="mini-footer">{app.spec.detail}</span>
+      <b>{spec.value}</b>
+      <em>{spec.unit}</em>
+      <small>{spec.title}</small>
+      <span className="mini-footer">{spec.detail}</span>
     </div>
   );
 }
@@ -516,6 +664,7 @@ export default function InkStudio() {
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
+  const [clockTick, setClockTick] = useState(0);
   const [codeOpen, setCodeOpen] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
@@ -587,6 +736,19 @@ export default function InkStudio() {
   }, []);
 
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const delay = 60_050 - (Date.now() % 60_000);
+    const timeout = setTimeout(() => {
+      setClockTick((tick) => tick + 1);
+      interval = setInterval(() => setClockTick((tick) => tick + 1), 60_000);
+    }, delay);
+    return () => {
+      clearTimeout(timeout);
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const version = ++previewVersionRef.current;
@@ -594,7 +756,7 @@ export default function InkStudio() {
     staging.width = 528;
     staging.height = 792;
     setPreviewStatus(app.spec.artwork ? "loading" : "ready");
-    drawScreen(staging, app.spec).then((usedArtwork) => {
+    drawScreen(staging, resolveTimeVariables(app.spec, new Date())).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
       const context = canvas.getContext("2d");
       if (!context) return;
@@ -602,7 +764,7 @@ export default function InkStudio() {
       context.drawImage(staging, 0, 0);
       setPreviewStatus(app.spec.artwork && !usedArtwork ? "fallback" : "ready");
     });
-  }, [app.spec]);
+  }, [app.spec, clockTick]);
 
   const generate = async () => {
     if (!prompt.trim()) {
@@ -647,9 +809,7 @@ export default function InkStudio() {
   };
 
   const regeneratePreviewArtwork = () => {
-    const values = new Uint32Array(1);
-    crypto.getRandomValues(values);
-    const seed = (values[0] % 999_999) + 1;
+    const seed = randomArtworkSeed();
     setApp((current) => current.spec.artwork
       ? {
           ...current,
@@ -735,7 +895,30 @@ export default function InkStudio() {
     }
     setDeviceStatus("writing");
     try {
+      let runtimeSpec = resolveTimeVariables(app.spec, new Date());
+      let nextSeed: number | null = null;
+      if (runtimeSpec.artwork?.rotateOnRefresh) {
+        nextSeed = randomArtworkSeed();
+        runtimeSpec = {
+          ...runtimeSpec,
+          artwork: { ...runtimeSpec.artwork, seed: nextSeed },
+        };
+      }
+      setPreviewStatus(runtimeSpec.artwork ? "loading" : "ready");
+      const usedArtwork = await renderScreenToCanvas(canvas, runtimeSpec);
+      setPreviewStatus(runtimeSpec.artwork && !usedArtwork ? "fallback" : "ready");
       await driver.writeCanvas(canvas, true);
+      if (nextSeed !== null) {
+        setApp((current) => current.spec.artwork
+          ? {
+              ...current,
+              spec: {
+                ...current.spec,
+                artwork: { ...current.spec.artwork, seed: nextSeed },
+              },
+            }
+          : current);
+      }
       setDeviceStatus("ready");
       showToast("帧已发送，墨水屏可能还会显色几分钟", "success");
       return true;
@@ -745,7 +928,7 @@ export default function InkStudio() {
       showToast(message, "error");
       return false;
     }
-  }, [previewStatus, showToast]);
+  }, [app.spec, previewStatus, showToast]);
 
   const scheduleFollowingRun = useCallback(() => {
     const delay = calculateNextDelay(app);
@@ -978,14 +1161,18 @@ export default function InkStudio() {
                 )}
                 {app.scheduleMode === "custom" && (
                   <div className="inline-field">
-                    <label htmlFor="custom-minutes">间隔分钟（建议 ≥ 5）</label>
+                    <label htmlFor="custom-minutes">间隔分钟（最短 1 分钟）</label>
                     <input
                       id="custom-minutes"
                       type="number"
-                      min={5}
+                      min={1}
+                      step={1}
                       value={app.customMinutes}
                       onChange={(event) =>
-                        setApp((current) => ({ ...current, customMinutes: Math.max(5, Number(event.target.value)) }))
+                        setApp((current) => ({
+                          ...current,
+                          customMinutes: Math.max(1, Math.round(Number(event.target.value))),
+                        }))
                       }
                     />
                   </div>
