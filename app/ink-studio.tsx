@@ -75,6 +75,32 @@ const accentColors = {
   yellow: "#e5c900",
 };
 
+function upgradeLegacyApp(savedApp: InkApp): InkApp {
+  const prompt = savedApp.prompt || "";
+  const wantsFullscreen = ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
+    && ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"].some((term) => prompt.includes(term));
+  if (!wantsFullscreen || !savedApp.spec.artwork) return savedApp;
+  const hasExplicitSchedule = /每\s*\d+\s*分钟|每(?:个)?小时|每天|每日|早上|上午|下午|晚上/.test(prompt);
+  return {
+    ...savedApp,
+    scheduleMode: hasExplicitSchedule ? savedApp.scheduleMode : "once",
+    spec: {
+      ...savedApp.spec,
+      eyebrow: "",
+      title: "",
+      value: "",
+      unit: "",
+      detail: "",
+      footer: "",
+      artwork: {
+        ...savedApp.spec.artwork,
+        layout: "fullscreen",
+        rotateOnRefresh: /随机|每次换|换一张|轮换/.test(prompt) || savedApp.spec.artwork.rotateOnRefresh,
+      },
+    },
+  };
+}
+
 function fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, startSize: number) {
   let size = startSize;
   while (size > 24) {
@@ -831,7 +857,7 @@ export default function InkStudio() {
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(LOCAL_APPS_KEY) ?? "[]") as InkApp[];
-      if (Array.isArray(stored)) setLocalApps(stored);
+      if (Array.isArray(stored)) setLocalApps(stored.map(upgradeLegacyApp));
     } catch {
       localStorage.removeItem(LOCAL_APPS_KEY);
     }
@@ -871,7 +897,7 @@ export default function InkStudio() {
         return (await response.json()) as { apps?: InkApp[] };
       })
       .then((data) => {
-        if (data.apps?.length) setPublicApps([...data.apps, ...featuredApps]);
+        if (data.apps?.length) setPublicApps([...data.apps.map(upgradeLegacyApp), ...featuredApps]);
       })
       .catch(() => undefined);
   }, []);
@@ -1033,8 +1059,9 @@ export default function InkStudio() {
   };
 
   const useApp = (selected: InkApp) => {
+    const upgraded = upgradeLegacyApp(selected);
     const cloned = {
-      ...selected,
+      ...upgraded,
       id: `app-${Date.now()}`,
       author: "我",
       isPublic: false,
