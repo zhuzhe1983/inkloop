@@ -17,6 +17,7 @@ import { TodooCard, type TodooProgress } from "./lib/todoo-card";
 type Tab = "studio" | "mine" | "explore" | "device";
 type Toast = { tone: "success" | "error" | "info"; message: string } | null;
 type ToastTone = NonNullable<Toast>["tone"];
+type GeneratorStatus = "checking" | "online" | "local";
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
 
@@ -199,6 +200,8 @@ export default function InkStudio() {
   const [localApps, setLocalApps] = useState<InkApp[]>([]);
   const [publicApps, setPublicApps] = useState<InkApp[]>(featuredApps);
   const [generating, setGenerating] = useState(false);
+  const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
+  const [generatorModel, setGeneratorModel] = useState("auto");
   const [codeOpen, setCodeOpen] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
@@ -223,6 +226,19 @@ export default function InkStudio() {
     } catch {
       localStorage.removeItem(LOCAL_APPS_KEY);
     }
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/generate")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("generator unavailable");
+        return (await response.json()) as { configured?: boolean; model?: string };
+      })
+      .then((data) => {
+        setGeneratorStatus(data.configured ? "online" : "local");
+        setGeneratorModel(data.model || "auto");
+      })
+      .catch(() => setGeneratorStatus("local"));
   }, []);
 
   useEffect(() => {
@@ -259,18 +275,42 @@ export default function InkStudio() {
     if (canvasRef.current) drawScreen(canvasRef.current, app.spec);
   }, [app.spec]);
 
-  const generate = () => {
+  const generate = async () => {
     if (!prompt.trim()) {
       showToast("先描述你想让屏幕显示什么", "error");
       return;
     }
     setGenerating(true);
-    setTimeout(() => {
-      const generated = generateInkApp(prompt);
-      setApp(generated);
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!response.ok) throw new Error("生成服务暂时不可用");
+      const result = (await response.json()) as {
+        app?: InkApp;
+        mode?: "llm" | "local";
+        model?: string | null;
+        warning?: string;
+      };
+      if (!result.app) throw new Error("生成结果不完整");
+      setApp(result.app);
+      if (result.mode === "llm") {
+        setGeneratorStatus("online");
+        setGeneratorModel(result.model || "auto");
+        showToast(`已由 ${result.model || "在线模型"} 生成应用`, "success");
+      } else {
+        setGeneratorStatus("local");
+        showToast(result.warning || "已使用本地模板生成", "info");
+      }
+    } catch (error) {
+      setApp(generateInkApp(prompt));
+      setGeneratorStatus("local");
+      showToast(error instanceof Error ? `${error.message}，已使用本地模板` : "已使用本地模板", "info");
+    } finally {
       setGenerating(false);
-      showToast("应用逻辑和预览已生成", "success");
-    }, 760);
+    }
   };
 
   const updateSchedule = (scheduleMode: ScheduleMode) => {
@@ -482,12 +522,18 @@ export default function InkStudio() {
                   ))}
                 </div>
                 <button className="generate-button" type="button" onClick={generate} disabled={generating}>
-                  <span>{generating ? "生成中" : "✦ 生成应用"}</span>
+                  <span>{generating ? (generatorStatus === "online" ? "模型编码中" : "生成中") : "✦ 生成应用"}</span>
                   <i>{generating ? "•••" : "→"}</i>
                 </button>
                 <div className="generator-note">
-                  <span>AI</span>
-                  <p>当前部署使用安全的本地逻辑模板；接入模型接口后可生成更多数据源代码。</p>
+                  <span className={generatorStatus === "online" ? "online" : ""}>LLM</span>
+                  <p>
+                    {generatorStatus === "checking"
+                      ? "正在检查在线编码服务…"
+                      : generatorStatus === "online"
+                        ? `Tsingfly 在线编码已就绪 · ${generatorModel === "auto" ? "自动选择模型" : generatorModel}`
+                        : "等待配置 TSINGFLY_API_KEY · 当前自动使用本地模板"}
+                  </p>
                 </div>
               </section>
 

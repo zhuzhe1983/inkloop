@@ -490,6 +490,12 @@ input:focus-visible {
   font-weight: 900;
 }
 
+.generator-note > span.online {
+  border-color: var(--green);
+  background: #e0f4e7;
+  color: var(--green);
+}
+
 .generator-note p {
   margin: -1px 0 0;
   font-size: 9px;
