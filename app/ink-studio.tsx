@@ -431,15 +431,18 @@ function drawGeneratedArtwork(
     ctx.arc(centerX, centerY, Math.min(width, height) * 0.16, 0, Math.PI * 2);
     ctx.fill();
   } else if (artwork.motif === "waves") {
-    ctx.fillStyle = "#2756c7";
+    ctx.fillStyle = "#f4f0dc";
     ctx.fillRect(x, y, width, height);
     const phase = random() * Math.PI * 2;
-    for (let row = 0; row < 8; row += 1) {
-      ctx.strokeStyle = colors[row % colors.length];
-      ctx.lineWidth = Math.max(14, height / 28);
+    const waveColors = ["#2756c7", "#dc3f2f", "#e5c900", "#087c4e"];
+    for (let row = 0; row < 5; row += 1) {
+      ctx.strokeStyle = waveColors[(row + Math.floor(random() * waveColors.length)) % waveColors.length];
+      ctx.lineWidth = Math.max(10, height / 44);
+      ctx.lineCap = "round";
       ctx.beginPath();
       for (let px = 0; px <= width; px += 8) {
-        const py = y + 60 + row * (height / 9) + Math.sin(px / 34 + row + phase) * 24;
+        const py = y + height * 0.12 + row * (height / 5.2)
+          + Math.sin(px / 52 + row * 0.8 + phase) * Math.min(22, height * 0.035);
         if (px === 0) ctx.moveTo(x + px, py);
         else ctx.lineTo(x + px, py);
       }
@@ -476,12 +479,12 @@ function drawGlowFrame(
 ) {
   ctx.save();
   ctx.strokeStyle = "#151816";
-  ctx.lineWidth = 7;
+  ctx.lineWidth = 4;
   ctx.strokeRect(x, y, width, height);
   ctx.strokeStyle = "#f4f0dc";
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 2;
   ctx.shadowColor = "#f4f0dc";
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 5;
   ctx.strokeRect(x, y, width, height);
   ctx.restore();
 }
@@ -496,14 +499,35 @@ function drawGlowText(
   ctx.save();
   ctx.lineJoin = "round";
   ctx.strokeStyle = "#151816";
-  ctx.lineWidth = 6;
+  ctx.lineWidth = 4;
   ctx.shadowColor = "#f4f0dc";
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 5;
   if (maxWidth) ctx.strokeText(text, x, y, maxWidth);
   else ctx.strokeText(text, x, y);
   ctx.fillStyle = "#f4f0dc";
   if (maxWidth) ctx.fillText(text, x, y, maxWidth);
   else ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function drawEditorialPlate(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  accent: string,
+) {
+  ctx.save();
+  ctx.fillStyle = "#151816";
+  ctx.fillRect(x + 7, y + 7, width, height);
+  ctx.fillStyle = "#f4f0dc";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "#151816";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, width, height);
+  ctx.fillStyle = accent;
+  ctx.fillRect(x, y, 12, height);
   ctx.restore();
 }
 
@@ -595,16 +619,25 @@ function drawArtworkCopy(
   spec: ScreenSpec,
   accent: string,
   layout: ArtworkSpec["layout"],
+  imageBackdrop: boolean,
 ) {
   const ink = "#151816";
   const paper = "#f4f0dc";
-  const transparentOverlay = layout === "background";
+  const backgroundLayout = layout === "background";
+  const transparentOverlay = backgroundLayout && imageBackdrop;
   if (transparentOverlay) {
     ctx.font = "700 18px Arial, sans-serif";
     const eyebrow = spec.eyebrow.toUpperCase().slice(0, 32);
-    const eyebrowWidth = Math.min(430, Math.max(170, ctx.measureText(eyebrow).width + 48));
-    drawGlowFrame(ctx, 38, 42, eyebrowWidth, 58);
-    drawGlowText(ctx, eyebrow, 56, 78, eyebrowWidth - 34);
+    ctx.fillStyle = accent;
+    ctx.fillRect(48, 48, 12, 34);
+    drawGlowText(ctx, eyebrow, 76, 74, 390);
+  } else if (backgroundLayout) {
+    ctx.font = "700 18px Arial, sans-serif";
+    const eyebrow = spec.eyebrow.toUpperCase().slice(0, 32);
+    const eyebrowWidth = Math.min(430, Math.max(190, ctx.measureText(eyebrow).width + 60));
+    drawEditorialPlate(ctx, 38, 42, eyebrowWidth, 58, accent);
+    ctx.fillStyle = ink;
+    ctx.fillText(eyebrow, 68, 78, eyebrowWidth - 46);
   } else {
     ctx.fillStyle = paper;
     ctx.strokeStyle = ink;
@@ -620,30 +653,24 @@ function drawArtworkCopy(
 
   if (spec.clock?.enabled) {
     drawClockCopy(ctx, spec, accent, transparentOverlay);
-    ctx.font = "700 15px Arial, sans-serif";
-    if (transparentOverlay) drawGlowText(ctx, "INKLOOP / CLOCK", 48, 736);
-    else {
-      ctx.fillStyle = ink;
-      ctx.fillText("INKLOOP / CLOCK", 48, 736);
-    }
-    ctx.textAlign = "right";
-    if (transparentOverlay) drawGlowText(ctx, "LIVE TIME", 480, 736);
-    else ctx.fillText("LIVE TIME", 480, 736);
-    ctx.textAlign = "left";
     return;
   }
 
-  if (layout === "background") {
-    drawGlowFrame(ctx, 46, 192, 436, 154);
-    ctx.font = `800 ${fitText(ctx, spec.title, 382, 38)}px Arial, "PingFang SC", sans-serif`;
-    drawGlowText(ctx, spec.title, 72, 242, 382);
-    const valueSize = fitText(ctx, spec.value, 382, 76);
+  const valueWithUnit = `${spec.value}${spec.unit ? ` ${spec.unit}` : ""}`;
+  if (transparentOverlay) {
+    ctx.font = `800 ${fitText(ctx, spec.title, 420, 38)}px Arial, "PingFang SC", sans-serif`;
+    drawGlowText(ctx, spec.title, 48, 248, 420);
+    const valueSize = fitText(ctx, valueWithUnit, 420, 78);
     ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
-    drawGlowText(ctx, spec.value, 72, 322, 382);
-    if (spec.unit) {
-      ctx.font = "800 28px Arial, sans-serif";
-      drawGlowText(ctx, spec.unit, 72, 338, 382);
-    }
+    drawGlowText(ctx, valueWithUnit, 48, 336, 420);
+  } else if (backgroundLayout) {
+    drawEditorialPlate(ctx, 48, 216, 432, 226, accent);
+    ctx.fillStyle = ink;
+    ctx.font = `800 ${fitText(ctx, spec.title, 368, 34)}px Arial, "PingFang SC", sans-serif`;
+    ctx.fillText(spec.title, 82, 274, 368);
+    const valueSize = fitText(ctx, valueWithUnit, 368, 82);
+    ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
+    ctx.fillText(valueWithUnit, 82, 382, 368);
   } else {
     ctx.fillStyle = paper;
     ctx.fillRect(38, 468, 452, 184);
@@ -661,12 +688,27 @@ function drawArtworkCopy(
     }
   }
 
-  if (layout === "background") {
-    drawGlowFrame(ctx, 46, 638, 436, 70);
+  if (transparentOverlay) {
+    ctx.strokeStyle = paper;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = ink;
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.moveTo(48, 634);
+    ctx.lineTo(480, 634);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
     ctx.font = "700 18px Arial, \"PingFang SC\", sans-serif";
-    drawGlowText(ctx, spec.detail.slice(0, 30), 64, 665, 400);
+    drawGlowText(ctx, spec.detail.slice(0, 30), 48, 672, 432);
     ctx.font = "700 17px Arial, \"PingFang SC\", sans-serif";
-    drawGlowText(ctx, spec.footer.slice(0, 26), 64, 695, 400);
+    drawGlowText(ctx, spec.footer.slice(0, 26), 48, 705, 432);
+  } else if (backgroundLayout) {
+    drawEditorialPlate(ctx, 48, 614, 432, 102, accent);
+    ctx.fillStyle = ink;
+    ctx.font = "700 18px Arial, \"PingFang SC\", sans-serif";
+    ctx.fillText(spec.detail.slice(0, 30), 82, 655, 366);
+    ctx.font = "700 17px Arial, \"PingFang SC\", sans-serif";
+    ctx.fillText(spec.footer.slice(0, 26), 82, 690, 366);
   } else {
     ctx.fillStyle = paper;
     ctx.fillRect(38, 666, 452, 46);
@@ -677,16 +719,6 @@ function drawArtworkCopy(
     ctx.fillText(spec.detail.slice(0, 30), 58, 696);
   }
 
-  ctx.font = "700 15px Arial, sans-serif";
-  if (transparentOverlay) drawGlowText(ctx, "INKLOOP / VISUAL", 48, 736);
-  else {
-    ctx.fillStyle = ink;
-    ctx.fillText("INKLOOP / VISUAL", 48, 736);
-  }
-  ctx.textAlign = "right";
-  if (transparentOverlay) drawGlowText(ctx, "6-COLOR E-PAPER", 480, 736);
-  else ctx.fillText("6-COLOR E-PAPER", 480, 736);
-  ctx.textAlign = "left";
 }
 
 async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
@@ -725,7 +757,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
       if (artwork.layout === "fullscreen") return true;
-      drawArtworkCopy(ctx, spec, accent, artwork.layout);
+      drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
       if (artwork.layout === "hero") {
         ctx.strokeStyle = ink;
         ctx.lineWidth = 3;
@@ -830,11 +862,6 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   const footer = spec.footer.length > 24 ? `${spec.footer.slice(0, 24)}…` : spec.footer;
   ctx.fillText(footer, 100, 655);
 
-  ctx.font = "700 16px Arial, sans-serif";
-  ctx.fillText("INKLOOP / TODOO 3.7", 48, 724);
-  ctx.textAlign = "right";
-  ctx.fillText("6-COLOR E-PAPER", 480, 724);
-  ctx.textAlign = "left";
   return false;
 }
 
@@ -1301,7 +1328,7 @@ export default function InkStudio() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <span className="eyebrow">TODOO · 6-COLOR E-PAPER</span>
+            <span className="eyebrow">INKLOOP · TODOO STUDIO</span>
             <strong>{contentTitle ?? app.title}</strong>
           </div>
           <div className="topbar-actions">

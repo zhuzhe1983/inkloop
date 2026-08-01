@@ -90,7 +90,9 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。
 15. 每张背景图都必须填写 artwork.style。优先遵循用户点名的风格；未指定时，像专业 stylist 一样选择适合主题的 editorial、cinematic、minimal、vintage、fashion 或 illustration 风格，并强调主体清晰、高对比、构图简洁，适合六色墨水屏。
 16. 只有用户需求明确包含天气、气温、温度、下雨、降雨或通勤信息时，spec.kind 才能使用 weather；海报、图片、时钟等其他需求不得使用 weather。
-17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。`;
+17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。
+18. 用户没有明确要求图片、背景、海报、插画或视觉主题时，artwork.mode 必须是 none；信息卡优先使用清晰的纯文字排版。
+19. 海报不添加品牌签名、产品型号、水印或“6-COLOR E-PAPER”等脚注。避免无理由使用满屏高饱和蓝色、重复粗线和厚重发光描边；优先留白、清晰层级和至多两种强调色。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -122,6 +124,10 @@ function wantsFullscreenArtwork(prompt: string) {
 
 function wantsBackgroundArtwork(prompt: string) {
   return ["背景", "背景图", "做背景", "作为背景"].some((term) => prompt.includes(term));
+}
+
+function wantsArtwork(prompt: string) {
+  return /图片|照片|摄影|背景|海报|插画|图案|彩虹|彩纸|礼花|波浪|网格|太阳|阳光|漫威|Marvel|蜘蛛侠|钢铁侠|美国队长|复仇者联盟|猫|猫咪|小猫|狗|宠物|美女|女性|人物|城市|风景|产品图/i.test(prompt);
 }
 
 function wantsWeather(prompt: string) {
@@ -183,6 +189,9 @@ function normalizeArtwork(
   fallback: ArtworkSpec | undefined,
   prompt: string,
 ): ArtworkSpec | undefined {
+  // Pure information requests should stay typographic. The model must not
+  // invent a decorative background that competes with the content.
+  if (!fallback && !wantsArtwork(prompt)) return undefined;
   if (!value || typeof value !== "object") return fallback;
   const candidate = value as Record<string, unknown>;
   const mode = candidate.mode as ArtworkSpec["mode"] | "none";
