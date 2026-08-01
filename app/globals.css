@@ -1036,6 +1036,20 @@ input:focus-visible {
   opacity: 0.2;
 }
 
+.mini-screen.has-artwork > * {
+  position: relative;
+  z-index: 1;
+}
+
+.mini-screen.has-artwork .mini-eyebrow,
+.mini-screen.has-artwork b,
+.mini-screen.has-artwork em,
+.mini-screen.has-artwork small,
+.mini-screen.has-artwork .mini-footer {
+  background: #f4f0dc;
+  box-shadow: 0 0 0 4px #f4f0dc;
+}
+
 .mini-screen .mini-eyebrow {
   display: block;
   overflow: hidden;

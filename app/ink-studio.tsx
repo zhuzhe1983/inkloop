@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   featuredApps,
   generateInkApp,
@@ -8,6 +8,7 @@ import {
   scheduleLabel,
   starterApp,
   starterPrompt,
+  type ArtworkSpec,
   type InkApp,
   type ScheduleMode,
   type ScreenSpec,
@@ -18,6 +19,7 @@ type Tab = "studio" | "mine" | "explore" | "device";
 type Toast = { tone: "success" | "error" | "info"; message: string } | null;
 type ToastTone = NonNullable<Toast>["tone"];
 type GeneratorStatus = "checking" | "online" | "local";
+type PreviewStatus = "ready" | "loading" | "fallback";
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
 
@@ -31,6 +33,7 @@ const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
 const samplePrompts = [
   "每天 8 点显示上海天气和带伞提醒",
   "显示新品发布倒计时",
+  "彩虹背景，中间写一句今天也很棒",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
 ];
@@ -52,9 +55,274 @@ function fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, 
   return size;
 }
 
-function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
+const ePaperPalette = [
+  [21, 24, 22],
+  [244, 240, 220],
+  [229, 201, 0],
+  [220, 63, 47],
+  [39, 86, 199],
+  [8, 124, 78],
+] as const;
+
+function artworkUrl(artwork: ArtworkSpec) {
+  const params = new URLSearchParams({
+    query: artwork.query,
+    seed: String(artwork.seed),
+  });
+  return `/api/artwork?${params.toString()}`;
+}
+
+function loadArtwork(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    const timeout = window.setTimeout(() => reject(new Error("图片素材加载超时")), 15_000);
+    image.decoding = "async";
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve(image);
+    };
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error("图片素材加载失败"));
+    };
+    image.src = url;
+  });
+}
+
+function drawImageContain(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const drawWidth = image.naturalWidth * scale;
+  const drawHeight = image.naturalHeight * scale;
+  ctx.fillStyle = "#f4f0dc";
+  ctx.fillRect(x, y, width, height);
+  ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+}
+
+function quantizeRegion(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const image = ctx.getImageData(x, y, width, height);
+  const matrix = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+  for (let pixel = 0; pixel < image.data.length; pixel += 4) {
+    const point = pixel / 4;
+    const px = point % width;
+    const py = Math.floor(point / width);
+    const bias = (matrix[(py % 4) * 4 + (px % 4)] - 7.5) * 4;
+    const red = Math.max(0, Math.min(255, image.data[pixel] + bias));
+    const green = Math.max(0, Math.min(255, image.data[pixel + 1] + bias));
+    const blue = Math.max(0, Math.min(255, image.data[pixel + 2] + bias));
+    let best: readonly [number, number, number] = ePaperPalette[0];
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const color of ePaperPalette) {
+      const dr = red - color[0];
+      const dg = green - color[1];
+      const db = blue - color[2];
+      const distance = dr * dr * 0.3 + dg * dg * 0.59 + db * db * 0.11;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = color;
+      }
+    }
+    image.data[pixel] = best[0];
+    image.data[pixel + 1] = best[1];
+    image.data[pixel + 2] = best[2];
+    image.data[pixel + 3] = 255;
+  }
+  ctx.putImageData(image, x, y);
+}
+
+function drawGeneratedArtwork(
+  ctx: CanvasRenderingContext2D,
+  artwork: ArtworkSpec,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const colors = ["#dc3f2f", "#e5c900", "#087c4e", "#2756c7"];
+  let state = artwork.seed || 1;
+  const random = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, width, height);
+  ctx.clip();
+  ctx.fillStyle = "#f4f0dc";
+  ctx.fillRect(x, y, width, height);
+
+  if (artwork.motif === "rainbow") {
+    ctx.fillStyle = "#e5c900";
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = "#f4f0dc";
+    for (let index = 0; index < 18; index += 1) {
+      ctx.beginPath();
+      ctx.arc(x + random() * width, y + random() * height, 4 + random() * 13, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const centerX = x + width / 2;
+    const centerY = y + height * 0.75;
+    const baseRadius = Math.min(width * 0.48, height * 0.44);
+    colors.forEach((color, index) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(26, baseRadius * 0.18);
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, baseRadius - index * ctx.lineWidth * 0.78, Math.PI, Math.PI * 2);
+      ctx.stroke();
+    });
+    ctx.fillStyle = "#f4f0dc";
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, Math.max(34, baseRadius * 0.28), Math.PI, Math.PI * 2);
+    ctx.fill();
+  } else if (artwork.motif === "sunburst") {
+    const centerX = x + width * 0.52;
+    const centerY = y + height * 0.42;
+    for (let index = 0; index < 24; index += 1) {
+      const start = (index / 24) * Math.PI * 2;
+      const end = ((index + 1) / 24) * Math.PI * 2;
+      ctx.fillStyle = colors[index % colors.length];
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.arc(centerX, centerY, Math.max(width, height), start, end);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = "#e5c900";
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, Math.min(width, height) * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (artwork.motif === "waves") {
+    ctx.fillStyle = "#2756c7";
+    ctx.fillRect(x, y, width, height);
+    for (let row = 0; row < 8; row += 1) {
+      ctx.strokeStyle = colors[row % colors.length];
+      ctx.lineWidth = Math.max(14, height / 28);
+      ctx.beginPath();
+      for (let px = 0; px <= width; px += 8) {
+        const py = y + 60 + row * (height / 9) + Math.sin(px / 34 + row) * 24;
+        if (px === 0) ctx.moveTo(x + px, py);
+        else ctx.lineTo(x + px, py);
+      }
+      ctx.stroke();
+    }
+  } else if (artwork.motif === "confetti") {
+    for (let index = 0; index < 90; index += 1) {
+      ctx.save();
+      ctx.translate(x + random() * width, y + random() * height);
+      ctx.rotate(random() * Math.PI);
+      ctx.fillStyle = colors[index % colors.length];
+      ctx.fillRect(-8, -18, 16, 36);
+      ctx.restore();
+    }
+  } else {
+    const cell = Math.max(38, Math.floor(Math.min(width, height) / 7));
+    for (let py = y; py < y + height; py += cell) {
+      for (let px = x; px < x + width; px += cell) {
+        ctx.fillStyle = colors[(Math.floor((px - x) / cell) + Math.floor((py - y) / cell)) % colors.length];
+        ctx.fillRect(px, py, cell, cell);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawArtworkCopy(
+  ctx: CanvasRenderingContext2D,
+  spec: ScreenSpec,
+  accent: string,
+  layout: ArtworkSpec["layout"],
+) {
+  const ink = "#151816";
+  const paper = "#f4f0dc";
+  ctx.fillStyle = paper;
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = 3;
+  ctx.fillRect(38, 42, 452, 76);
+  ctx.strokeRect(38, 42, 452, 76);
+  ctx.fillStyle = ink;
+  ctx.font = "700 18px Arial, sans-serif";
+  ctx.fillText(spec.eyebrow.toUpperCase(), 56, 88);
+  ctx.fillStyle = accent;
+  ctx.fillRect(430, 65, 38, 14);
+
+  if (layout === "background") {
+    ctx.fillStyle = paper;
+    ctx.fillRect(46, 188, 436, 198);
+    ctx.strokeStyle = ink;
+    ctx.strokeRect(46, 188, 436, 198);
+    ctx.fillStyle = ink;
+    ctx.font = `800 ${fitText(ctx, spec.title, 382, 38)}px Arial, "PingFang SC", sans-serif`;
+    ctx.fillText(spec.title, 72, 246);
+    const valueSize = fitText(ctx, spec.value, 382, 76);
+    ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
+    ctx.fillText(spec.value, 72, 340);
+    if (spec.unit) {
+      ctx.font = "800 28px Arial, sans-serif";
+      ctx.fillText(spec.unit, 72, 374);
+    }
+  } else {
+    ctx.fillStyle = paper;
+    ctx.fillRect(38, 468, 452, 184);
+    ctx.strokeStyle = ink;
+    ctx.strokeRect(38, 468, 452, 184);
+    ctx.fillStyle = ink;
+    ctx.font = `800 ${fitText(ctx, spec.title, 402, 34)}px Arial, "PingFang SC", sans-serif`;
+    ctx.fillText(spec.title, 60, 516);
+    const valueSize = fitText(ctx, spec.value, 402, 64);
+    ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
+    ctx.fillText(spec.value, 60, 592);
+    if (spec.unit) {
+      ctx.font = "800 26px Arial, sans-serif";
+      ctx.fillText(spec.unit, 60, 628);
+    }
+  }
+
+  if (layout === "background") {
+    ctx.fillStyle = paper;
+    ctx.fillRect(38, 622, 452, 92);
+    ctx.strokeStyle = ink;
+    ctx.strokeRect(38, 622, 452, 92);
+    ctx.fillStyle = ink;
+    ctx.font = "700 20px Arial, \"PingFang SC\", sans-serif";
+    ctx.fillText(spec.detail.slice(0, 30), 58, 656);
+    ctx.fillStyle = accent;
+    ctx.fillRect(58, 674, 18, 18);
+    ctx.fillStyle = ink;
+    ctx.font = "700 19px Arial, \"PingFang SC\", sans-serif";
+    ctx.fillText(spec.footer.slice(0, 24), 90, 691);
+  } else {
+    ctx.fillStyle = paper;
+    ctx.fillRect(38, 666, 452, 46);
+    ctx.strokeStyle = ink;
+    ctx.strokeRect(38, 666, 452, 46);
+    ctx.fillStyle = ink;
+    ctx.font = "700 19px Arial, \"PingFang SC\", sans-serif";
+    ctx.fillText(spec.detail.slice(0, 30), 58, 696);
+  }
+
+  ctx.fillStyle = ink;
+  ctx.font = "700 15px Arial, sans-serif";
+  ctx.fillText("INKLOOP / VISUAL", 48, 736);
+  ctx.textAlign = "right";
+  ctx.fillText("6-COLOR E-PAPER", 480, 736);
+  ctx.textAlign = "left";
+}
+
+async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
   const ctx = canvas.getContext("2d");
-  if (!ctx) return;
+  if (!ctx) return false;
   const width = 528;
   const height = 792;
   const ink = "#151816";
@@ -64,6 +332,30 @@ function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, width, height);
+  if (spec.artwork) {
+    const area = spec.artwork.layout === "hero"
+      ? { x: 48, y: 132, width: 432, height: 314 }
+      : { x: 22, y: 22, width: width - 44, height: height - 44 };
+    try {
+      if (spec.artwork.mode === "web") {
+        const image = await loadArtwork(artworkUrl(spec.artwork));
+        drawImageContain(ctx, image, area.x, area.y, area.width, area.height);
+        quantizeRegion(ctx, area.x, area.y, area.width, area.height);
+      } else {
+        drawGeneratedArtwork(ctx, spec.artwork, area.x, area.y, area.width, area.height);
+      }
+      drawArtworkCopy(ctx, spec, accent, spec.artwork.layout);
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(22, 22, width - 44, height - 44);
+      return true;
+    } catch {
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = paper;
+      ctx.fillRect(0, 0, width, height);
+    }
+  }
+
   ctx.strokeStyle = ink;
   ctx.lineWidth = 3;
   ctx.strokeRect(22, 22, width - 44, height - 44);
@@ -159,11 +451,29 @@ function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
   ctx.textAlign = "right";
   ctx.fillText("6-COLOR E-PAPER", 480, 724);
   ctx.textAlign = "left";
+  return false;
 }
 
 function MiniScreen({ app }: { app: InkApp }) {
+  const artwork = app.spec.artwork;
+  const generatedBackgrounds: Record<ArtworkSpec["motif"], string> = {
+    rainbow: "linear-gradient(135deg, #dc3f2f 0 22%, #e5c900 22% 46%, #087c4e 46% 70%, #2756c7 70%)",
+    sunburst: "conic-gradient(from 12deg, #e5c900, #dc3f2f, #f4f0dc, #2756c7, #e5c900)",
+    confetti: "repeating-linear-gradient(115deg, #f4f0dc 0 14px, #dc3f2f 14px 20px, #e5c900 20px 34px, #2756c7 34px 40px)",
+    waves: "repeating-linear-gradient(0deg, #2756c7 0 18px, #f4f0dc 18px 32px, #087c4e 32px 48px)",
+    grid: "conic-gradient(#dc3f2f 25%, #e5c900 0 50%, #087c4e 0 75%, #2756c7 0) 0 0 / 40px 40px",
+  };
+  const style: CSSProperties | undefined = artwork
+    ? {
+        backgroundImage: artwork.mode === "web"
+          ? `url("${artworkUrl(artwork)}")`
+          : generatedBackgrounds[artwork.motif],
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      }
+    : undefined;
   return (
-    <div className={`mini-screen mini-${app.spec.accent}`}>
+    <div className={`mini-screen mini-${app.spec.accent}${artwork ? " has-artwork" : ""}`} style={style}>
       <span className="mini-eyebrow">{app.spec.eyebrow}</span>
       <i />
       <b>{app.spec.value}</b>
@@ -202,6 +512,7 @@ export default function InkStudio() {
   const [generating, setGenerating] = useState(false);
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
   const [codeOpen, setCodeOpen] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
@@ -211,6 +522,7 @@ export default function InkStudio() {
   const [nextRun, setNextRun] = useState<Date | null>(null);
   const [bluetoothSupported, setBluetoothSupported] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const previewVersionRef = useRef(0);
   const driverRef = useRef<TodooCard | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -272,7 +584,21 @@ export default function InkStudio() {
   }, []);
 
   useEffect(() => {
-    if (canvasRef.current) drawScreen(canvasRef.current, app.spec);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const version = ++previewVersionRef.current;
+    const staging = document.createElement("canvas");
+    staging.width = 528;
+    staging.height = 792;
+    setPreviewStatus(app.spec.artwork ? "loading" : "ready");
+    drawScreen(staging, app.spec).then((usedArtwork) => {
+      if (version !== previewVersionRef.current) return;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(staging, 0, 0);
+      setPreviewStatus(app.spec.artwork && !usedArtwork ? "fallback" : "ready");
+    });
   }, [app.spec]);
 
   const generate = async () => {
@@ -380,6 +706,10 @@ export default function InkStudio() {
     const driver = driverRef.current;
     const canvas = canvasRef.current;
     if (!driver || !canvas) return false;
+    if (previewStatus === "loading") {
+      showToast("图片素材仍在加载，请稍候再写入", "info");
+      return false;
+    }
     if (document.visibilityState !== "visible") {
       showToast("页面在后台，已推迟到重新打开后写入", "info");
       return false;
@@ -396,7 +726,7 @@ export default function InkStudio() {
       showToast(message, "error");
       return false;
     }
-  }, [showToast]);
+  }, [previewStatus, showToast]);
 
   const scheduleFollowingRun = useCallback(() => {
     const delay = calculateNextDelay(app);
@@ -543,7 +873,15 @@ export default function InkStudio() {
                     <span className="step-number">02</span>
                     <div>
                       <h2>屏幕预览</h2>
-                      <p>528 × 792 · 实际六色色板</p>
+                      <p>
+                        528 × 792 · {previewStatus === "loading"
+                          ? "正在获取并转换图片素材"
+                          : previewStatus === "fallback"
+                            ? "素材暂不可用，已使用图形排版"
+                            : app.spec.artwork
+                              ? "图片已转换为实际六色"
+                              : "实际六色色板"}
+                      </p>
                     </div>
                   </div>
                   <span className="scale-chip">50%</span>

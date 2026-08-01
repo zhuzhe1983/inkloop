@@ -2,6 +2,14 @@ export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric
 
 export type ScheduleMode = "once" | "hourly" | "daily" | "custom";
 
+export type ArtworkSpec = {
+  mode: "generated" | "web";
+  motif: "rainbow" | "sunburst" | "confetti" | "waves" | "grid";
+  query: string;
+  layout: "background" | "hero";
+  seed: number;
+};
+
 export type ScreenSpec = {
   kind: ScreenKind;
   eyebrow: string;
@@ -11,6 +19,7 @@ export type ScreenSpec = {
   detail: string;
   footer: string;
   accent: "red" | "blue" | "green" | "yellow";
+  artwork?: ArtworkSpec;
 };
 
 export type InkApp = {
@@ -70,9 +79,63 @@ export const starterApp: InkApp = {
 
 const includesAny = (source: string, terms: string[]) => terms.some((term) => source.includes(term));
 
+function promptSeed(source: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 1_000_000 + 1;
+}
+
+function inferArtwork(source: string): ArtworkSpec | undefined {
+  const seed = promptSeed(source);
+  if (includesAny(source, ["彩虹", "虹彩", "七彩"])) {
+    return {
+      mode: "generated",
+      motif: "rainbow",
+      query: "abstract rainbow colorful background",
+      layout: "background",
+      seed,
+    };
+  }
+  if (includesAny(source, ["彩纸", "庆祝", "礼花"])) {
+    return {
+      mode: "generated",
+      motif: "confetti",
+      query: "celebration confetti illustration",
+      layout: "background",
+      seed,
+    };
+  }
+  if (includesAny(source, ["太阳", "阳光", "放射"])) {
+    return {
+      mode: "generated",
+      motif: "sunburst",
+      query: "sunburst graphic background",
+      layout: "background",
+      seed,
+    };
+  }
+  if (includesAny(source, ["图片", "照片", "摄影", "风景", "人物", "城市", "产品图", "背景图", "插画"])) {
+    const query = source.includes("城市")
+      ? "modern city architecture"
+      : source.includes("风景")
+        ? "beautiful nature landscape"
+        : source.includes("人物")
+          ? "people portrait lifestyle"
+          : source.includes("产品")
+            ? "minimal product photography"
+            : "colorful editorial illustration";
+    return { mode: "web", motif: "grid", query, layout: "hero", seed };
+  }
+  return undefined;
+}
+
 export function generateInkApp(prompt: string): InkApp {
   const source = prompt.trim() || starterPrompt;
   const promptHour = source.match(/(\d{1,2})\s*[点:时]/)?.[1];
+  const artwork = inferArtwork(source);
   const base = {
     id: `app-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     prompt: source,
@@ -82,6 +145,40 @@ export function generateInkApp(prompt: string): InkApp {
     author: "我",
     createdAt: nowIso(),
   };
+
+  if (includesAny(source, ["鼓励", "加油", "你很棒", "你超棒", "彩虹"])) {
+    return {
+      ...base,
+      title: "彩虹鼓励卡",
+      description: "用醒目的图形和一句话给自己打气",
+      scheduleMode: "once",
+      spec: {
+        kind: "focus",
+        eyebrow: "A LITTLE BOOST · TODAY",
+        title: "你超棒",
+        value: "继续加油",
+        unit: "",
+        detail: "每一天都是新的开始",
+        footer: "相信自己，你可以的！",
+        accent: "yellow",
+        artwork: artwork ?? {
+          mode: "generated",
+          motif: "confetti",
+          query: "colorful encouragement celebration",
+          layout: "background",
+          seed: promptSeed(source),
+        },
+      },
+      code: `export function render() {
+  return {
+    title: "你超棒",
+    value: "继续加油",
+    detail: "每一天都是新的开始",
+    footer: "相信自己，你可以的！"
+  };
+}`,
+    };
+  }
 
   if (includesAny(source, ["天气", "温度", "下雨", "通勤"])) {
     return {
@@ -98,6 +195,7 @@ export function generateInkApp(prompt: string): InkApp {
         detail: "阵雨转多云  ·  26—32°C",
         footer: source.includes("雨") ? "记得带伞 · 避开积水路段" : "午后可能有雨，建议随身带伞",
         accent: "red",
+        artwork,
       },
       code: `export async function render(ctx) {
   const city = ${JSON.stringify(source.includes("北京") ? "北京" : source.includes("深圳") ? "深圳" : "上海")};
@@ -129,6 +227,7 @@ export function generateInkApp(prompt: string): InkApp {
         detail: "目标日 · 8月25日",
         footer: "今天也向目标前进一步",
         accent: "blue",
+        artwork,
       },
       code: `export function render(ctx) {
   const target = new Date("2026-08-25T00:00:00+08:00");
@@ -154,6 +253,7 @@ export function generateInkApp(prompt: string): InkApp {
         detail: "10:00—11:00 · 6 人",
         footer: "下一空闲时段  11:00—13:30",
         accent: "green",
+        artwork,
       },
       code: `export async function render(ctx) {
   const room = await ctx.calendar.room("M03");
@@ -180,6 +280,7 @@ export function generateInkApp(prompt: string): InkApp {
         detail: "¥ 380,240 / ¥ 500,000",
         footer: "较昨日 +3.8% · 保持节奏",
         accent: "yellow",
+        artwork,
       },
       code: `export async function render(ctx) {
   const sales = await ctx.data.metric("monthly_sales");
@@ -203,6 +304,7 @@ export function generateInkApp(prompt: string): InkApp {
       detail: "09:30—11:30 · 请勿打扰",
       footer: source.slice(0, 28) || "完成比完美更重要",
       accent: "blue",
+      artwork,
     },
     code: `export function render(ctx) {
   return {

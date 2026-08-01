@@ -1,5 +1,11 @@
 import { env } from "cloudflare:workers";
-import { generateInkApp, type InkApp, type ScreenKind, type ScreenSpec } from "../../lib/app-model";
+import {
+  generateInkApp,
+  type ArtworkSpec,
+  type InkApp,
+  type ScreenKind,
+  type ScreenSpec,
+} from "../../lib/app-model";
 
 const DEFAULT_BASE_URL = "https://hub.tsingfly.com/v1";
 const MODEL_PREFERENCES = [
@@ -12,6 +18,15 @@ const MODEL_PREFERENCES = [
 const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric"]);
 const ALLOWED_ACCENTS = new Set<ScreenSpec["accent"]>(["red", "blue", "green", "yellow"]);
 const ALLOWED_SCHEDULES = new Set<InkApp["scheduleMode"]>(["once", "hourly", "daily", "custom"]);
+const ALLOWED_ARTWORK_MODES = new Set<ArtworkSpec["mode"] | "none">(["none", "generated", "web"]);
+const ALLOWED_ARTWORK_MOTIFS = new Set<ArtworkSpec["motif"]>([
+  "rainbow",
+  "sunburst",
+  "confetti",
+  "waves",
+  "grid",
+]);
+const ALLOWED_ARTWORK_LAYOUTS = new Set<ArtworkSpec["layout"]>(["background", "hero"]);
 
 const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根据用户需求生成一个 TodooCard 应用。
 
@@ -27,7 +42,13 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
     "unit": "单位，没有则为空字符串",
     "detail": "一行详情",
     "footer": "一行行动建议或补充信息",
-    "accent": "red|blue|green|yellow"
+    "accent": "red|blue|green|yellow",
+    "artwork": {
+      "mode": "none|generated|web",
+      "motif": "rainbow|sunburst|confetti|waves|grid",
+      "query": "用于联网找图的简短英文关键词",
+      "layout": "background|hero"
+    }
   },
   "code": "可供用户审阅的 JavaScript 业务逻辑源码字符串",
   "scheduleMode": "once|hourly|daily|custom",
@@ -40,7 +61,10 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
 2. 代码通过 render(ctx) 返回与 spec 对应的数据，外部数据使用 ctx.weather、ctx.calendar 或 ctx.data 等抽象接口。
 3. 屏幕为 528×792 竖屏，只支持黑、白、黄、红、蓝、绿六色；内容必须短而清晰。
 4. 如果用户提到刷新时间或周期，准确设置 scheduleMode、dailyTime 或 customMinutes。
-5. 不编造真实个人数据；示例值应明显是合理预览。`;
+5. 不编造真实个人数据；示例值应明显是合理预览。
+6. 用户要求图片、照片、背景、插画或明显视觉主题时，artwork.mode 不能是 none。
+7. 彩虹、放射、彩纸、波浪、网格等抽象图形使用 generated 并选择最接近的 motif；人物、城市、产品、动物、自然等真实题材使用 web。
+8. web 的 query 必须是 2—6 个具体英文关键词，不返回图片 URL；系统会安全地获取并缓存素材。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -50,6 +74,46 @@ type ChatCompletion = {
 
 function trimText(value: unknown, fallback: string, max: number) {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : fallback;
+}
+
+function stableSeed(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 1_000_000 + 1;
+}
+
+function normalizeArtwork(
+  value: unknown,
+  fallback: ArtworkSpec | undefined,
+  prompt: string,
+): ArtworkSpec | undefined {
+  if (!value || typeof value !== "object") return fallback;
+  const candidate = value as Record<string, unknown>;
+  const mode = candidate.mode as ArtworkSpec["mode"] | "none";
+  if (!ALLOWED_ARTWORK_MODES.has(mode) || mode === "none") return fallback;
+  const rawQuery = trimText(candidate.query, fallback?.query || "colorful editorial illustration", 100);
+  const query = rawQuery.replace(/[^a-zA-Z0-9\s,-]/g, " ").replace(/\s+/g, " ").trim();
+  const requestedMotif = candidate.motif as ArtworkSpec["motif"];
+  const motif = ALLOWED_ARTWORK_MOTIFS.has(requestedMotif)
+    ? requestedMotif
+    : query.toLowerCase().includes("rainbow")
+      ? "rainbow"
+      : "grid";
+  const requestedLayout = candidate.layout as ArtworkSpec["layout"];
+  return {
+    mode,
+    motif,
+    query: query || "colorful editorial illustration",
+    layout: mode === "web"
+      ? "hero"
+      : ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout)
+        ? requestedLayout
+        : "background",
+    seed: stableSeed(`${prompt}:${query}:${motif}`),
+  };
 }
 
 function normalizeBaseUrl(value?: string) {
@@ -95,6 +159,7 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
       detail: trimText(candidateSpec.detail, fallback.spec.detail, 48),
       footer: trimText(candidateSpec.footer, fallback.spec.footer, 48),
       accent: ALLOWED_ACCENTS.has(candidateAccent) ? candidateAccent : fallback.spec.accent,
+      artwork: normalizeArtwork(candidateSpec.artwork, fallback.spec.artwork, prompt),
     },
     code: trimText(value.code, fallback.code, 8000),
     scheduleMode: ALLOWED_SCHEDULES.has(candidateSchedule) ? candidateSchedule : fallback.scheduleMode,
