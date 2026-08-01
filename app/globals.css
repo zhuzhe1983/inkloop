@@ -1190,8 +1190,26 @@ input:focus-visible {
 .mini-screen.has-artwork em,
 .mini-screen.has-artwork small,
 .mini-screen.has-artwork .mini-footer {
-  background: #f4f0dc;
-  box-shadow: 0 0 0 4px #f4f0dc;
+  color: #fffef5;
+  background: transparent;
+  box-shadow: none;
+  text-shadow:
+    0 1px 1px #111,
+    0 0 3px #111,
+    0 0 7px #fffef5;
+}
+
+.mini-screen.has-artwork .mini-eyebrow {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #fffef5;
+  box-shadow: 0 0 5px rgba(255, 254, 245, 0.82);
+}
+
+.mini-screen.has-artwork .mini-footer {
+  border-color: #fffef5;
+  box-shadow: 0 -2px 5px rgba(255, 254, 245, 0.68);
 }
 
 .mini-screen .mini-eyebrow {
