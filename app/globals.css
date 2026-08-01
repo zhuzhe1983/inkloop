@@ -524,6 +524,33 @@ input:focus-visible {
   font-weight: 800;
 }
 
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.regenerate-preview {
+  padding: 5px 9px;
+  border: 1px solid #aeb4ad;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #323a34;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.regenerate-preview:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.regenerate-preview:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .canvas-stage {
   min-height: 510px;
   margin: 10px 0 6px;

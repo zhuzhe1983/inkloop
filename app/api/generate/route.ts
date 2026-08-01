@@ -64,7 +64,8 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
 5. 不编造真实个人数据；示例值应明显是合理预览。
 6. 用户要求图片、照片、背景、插画或明显视觉主题时，artwork.mode 不能是 none。
 7. 彩虹、放射、彩纸、波浪、网格等抽象图形使用 generated 并选择最接近的 motif；人物、城市、产品、动物、自然等真实题材使用 web。
-8. web 的 query 必须是 2—6 个具体英文关键词，不返回图片 URL；系统会安全地获取并缓存素材。`;
+8. web 的 query 必须是 2—6 个具体英文关键词，准确概括用户要求的主体、场景和风格。例如 OOTD 可写为 "outfit of the day street style"，不要只写 image、random、beautiful 等泛词。
+9. 不返回图片 URL；系统会用 query 从主题图库随机取图并缓存素材。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -112,7 +113,7 @@ function normalizeArtwork(
       : ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout)
         ? requestedLayout
         : "background",
-    seed: stableSeed(`${prompt}:${query}:${motif}`),
+    seed: stableSeed(`${prompt}:${query}:${motif}:${crypto.randomUUID()}`),
   };
 }
 

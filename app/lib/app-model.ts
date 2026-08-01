@@ -89,7 +89,7 @@ function promptSeed(source: string) {
 }
 
 function inferArtwork(source: string): ArtworkSpec | undefined {
-  const seed = promptSeed(source);
+  const seed = promptSeed(`${source}:${crypto.randomUUID()}`);
   if (includesAny(source, ["彩虹", "虹彩", "七彩"])) {
     return {
       mode: "generated",

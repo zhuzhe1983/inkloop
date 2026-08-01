@@ -172,9 +172,9 @@ function drawGeneratedArtwork(
       ctx.arc(x + random() * width, y + random() * height, 4 + random() * 13, 0, Math.PI * 2);
       ctx.fill();
     }
-    const centerX = x + width / 2;
-    const centerY = y + height * 0.75;
-    const baseRadius = Math.min(width * 0.48, height * 0.44);
+    const centerX = x + width * (0.47 + random() * 0.06);
+    const centerY = y + height * (0.72 + random() * 0.06);
+    const baseRadius = Math.min(width * 0.48, height * 0.44) * (0.9 + random() * 0.1);
     colors.forEach((color, index) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = Math.max(26, baseRadius * 0.18);
@@ -187,11 +187,12 @@ function drawGeneratedArtwork(
     ctx.arc(centerX, centerY, Math.max(34, baseRadius * 0.28), Math.PI, Math.PI * 2);
     ctx.fill();
   } else if (artwork.motif === "sunburst") {
-    const centerX = x + width * 0.52;
-    const centerY = y + height * 0.42;
+    const centerX = x + width * (0.45 + random() * 0.14);
+    const centerY = y + height * (0.36 + random() * 0.12);
+    const rotation = random() * Math.PI * 2;
     for (let index = 0; index < 24; index += 1) {
-      const start = (index / 24) * Math.PI * 2;
-      const end = ((index + 1) / 24) * Math.PI * 2;
+      const start = rotation + (index / 24) * Math.PI * 2;
+      const end = rotation + ((index + 1) / 24) * Math.PI * 2;
       ctx.fillStyle = colors[index % colors.length];
       ctx.beginPath();
       ctx.moveTo(centerX, centerY);
@@ -206,12 +207,13 @@ function drawGeneratedArtwork(
   } else if (artwork.motif === "waves") {
     ctx.fillStyle = "#2756c7";
     ctx.fillRect(x, y, width, height);
+    const phase = random() * Math.PI * 2;
     for (let row = 0; row < 8; row += 1) {
       ctx.strokeStyle = colors[row % colors.length];
       ctx.lineWidth = Math.max(14, height / 28);
       ctx.beginPath();
       for (let px = 0; px <= width; px += 8) {
-        const py = y + 60 + row * (height / 9) + Math.sin(px / 34 + row) * 24;
+        const py = y + 60 + row * (height / 9) + Math.sin(px / 34 + row + phase) * 24;
         if (px === 0) ctx.moveTo(x + px, py);
         else ctx.lineTo(x + px, py);
       }
@@ -228,9 +230,10 @@ function drawGeneratedArtwork(
     }
   } else {
     const cell = Math.max(38, Math.floor(Math.min(width, height) / 7));
+    const colorOffset = Math.floor(random() * colors.length);
     for (let py = y; py < y + height; py += cell) {
       for (let px = x; px < x + width; px += cell) {
-        ctx.fillStyle = colors[(Math.floor((px - x) / cell) + Math.floor((py - y) / cell)) % colors.length];
+        ctx.fillStyle = colors[(colorOffset + Math.floor((px - x) / cell) + Math.floor((py - y) / cell)) % colors.length];
         ctx.fillRect(px, py, cell, cell);
       }
     }
@@ -643,6 +646,22 @@ export default function InkStudio() {
     setApp((current) => ({ ...current, scheduleMode }));
   };
 
+  const regeneratePreviewArtwork = () => {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    const seed = (values[0] % 999_999) + 1;
+    setApp((current) => current.spec.artwork
+      ? {
+          ...current,
+          spec: {
+            ...current.spec,
+            artwork: { ...current.spec.artwork, seed },
+          },
+        }
+      : current);
+    showToast("正在按原主题重新生成图片素材", "info");
+  };
+
   const saveApp = async () => {
     const saved = { ...app, id: app.id.startsWith("starter") ? `app-${Date.now()}` : app.id };
     const next = [saved, ...localApps.filter((item) => item.id !== saved.id)].slice(0, 30);
@@ -884,7 +903,18 @@ export default function InkStudio() {
                       </p>
                     </div>
                   </div>
-                  <span className="scale-chip">50%</span>
+                  <div className="preview-actions">
+                    <button
+                      className="regenerate-preview"
+                      type="button"
+                      onClick={regeneratePreviewArtwork}
+                      disabled={!app.spec.artwork || previewStatus === "loading"}
+                      title={app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : "当前应用没有图片素材"}
+                    >
+                      ↻ 重新生成
+                    </button>
+                    <span className="scale-chip">50%</span>
+                  </div>
                 </div>
                 <div className="canvas-stage">
                   <div className="device-shadow" />
