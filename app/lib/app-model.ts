@@ -83,7 +83,7 @@ export const starterApp: InkApp = {
   dailyTime: "08:00",
   isPublic: false,
   author: "我",
-  createdAt: nowIso(),
+  createdAt: "2026-08-01T00:00:00.000Z",
 };
 
 const includesAny = (source: string, terms: string[]) => terms.some((term) => source.includes(term));
@@ -98,7 +98,7 @@ function promptSeed(source: string) {
 }
 
 function inferArtwork(source: string): ArtworkSpec | undefined {
-  const seed = promptSeed(`${source}:${crypto.randomUUID()}`);
+  const seed = promptSeed(source);
   if (includesAny(source, ["美女", "女性", "女孩", "人物时钟"])) {
     const holdingBoard = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
     return {
@@ -154,18 +154,18 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
   return undefined;
 }
 
-export function generateInkApp(prompt: string): InkApp {
+export function generateInkApp(prompt: string, stableId?: string): InkApp {
   const source = prompt.trim() || starterPrompt;
   const promptHour = source.match(/(\d{1,2})\s*[点:时]/)?.[1];
   const artwork = inferArtwork(source);
   const base = {
-    id: `app-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: stableId ?? `app-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     prompt: source,
     customMinutes: 30,
     dailyTime: promptHour ? `${promptHour.padStart(2, "0")}:00` : "08:00",
     isPublic: false,
     author: "我",
-    createdAt: nowIso(),
+    createdAt: stableId ? "2026-08-01T00:00:00.000Z" : nowIso(),
   };
 
   if (includesAny(source, ["时钟", "时间", "几点", "钟表"])) {
@@ -190,7 +190,7 @@ export function generateInkApp(prompt: string): InkApp {
           motif: "sunburst",
           query: "modern clock graphic background",
           layout: "background",
-          seed: promptSeed(`${source}:${crypto.randomUUID()}`),
+          seed: promptSeed(`${source}:clock`),
           rotateOnRefresh: false,
         },
         clock: {
@@ -384,28 +384,28 @@ export function generateInkApp(prompt: string): InkApp {
 
 export const featuredApps: InkApp[] = [
   {
-    ...generateInkApp("显示上海天气和下雨提醒"),
+    ...generateInkApp("显示上海天气和下雨提醒", "featured-weather"),
     id: "featured-weather",
     title: "通勤天气",
     author: "Han",
     isPublic: true,
   },
   {
-    ...generateInkApp("显示产品发布倒计时"),
+    ...generateInkApp("显示产品发布倒计时", "featured-countdown"),
     id: "featured-countdown",
     title: "发布倒计时",
     author: "Jia",
     isPublic: true,
   },
   {
-    ...generateInkApp("显示会议室当前会议"),
+    ...generateInkApp("显示会议室当前会议", "featured-meeting"),
     id: "featured-meeting",
     title: "会议室状态",
     author: "Mori Studio",
     isPublic: true,
   },
   {
-    ...generateInkApp("显示本月销售目标进度"),
+    ...generateInkApp("显示本月销售目标进度", "featured-metric"),
     id: "featured-metric",
     title: "目标进度",
     author: "Lemon",
