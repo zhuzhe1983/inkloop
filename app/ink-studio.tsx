@@ -532,7 +532,7 @@ export default function InkStudio() {
                       ? "正在检查在线编码服务…"
                       : generatorStatus === "online"
                         ? `Tsingfly 在线编码已就绪 · ${generatorModel === "auto" ? "自动选择模型" : generatorModel}`
-                        : "等待配置 TSINGFLY_API_KEY · 当前自动使用本地模板"}
+                        : "等待配置 LLM_API_KEY · 当前自动使用本地模板"}
                   </p>
                 </div>
               </section>

@@ -58,7 +58,7 @@ function normalizeBaseUrl(value?: string) {
 }
 
 function resolveApiKey() {
-  return env.TSINGFLY_API_KEY?.trim() || env.TOKENHUB_API_KEY?.trim() || env.APP_KEY?.trim() || "";
+  return env.LLM_API_KEY?.trim() || "";
 }
 
 function extractJson(content: string) {
@@ -107,7 +107,7 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
 }
 
 async function chooseModel(baseUrl: string, apiKey: string) {
-  if (env.TSINGFLY_MODEL?.trim()) return env.TSINGFLY_MODEL.trim();
+  if (env.LLM_MODEL?.trim()) return env.LLM_MODEL.trim();
   const response = await fetch(`${baseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(10_000),
@@ -124,8 +124,8 @@ export function GET() {
   return Response.json({
     configured: Boolean(resolveApiKey()),
     provider: "Tsingfly Token Hub",
-    endpoint: normalizeBaseUrl(env.TSINGFLY_BASE_URL),
-    model: env.TSINGFLY_MODEL?.trim() || "auto",
+    endpoint: normalizeBaseUrl(env.LLM_BASE_URL),
+    model: env.LLM_MODEL?.trim() || "auto",
   });
 }
 
@@ -142,11 +142,11 @@ export async function POST(request: Request) {
         app: generateInkApp(prompt),
         mode: "local",
         model: null,
-        warning: "尚未配置 TSINGFLY_API_KEY，已使用本地模板引擎。",
+        warning: "尚未配置 LLM_API_KEY，已使用本地模板引擎。",
       });
     }
 
-    const baseUrl = normalizeBaseUrl(env.TSINGFLY_BASE_URL);
+    const baseUrl = normalizeBaseUrl(env.LLM_BASE_URL);
     const model = await chooseModel(baseUrl, apiKey);
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
