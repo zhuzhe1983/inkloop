@@ -13,6 +13,16 @@ export const TODOO_PROTOCOL = {
   packetCount: 913,
 } as const;
 
+const TODOO_DEVICE_NAMES = ["NEMR99803797", "PICKSMART"] as const;
+
+function isTodooDeviceName(name?: string) {
+  return Boolean(
+    name &&
+      (name.startsWith("NEMR") ||
+        TODOO_DEVICE_NAMES.includes(name as (typeof TODOO_DEVICE_NAMES)[number])),
+  );
+}
+
 type ValueEvent = Event & { target: EventTarget & { value?: DataView } };
 
 type CharacteristicLike = EventTarget & {
@@ -109,7 +119,7 @@ export class TodooCard {
   async restoreAuthorizedDevice() {
     if (!this.bluetooth?.getDevices) return null;
     const devices = await this.bluetooth.getDevices();
-    const remembered = devices.find((device) => device.name?.startsWith("NEMR"));
+    const remembered = devices.find((device) => isTodooDeviceName(device.name));
     if (remembered) this.useDevice(remembered);
     return remembered ?? null;
   }
@@ -120,6 +130,7 @@ export class TodooCard {
       filters: [
         { name: "NEMR99803797" },
         { namePrefix: "NEMR", services: [TODOO_PROTOCOL.service] },
+        { name: "PICKSMART" },
       ],
       optionalServices: [TODOO_PROTOCOL.service],
     });
@@ -138,7 +149,7 @@ export class TodooCard {
   async connect() {
     if (!this.device?.gatt) throw new Error("请先选择 TodooCard 设备");
     if (this.device.gatt.connected && this.control && this.data) return;
-    this.emit("connecting", 4, "正在连接 NEMR 设备…");
+    this.emit("connecting", 4, `正在连接 ${this.device.name ?? "TodooCard"}…`);
     const server = await this.device.gatt.connect();
     const service = await server.getPrimaryService(TODOO_PROTOCOL.service);
     this.control = await service.getCharacteristic(TODOO_PROTOCOL.control);

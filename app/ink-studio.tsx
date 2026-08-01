@@ -722,7 +722,7 @@ export default function InkStudio() {
               <div className="connection-card">
                 <span className={`status-orb ${deviceName ? "connected" : ""}`}>⌁</span>
                 <strong>{deviceName ?? "TodooCard 未连接"}</strong>
-                <small>{deviceName ? "授权已保存 · 等待写入" : "NEMR99803797 · 528 × 792"}</small>
+                <small>{deviceName ? "授权已保存 · 等待写入" : "NEMR99803797 / PICKSMART · 528 × 792"}</small>
                 <button type="button" onClick={start}>{deviceName ? "测试写入" : "选择设备"}</button>
               </div>
             </div>
