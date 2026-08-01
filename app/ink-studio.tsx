@@ -891,8 +891,9 @@ function AppCard({ app, onUse, local }: { app: InkApp; onUse: () => void; local?
         </div>
         <h3>{app.title}</h3>
         <p>{app.description}</p>
-        <button type="button" onClick={onUse}>
-          使用此应用 <span>→</span>
+        <button type="button" onClick={onUse} aria-label={`立即使用${app.title}`}>
+          <span className="app-card-cta-label"><i>✦</i> 立即使用此应用</span>
+          <span className="app-card-cta-arrow" aria-hidden="true">→</span>
         </button>
       </div>
     </article>

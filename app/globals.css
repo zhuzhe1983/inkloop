@@ -1300,16 +1300,57 @@ input:focus-visible {
 
 .app-card-copy button {
   margin-top: auto;
-  padding: 11px 0 3px;
-  border: 0;
-  border-top: 1px solid var(--line);
+  min-height: 48px;
+  padding: 0 8px 0 15px;
+  border: 1px solid var(--ink);
+  border-radius: 9px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  background: transparent;
+  gap: 12px;
+  background: var(--lime);
   color: var(--ink);
-  font-size: 10px;
+  box-shadow: 3px 3px 0 var(--ink);
+  font-size: 12px;
   font-weight: 900;
   cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.app-card-cta-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.app-card-cta-label i {
+  font-size: 12px;
+  font-style: normal;
+}
+
+.app-card-cta-arrow {
+  width: 31px;
+  height: 31px;
+  flex: none;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: var(--lime);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.app-card:hover .app-card-copy button,
+.app-card-copy button:hover {
+  background: #d5ff35;
+  box-shadow: 5px 5px 0 var(--ink);
+  transform: translate(-2px, -2px);
+}
+
+.app-card-copy button:active {
+  box-shadow: 1px 1px 0 var(--ink);
+  transform: translate(1px, 1px);
 }
 
 .empty-state {
