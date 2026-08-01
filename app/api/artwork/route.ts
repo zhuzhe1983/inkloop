@@ -10,6 +10,14 @@ function cleanQuery(value: string | null) {
     .trim() || "colorful editorial illustration";
 }
 
+function cleanStyle(value: string | null) {
+  return (value || "editorial high contrast composition")
+    .slice(0, 80)
+    .replace(/[^a-zA-Z0-9\s,-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || "editorial high contrast composition";
+}
+
 function cleanSeed(value: string | null) {
   const seed = Number.parseInt(value || "1", 10);
   return Number.isFinite(seed) ? Math.max(1, Math.min(999_999_999, seed)) : 1;
@@ -33,8 +41,9 @@ async function fetchImage(url: string) {
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = cleanQuery(url.searchParams.get("query"));
+  const style = cleanStyle(url.searchParams.get("style"));
   const seed = cleanSeed(url.searchParams.get("seed"));
-  const keywords = query.split(/[\s,]+/).filter(Boolean).slice(0, 6).join(",");
+  const keywords = `${query} ${style}`.split(/[\s,]+/).filter(Boolean).slice(0, 10).join(",");
   const providers = [
     `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(keywords)}?lock=${seed}`,
     `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`,

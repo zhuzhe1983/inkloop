@@ -248,6 +248,7 @@ const ePaperPalette = [
 function artworkUrl(artwork: ArtworkSpec) {
   const params = new URLSearchParams({
     query: artwork.query,
+    style: artwork.style || "editorial high contrast composition",
     seed: String(artwork.seed),
   });
   return `/api/artwork?${params.toString()}`;

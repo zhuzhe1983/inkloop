@@ -6,6 +6,7 @@ export type ArtworkSpec = {
   mode: "generated" | "web";
   motif: "rainbow" | "sunburst" | "confetti" | "waves" | "grid";
   query: string;
+  style?: string;
   layout: "background" | "hero" | "fullscreen";
   seed: number;
   rotateOnRefresh?: boolean;
@@ -122,16 +123,28 @@ function wantsBackgroundArtwork(source: string) {
   return includesAny(source, ["背景", "背景图", "做背景", "作为背景"]);
 }
 
+function inferArtworkStyle(source: string) {
+  if (includesAny(source, ["复古", "胶片", "怀旧"])) return "vintage film editorial";
+  if (includesAny(source, ["日系", "清新", "治愈"])) return "airy Japanese editorial";
+  if (includesAny(source, ["电影感", "光影", "戏剧感"])) return "cinematic dramatic lighting";
+  if (includesAny(source, ["极简", "简约", "留白"])) return "minimal clean composition";
+  if (includesAny(source, ["手绘", "水彩", "插画"])) return "bold editorial illustration";
+  if (includesAny(source, ["时尚", "穿搭", "OOTD", "ootd"])) return "fashion editorial photography";
+  return "editorial high contrast composition";
+}
+
 function inferArtwork(source: string): ArtworkSpec | undefined {
   const seed = promptSeed(source);
   const fullscreen = wantsFullscreenArtwork(source);
   const background = wantsBackgroundArtwork(source);
+  const style = inferArtworkStyle(source);
   const rotateOnRefresh = includesAny(source, ["随机", "每次换", "换一张", "轮换"]);
   if (includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])) {
     return {
       mode: "web",
       motif: "grid",
       query: "cute cat portrait photography",
+      style,
       layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
       seed,
       rotateOnRefresh,
@@ -142,6 +155,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "web",
       motif: "grid",
       query: "cute pet portrait photography",
+      style,
       layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
       seed,
       rotateOnRefresh,
@@ -155,6 +169,9 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       query: holdingBoard
         ? "fashion woman portrait"
         : "woman fashion editorial",
+      style: includesAny(source, ["复古", "胶片", "日系", "电影感", "极简"])
+        ? style
+        : "fashion editorial studio lighting",
       layout: "background",
       seed,
       rotateOnRefresh: true,
@@ -165,6 +182,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "generated",
       motif: "rainbow",
       query: "abstract rainbow colorful background",
+      style,
       layout: "background",
       seed,
     };
@@ -174,6 +192,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "generated",
       motif: "confetti",
       query: "celebration confetti illustration",
+      style,
       layout: "background",
       seed,
     };
@@ -183,6 +202,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "generated",
       motif: "sunburst",
       query: "sunburst graphic background",
+      style,
       layout: "background",
       seed,
     };
@@ -201,6 +221,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "web",
       motif: "grid",
       query,
+      style,
       layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
       seed,
       rotateOnRefresh,
@@ -272,6 +293,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
           mode: "generated",
           motif: "sunburst",
           query: "modern clock graphic background",
+          style: "minimal high contrast graphic poster",
           layout: "background",
           seed: promptSeed(`${source}:clock`),
           rotateOnRefresh: false,
@@ -312,6 +334,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
           mode: "generated",
           motif: "confetti",
           query: "colorful encouragement celebration",
+          style: "bold editorial poster",
           layout: "background",
           seed: promptSeed(source),
         },

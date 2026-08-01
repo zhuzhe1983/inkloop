@@ -37,7 +37,7 @@ const ALLOWED_CLOCK_FONTS = new Set<ClockSpec["font"]>([
   "random",
 ]);
 
-const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根据用户需求生成一个 TodooCard 应用。
+const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同时也是视觉造型师和美术指导。根据用户需求生成一个 TodooCard 应用。
 
 只返回一个 JSON 对象，不要 Markdown，不要解释。JSON 结构必须是：
 {
@@ -56,7 +56,8 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
     "artwork": {
       "mode": "none|generated|web",
       "motif": "rainbow|sunburst|confetti|waves|grid",
-      "query": "用于联网找图的简短英文关键词",
+      "query": "用于联网找图的主体英文关键词",
+      "style": "用于控制视觉风格的2—5个英文关键词",
       "layout": "background|hero|fullscreen",
       "rotateOnRefresh": false
     },
@@ -80,13 +81,14 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
 5. 不编造真实个人数据；示例值应明显是合理预览。
 6. 用户要求图片、照片、背景、插画或明显视觉主题时，artwork.mode 不能是 none。
 7. 彩虹、放射、彩纸、波浪、网格等抽象图形使用 generated 并选择最接近的 motif；人物、城市、产品、动物、自然等真实题材使用 web。
-8. web 的 query 必须是 2—6 个具体英文关键词，准确概括用户要求的主体、场景和风格。例如 OOTD 可写为 "outfit of the day street style"，不要只写 image、random、beautiful 等泛词。
+8. web 的 query 必须是 2—6 个具体英文关键词，准确概括用户要求的主体和场景；视觉风格单独写入 style。例如 OOTD 的 query 可写为 "outfit of the day"，style 写为 "street style editorial photography"，不要只写 image、random、beautiful 等泛词。
 9. 不返回图片 URL；系统会用 query 从主题图库随机取图并缓存素材。
 10. 文本字段只允许这些运行时变量：{{date}}、{{year}}、{{month}}、{{day}}、{{weekday}}、{{hour}}、{{minute}}、{{time}}。禁止输出 {{weather.*}}、{{#if}} 或其他模板语法；天气数据由系统根据 city 自动注入，spec 中填写清晰的预览文案。
 11. 用户要求时钟时，clock.enabled=true；board 表示是否在画板中显示时间；不同字体或每页换字体使用 font=random。刷新计划用 custom，最小 customMinutes=1。
 12. 用户要求每次换背景时，artwork.rotateOnRefresh=true。女性人物主题使用 woman 而不是 girl，禁止生成或搜索未成年人；画板由 clock.board 控制，不要求照片本身带画板。
 13. 用户明确要求“全屏图片、不要文字、不要其他内容”时，artwork.layout=fullscreen；此模式不会绘制任何标题、边框、页脚或信息卡。
-14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。`;
+14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。
+15. 每张背景图都必须填写 artwork.style。优先遵循用户点名的风格；未指定时，像专业 stylist 一样选择适合主题的 editorial、cinematic、minimal、vintage、fashion 或 illustration 风格，并强调主体清晰、高对比、构图简洁，适合六色墨水屏。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -168,6 +170,13 @@ function normalizeArtwork(
   if (!ALLOWED_ARTWORK_MODES.has(mode) || mode === "none") return fallback;
   const rawQuery = trimText(candidate.query, fallback?.query || "colorful editorial illustration", 100);
   const query = rawQuery.replace(/[^a-zA-Z0-9\s,-]/g, " ").replace(/\s+/g, " ").trim();
+  const rawStyle = trimText(
+    candidate.style,
+    fallback?.style || "editorial high contrast composition",
+    80,
+  );
+  const style = rawStyle.replace(/[^a-zA-Z0-9\s,-]/g, " ").replace(/\s+/g, " ").trim()
+    || "editorial high contrast composition";
   const requestedMotif = candidate.motif as ArtworkSpec["motif"];
   const motif = ALLOWED_ARTWORK_MOTIFS.has(requestedMotif)
     ? requestedMotif
@@ -181,6 +190,7 @@ function normalizeArtwork(
     mode: promptRequestsCat ? "web" : mode,
     motif,
     query: normalizedQuery,
+    style,
     layout: wantsFullscreenArtwork(prompt)
       ? "fullscreen"
       : wantsBackgroundArtwork(prompt)
@@ -188,7 +198,7 @@ function normalizeArtwork(
         : ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout)
           ? requestedLayout
           : fallback?.layout ?? "background",
-    seed: stableSeed(`${prompt}:${normalizedQuery}:${motif}:${crypto.randomUUID()}`),
+    seed: stableSeed(`${prompt}:${normalizedQuery}:${style}:${motif}:${crypto.randomUUID()}`),
     rotateOnRefresh: candidate.rotateOnRefresh === true
       || fallback?.rotateOnRefresh === true
       || /随机|每次换|换一张|轮换/.test(prompt),
