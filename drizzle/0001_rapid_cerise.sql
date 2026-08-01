@@ -1,0 +1,1 @@
+CREATE INDEX `idx_public_apps_created_at` ON `public_apps` (`created_at`);
