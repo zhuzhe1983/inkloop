@@ -294,22 +294,6 @@ async function prepareLocalImage(file: File) {
   return canvas.toDataURL("image/jpeg", 0.78);
 }
 
-function drawImageContain(
-  ctx: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  ctx.fillStyle = "#f4f0dc";
-  ctx.fillRect(x, y, width, height);
-  ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
-}
-
 function drawImageCover(
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement,
@@ -629,28 +613,26 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       }
     : undefined);
   if (artwork) {
-    const area = artwork.layout === "fullscreen"
+    const area = artwork.layout === "fullscreen" || artwork.layout === "background"
       ? { x: 0, y: 0, width, height }
       : artwork.layout === "hero"
       ? { x: 48, y: 132, width: 432, height: 314 }
-      : { x: 22, y: 22, width: width - 44, height: height - 44 };
+      : { x: 0, y: 0, width, height };
     try {
       if (localImage || artwork.mode === "web") {
         const image = await loadArtwork(localImage || artworkUrl(artwork));
-        if (artwork.layout === "fullscreen") {
-          drawImageCover(ctx, image, area.x, area.y, area.width, area.height);
-        } else {
-          drawImageContain(ctx, image, area.x, area.y, area.width, area.height);
-        }
+        drawImageCover(ctx, image, area.x, area.y, area.width, area.height);
         quantizeRegion(ctx, area.x, area.y, area.width, area.height);
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
       if (artwork.layout === "fullscreen") return true;
       drawArtworkCopy(ctx, spec, accent, artwork.layout);
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(22, 22, width - 44, height - 44);
+      if (artwork.layout === "hero") {
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(22, 22, width - 44, height - 44);
+      }
       return true;
     } catch {
       ctx.clearRect(0, 0, width, height);

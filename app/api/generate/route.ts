@@ -85,7 +85,8 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手。根
 10. 文本字段只允许这些运行时变量：{{date}}、{{year}}、{{month}}、{{day}}、{{weekday}}、{{hour}}、{{minute}}、{{time}}。禁止输出 {{weather.*}}、{{#if}} 或其他模板语法；天气数据由系统根据 city 自动注入，spec 中填写清晰的预览文案。
 11. 用户要求时钟时，clock.enabled=true；board 表示是否在画板中显示时间；不同字体或每页换字体使用 font=random。刷新计划用 custom，最小 customMinutes=1。
 12. 用户要求每次换背景时，artwork.rotateOnRefresh=true。女性人物主题使用 woman 而不是 girl，禁止生成或搜索未成年人；画板由 clock.board 控制，不要求照片本身带画板。
-13. 用户明确要求“全屏图片、不要文字、不要其他内容”时，artwork.layout=fullscreen；此模式不会绘制任何标题、边框、页脚或信息卡。`;
+13. 用户明确要求“全屏图片、不要文字、不要其他内容”时，artwork.layout=fullscreen；此模式不会绘制任何标题、边框、页脚或信息卡。
+14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -109,6 +110,10 @@ function screenText(value: unknown, fallback: string, max: number) {
 function wantsFullscreenArtwork(prompt: string) {
   return ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
     && ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"].some((term) => prompt.includes(term));
+}
+
+function wantsBackgroundArtwork(prompt: string) {
+  return ["背景", "背景图", "做背景", "作为背景"].some((term) => prompt.includes(term));
 }
 
 function resolveSchedule(prompt: string, fallback: InkApp, rawMinutes: number, rawTime: string) {
@@ -178,9 +183,11 @@ function normalizeArtwork(
     query: normalizedQuery,
     layout: wantsFullscreenArtwork(prompt)
       ? "fullscreen"
-      : ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout)
-        ? requestedLayout
-        : fallback?.layout ?? "background",
+      : wantsBackgroundArtwork(prompt)
+        ? "background"
+        : ALLOWED_ARTWORK_LAYOUTS.has(requestedLayout)
+          ? requestedLayout
+          : fallback?.layout ?? "background",
     seed: stableSeed(`${prompt}:${normalizedQuery}:${motif}:${crypto.randomUUID()}`),
     rotateOnRefresh: candidate.rotateOnRefresh === true
       || fallback?.rotateOnRefresh === true

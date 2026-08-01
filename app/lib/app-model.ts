@@ -118,16 +118,21 @@ function wantsFullscreenArtwork(source: string) {
     && includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]);
 }
 
+function wantsBackgroundArtwork(source: string) {
+  return includesAny(source, ["背景", "背景图", "做背景", "作为背景"]);
+}
+
 function inferArtwork(source: string): ArtworkSpec | undefined {
   const seed = promptSeed(source);
   const fullscreen = wantsFullscreenArtwork(source);
+  const background = wantsBackgroundArtwork(source);
   const rotateOnRefresh = includesAny(source, ["随机", "每次换", "换一张", "轮换"]);
   if (includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])) {
     return {
       mode: "web",
       motif: "grid",
       query: "cute cat portrait photography",
-      layout: fullscreen ? "fullscreen" : "hero",
+      layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
       seed,
       rotateOnRefresh,
     };
@@ -137,7 +142,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "web",
       motif: "grid",
       query: "cute pet portrait photography",
-      layout: fullscreen ? "fullscreen" : "hero",
+      layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
       seed,
       rotateOnRefresh,
     };
@@ -196,7 +201,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       mode: "web",
       motif: "grid",
       query,
-      layout: fullscreen ? "fullscreen" : "hero",
+      layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
       seed,
       rotateOnRefresh,
     };
