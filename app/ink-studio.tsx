@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties } from "react";
 import {
   featuredApps,
   generateInkApp,
@@ -38,6 +38,33 @@ const samplePrompts = [
   "美女时钟，每分钟换背景和字体",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
+];
+
+const guideExamples = [
+  {
+    level: "入门",
+    number: "01",
+    title: "贴图片或文字，帮我排版",
+    description: "直接粘贴一张图片和要显示的文字，或点“选择图片”。生成器会把内容整理成适合六色墨水屏的版面。",
+    prompt: "请用我贴入的图片做背景，把标题「今天也要开心」和小字「一步一步，慢慢来」排成简洁海报。",
+    action: "套用排版示例",
+  },
+  {
+    level: "进阶",
+    number: "02",
+    title: "让 LLM 生成主题随机内容",
+    description: "只要说清主题、语气和用途，LLM 会生成文案、业务逻辑与配图关键词；预览不满意可继续换一张。",
+    prompt: "生成一张露营主题的每日鼓励卡，每次刷新换一张自然风景，文案简短、有户外杂志感。",
+    action: "套用主题示例",
+  },
+  {
+    level: "高级",
+    number: "03",
+    title: "做会自动更新的屏幕",
+    description: "例如美女时钟每分钟换背景和字体，或每天早上更新指定城市的天气，再选择对应的刷新计划。",
+    prompt: "美女时钟，每分钟更新日期和时间、换一张时尚人像背景并随机字体，时间放在白色画板里。",
+    action: "套用时钟示例",
+  },
 ];
 
 const accentColors = {
@@ -157,6 +184,30 @@ function loadArtwork(url: string) {
     };
     image.src = url;
   });
+}
+
+async function prepareLocalImage(file: File) {
+  if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
+  if (file.size > 15 * 1024 * 1024) throw new Error("图片请控制在 15MB 以内");
+  const source = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.readAsDataURL(file);
+  });
+  const image = await loadArtwork(source);
+  const canvas = document.createElement("canvas");
+  canvas.width = 528;
+  canvas.height = 792;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("浏览器无法处理这张图片");
+  context.fillStyle = "#f4f0dc";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
+  const width = image.naturalWidth * scale;
+  const height = image.naturalHeight * scale;
+  context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+  return canvas.toDataURL("image/jpeg", 0.78);
 }
 
 function drawImageContain(
@@ -458,7 +509,7 @@ function drawArtworkCopy(
   ctx.textAlign = "left";
 }
 
-async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
+async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
   const width = 528;
@@ -470,19 +521,28 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, width, height);
-  if (spec.artwork) {
-    const area = spec.artwork.layout === "hero"
+  const artwork = spec.artwork ?? (localImage
+    ? {
+        mode: "web" as const,
+        motif: "grid" as const,
+        query: "local image",
+        layout: "background" as const,
+        seed: 1,
+      }
+    : undefined);
+  if (artwork) {
+    const area = artwork.layout === "hero"
       ? { x: 48, y: 132, width: 432, height: 314 }
       : { x: 22, y: 22, width: width - 44, height: height - 44 };
     try {
-      if (spec.artwork.mode === "web") {
-        const image = await loadArtwork(artworkUrl(spec.artwork));
+      if (localImage || artwork.mode === "web") {
+        const image = await loadArtwork(localImage || artworkUrl(artwork));
         drawImageContain(ctx, image, area.x, area.y, area.width, area.height);
         quantizeRegion(ctx, area.x, area.y, area.width, area.height);
       } else {
-        drawGeneratedArtwork(ctx, spec.artwork, area.x, area.y, area.width, area.height);
+        drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
-      drawArtworkCopy(ctx, spec, accent, spec.artwork.layout);
+      drawArtworkCopy(ctx, spec, accent, artwork.layout);
       ctx.strokeStyle = ink;
       ctx.lineWidth = 3;
       ctx.strokeRect(22, 22, width - 44, height - 44);
@@ -592,11 +652,11 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec) {
   return false;
 }
 
-async function renderScreenToCanvas(canvas: HTMLCanvasElement, spec: ScreenSpec) {
+async function renderScreenToCanvas(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
   const staging = document.createElement("canvas");
   staging.width = 528;
   staging.height = 792;
-  const usedArtwork = await drawScreen(staging, spec);
+  const usedArtwork = await drawScreen(staging, spec, localImage);
   const context = canvas.getContext("2d");
   if (!context) return usedArtwork;
   context.clearRect(0, 0, canvas.width, canvas.height);
@@ -666,6 +726,7 @@ export default function InkStudio() {
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
   const [clockTick, setClockTick] = useState(0);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"idle" | "ready" | "writing" | "scheduled" | "error">("idle");
@@ -674,6 +735,7 @@ export default function InkStudio() {
   const [nextRun, setNextRun] = useState<Date | null>(null);
   const [bluetoothSupported, setBluetoothSupported] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const previewVersionRef = useRef(0);
   const driverRef = useRef<TodooCard | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -691,6 +753,20 @@ export default function InkStudio() {
       localStorage.removeItem(LOCAL_APPS_KEY);
     }
   }, []);
+
+  useEffect(() => {
+    if (!guideOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setGuideOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [guideOpen]);
 
   useEffect(() => {
     fetch("/api/generate")
@@ -755,16 +831,40 @@ export default function InkStudio() {
     const staging = document.createElement("canvas");
     staging.width = 528;
     staging.height = 792;
-    setPreviewStatus(app.spec.artwork ? "loading" : "ready");
-    drawScreen(staging, resolveTimeVariables(app.spec, new Date())).then((usedArtwork) => {
+    const hasArtwork = Boolean(app.spec.artwork || app.localImage);
+    setPreviewStatus(hasArtwork ? "loading" : "ready");
+    drawScreen(staging, resolveTimeVariables(app.spec, new Date()), app.localImage).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
       const context = canvas.getContext("2d");
       if (!context) return;
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.drawImage(staging, 0, 0);
-      setPreviewStatus(app.spec.artwork && !usedArtwork ? "fallback" : "ready");
+      setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
     });
-  }, [app.spec, clockTick]);
+  }, [app.spec, app.localImage, clockTick]);
+
+  const attachLocalImage = async (file?: File) => {
+    if (!file) return;
+    try {
+      const localImage = await prepareLocalImage(file);
+      setApp((current) => ({ ...current, localImage }));
+      showToast("图片已贴入，生成后会自动参与排版", "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "图片处理失败", "error");
+    }
+  };
+
+  const handlePromptPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith("image/"));
+    if (imageItem) void attachLocalImage(imageItem.getAsFile() ?? undefined);
+  };
+
+  const applyGuideExample = (value: string) => {
+    setPrompt(value);
+    setTab("studio");
+    setGuideOpen(false);
+    window.setTimeout(() => document.getElementById("app-prompt")?.focus(), 0);
+  };
 
   const generate = async () => {
     if (!prompt.trim()) {
@@ -786,7 +886,7 @@ export default function InkStudio() {
         warning?: string;
       };
       if (!result.app) throw new Error("生成结果不完整");
-      setApp(result.app);
+      setApp({ ...result.app, localImage: app.localImage });
       if (result.mode === "llm") {
         setGeneratorStatus("online");
         setGeneratorModel(result.model || "auto");
@@ -796,7 +896,7 @@ export default function InkStudio() {
         showToast(result.warning || "已使用本地模板生成", "info");
       }
     } catch (error) {
-      setApp(generateInkApp(prompt));
+      setApp({ ...generateInkApp(prompt), localImage: app.localImage });
       setGeneratorStatus("local");
       showToast(error instanceof Error ? `${error.message}，已使用本地模板` : "已使用本地模板", "info");
     } finally {
@@ -831,10 +931,11 @@ export default function InkStudio() {
 
     if (saved.isPublic) {
       try {
+        const publicPayload = { ...saved, localImage: undefined };
         const response = await fetch("/api/apps", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(saved),
+          body: JSON.stringify(publicPayload),
         });
         if (!response.ok) throw new Error("publish failed");
         const data = (await response.json()) as { app: InkApp };
@@ -904,9 +1005,10 @@ export default function InkStudio() {
           artwork: { ...runtimeSpec.artwork, seed: nextSeed },
         };
       }
-      setPreviewStatus(runtimeSpec.artwork ? "loading" : "ready");
-      const usedArtwork = await renderScreenToCanvas(canvas, runtimeSpec);
-      setPreviewStatus(runtimeSpec.artwork && !usedArtwork ? "fallback" : "ready");
+      const hasArtwork = Boolean(runtimeSpec.artwork || app.localImage);
+      setPreviewStatus(hasArtwork ? "loading" : "ready");
+      const usedArtwork = await renderScreenToCanvas(canvas, runtimeSpec, app.localImage);
+      setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       await driver.writeCanvas(canvas, true);
       if (nextSeed !== null) {
         setApp((current) => current.spec.artwork
@@ -928,7 +1030,7 @@ export default function InkStudio() {
       showToast(message, "error");
       return false;
     }
-  }, [app.spec, previewStatus, showToast]);
+  }, [app.localImage, app.spec, previewStatus, showToast]);
 
   const scheduleFollowingRun = useCallback(() => {
     const delay = calculateNextDelay(app);
@@ -1012,6 +1114,9 @@ export default function InkStudio() {
             <strong>{contentTitle ?? app.title}</strong>
           </div>
           <div className="topbar-actions">
+            <button type="button" className="guide-button" onClick={() => setGuideOpen(true)}>
+              <span>?</span> 使用说明
+            </button>
             <span className={`support-chip ${bluetoothSupported ? "ok" : "warn"}`}>
               <i /> {bluetoothSupported ? "蓝牙可用" : "请使用 Chromium"}
             </span>
@@ -1040,10 +1145,38 @@ export default function InkStudio() {
                     id="app-prompt"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
+                    onPaste={handlePromptPaste}
                     placeholder="例如：每天早上 8 点显示上海天气…"
                     rows={7}
                   />
                   <div className="prompt-counter">{prompt.length} / 300</div>
+                </div>
+                <div className="prompt-attachment">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => {
+                      void attachLocalImage(event.target.files?.[0]);
+                      event.target.value = "";
+                    }}
+                  />
+                  {app.localImage ? (
+                    <div className="attached-image">
+                      <span
+                        className="attached-image-thumb"
+                        role="img"
+                        aria-label="已贴入的图片缩略图"
+                        style={{ backgroundImage: `url(${app.localImage})` }}
+                      />
+                      <span className="attached-image-copy"><strong>图片已贴入</strong><small>将转换成六色参与排版</small></span>
+                      <button type="button" onClick={() => setApp((current) => ({ ...current, localImage: undefined }))}>移除</button>
+                    </div>
+                  ) : (
+                    <button type="button" className="attach-button" onClick={() => fileInputRef.current?.click()}>
+                      <span>＋</span> 选择图片 <small>也可直接粘贴</small>
+                    </button>
+                  )}
                 </div>
                 <div className="suggestions">
                   <span>试试这些</span>
@@ -1080,8 +1213,10 @@ export default function InkStudio() {
                           ? "正在获取并转换图片素材"
                           : previewStatus === "fallback"
                             ? "素材暂不可用，已使用图形排版"
-                            : app.spec.artwork
-                              ? "图片已转换为实际六色"
+                            : app.localImage
+                              ? "本机图片已转换为实际六色"
+                              : app.spec.artwork
+                                ? "图片已转换为实际六色"
                               : "实际六色色板"}
                       </p>
                     </div>
@@ -1091,8 +1226,8 @@ export default function InkStudio() {
                       className="regenerate-preview"
                       type="button"
                       onClick={regeneratePreviewArtwork}
-                      disabled={!app.spec.artwork || previewStatus === "loading"}
-                      title={app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : "当前应用没有图片素材"}
+                      disabled={!app.spec.artwork || Boolean(app.localImage) || previewStatus === "loading"}
+                      title={app.localImage ? "当前使用的是你贴入的图片" : app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : "当前应用没有图片素材"}
                     >
                       ↻ 重新生成
                     </button>
@@ -1311,6 +1446,45 @@ export default function InkStudio() {
           </section>
         )}
       </section>
+
+      {guideOpen && (
+        <div className="guide-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setGuideOpen(false);
+        }}>
+          <section className="guide-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+            <div className="guide-header">
+              <div>
+                <span className="eyebrow">FROM FIRST SCREEN TO AUTOMATION</span>
+                <h2 id="guide-title">三步用好 Inkloop</h2>
+                <p>先做一张满意的画面，再保存应用、选择刷新时间，最后写入屏幕。</p>
+              </div>
+              <button type="button" className="guide-close" onClick={() => setGuideOpen(false)} aria-label="关闭使用说明">×</button>
+            </div>
+
+            <div className="guide-levels">
+              {guideExamples.map((item) => (
+                <article key={item.number} className="guide-level">
+                  <div className="guide-level-top"><span>{item.number}</span><i>{item.level}</i></div>
+                  <h3>{item.title}</h3>
+                  <p>{item.description}</p>
+                  <button type="button" onClick={() => applyGuideExample(item.prompt)}>{item.action} <span>→</span></button>
+                </article>
+              ))}
+            </div>
+
+            <div className="bluetooth-guide">
+              <div className="bluetooth-guide-icon">⌁</div>
+              <div>
+                <strong>写入前，把设备放在电脑附近</strong>
+                <p>建议保持在 1–3 米蓝牙范围内并唤醒屏幕。首次点击“开始写入”后选择 PICKSMART；之后保持这个页面打开、电脑不要休眠，就能按计划自动重连。</p>
+              </div>
+              <button type="button" onClick={() => { setGuideOpen(false); setTab("device"); }}>查看设备说明</button>
+            </div>
+
+            <p className="guide-footnote">本机图片随应用保存在当前浏览器；公开分享时不会上传你的私人图片，而会保留可复用的版式和主题。</p>
+          </section>
+        </div>
+      )}
 
       {toast && <div className={`toast ${toast.tone}`} role="status"><span>{toast.tone === "success" ? "✓" : toast.tone === "error" ? "!" : "i"}</span>{toast.message}</div>}
     </main>

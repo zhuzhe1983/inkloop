@@ -43,6 +43,7 @@ export type InkApp = {
   isPublic: boolean;
   author: string;
   createdAt: string;
+  localImage?: string;
 };
 
 const nowIso = () => new Date().toISOString();
