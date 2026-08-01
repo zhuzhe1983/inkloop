@@ -164,7 +164,12 @@ type WeatherPayload = {
 
 async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promise<ScreenSpec> {
   const resolved = resolveTimeVariables(currentApp.spec, now);
-  if (resolved.kind !== "weather") return resolved;
+  const weatherRequested = /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(currentApp.prompt);
+  if (
+    resolved.kind !== "weather"
+    || !weatherRequested
+    || resolved.artwork?.layout === "fullscreen"
+  ) return resolved;
   const city = resolved.city || inferWeatherCity(currentApp.prompt);
   try {
     const response = await fetch(`/api/weather?city=${encodeURIComponent(city)}`, { cache: "no-store" });

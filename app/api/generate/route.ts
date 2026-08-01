@@ -88,7 +88,8 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 12. 用户要求每次换背景时，artwork.rotateOnRefresh=true。女性人物主题使用 woman 而不是 girl，禁止生成或搜索未成年人；画板由 clock.board 控制，不要求照片本身带画板。
 13. 用户明确要求“全屏图片、不要文字、不要其他内容”时，artwork.layout=fullscreen；此模式不会绘制任何标题、边框、页脚或信息卡。
 14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。
-15. 每张背景图都必须填写 artwork.style。优先遵循用户点名的风格；未指定时，像专业 stylist 一样选择适合主题的 editorial、cinematic、minimal、vintage、fashion 或 illustration 风格，并强调主体清晰、高对比、构图简洁，适合六色墨水屏。`;
+15. 每张背景图都必须填写 artwork.style。优先遵循用户点名的风格；未指定时，像专业 stylist 一样选择适合主题的 editorial、cinematic、minimal、vintage、fashion 或 illustration 风格，并强调主体清晰、高对比、构图简洁，适合六色墨水屏。
+16. 只有用户需求明确包含天气、气温、温度、下雨、降雨或通勤信息时，spec.kind 才能使用 weather；海报、图片、时钟等其他需求不得使用 weather。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -116,6 +117,10 @@ function wantsFullscreenArtwork(prompt: string) {
 
 function wantsBackgroundArtwork(prompt: string) {
   return ["背景", "背景图", "做背景", "作为背景"].some((term) => prompt.includes(term));
+}
+
+function wantsWeather(prompt: string) {
+  return /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(prompt);
 }
 
 function resolveSchedule(prompt: string, fallback: InkApp, rawMinutes: number, rawTime: string) {
@@ -244,7 +249,11 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
   const rawMinutes = Number(value.customMinutes);
   const rawTime = typeof value.dailyTime === "string" ? value.dailyTime : "";
   const schedule = resolveSchedule(prompt, fallback, rawMinutes, rawTime);
-  const normalizedKind = ALLOWED_KINDS.has(candidateKind) ? candidateKind : fallback.spec.kind;
+  const normalizedKind = wantsWeather(prompt)
+    ? "weather"
+    : ALLOWED_KINDS.has(candidateKind) && candidateKind !== "weather"
+      ? candidateKind
+      : fallback.spec.kind;
 
   return {
     ...fallback,
