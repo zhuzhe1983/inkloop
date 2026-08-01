@@ -5,6 +5,8 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 type CommonsResponse = {
   query?: {
     pages?: Array<{
+      title?: string;
+      index?: number;
       imageinfo?: Array<{
         thumburl?: string;
         url?: string;
@@ -55,11 +57,21 @@ async function fetchImage(url: string) {
 }
 
 async function fetchCommonsImage(query: string, seed: number) {
+  const ignoredTokens = new Set([
+    "photo", "photography", "portrait", "image", "movie", "cinematic", "editorial",
+    "high", "contrast", "composition", "background", "superhero",
+  ]);
+  const subjectTokens = query.toLowerCase().split(/[^a-z0-9-]+/)
+    .filter((token) => token.length >= 3 && !ignoredTokens.has(token) && token !== "poster");
+  const searchQuery = [
+    subjectTokens.slice(0, 4).join(" ") || query,
+    query.toLowerCase().includes("poster") ? "poster" : "",
+  ].filter(Boolean).join(" ");
   const apiUrl = new URL("https://commons.wikimedia.org/w/api.php");
   apiUrl.search = new URLSearchParams({
     action: "query",
     generator: "search",
-    gsrsearch: query,
+    gsrsearch: searchQuery,
     gsrnamespace: "6",
     gsrlimit: "16",
     prop: "imageinfo",
@@ -79,14 +91,27 @@ async function fetchCommonsImage(query: string, seed: number) {
   const payload = (await response.json()) as CommonsResponse;
   const targetRatio = WIDTH / HEIGHT;
   const candidates = (payload.query?.pages || [])
-    .flatMap((page) => page.imageinfo || [])
+    .flatMap((page) => (page.imageinfo || []).map((info) => ({
+      ...info,
+      title: page.title || "",
+      searchIndex: page.index ?? 999,
+    })))
     .filter((info) => info.mime?.startsWith("image/") && info.mime !== "image/svg+xml" && (info.thumburl || info.url))
+    .map((info) => ({
+      ...info,
+      relevance: subjectTokens.reduce(
+        (score, token) => score + (info.title.toLowerCase().includes(token) ? 1 : 0),
+        0,
+      ),
+    }))
     .sort((left, right) => {
+      if (left.relevance !== right.relevance) return right.relevance - left.relevance;
       const leftRatio = (left.thumbwidth || left.width || WIDTH) / (left.thumbheight || left.height || HEIGHT);
       const rightRatio = (right.thumbwidth || right.width || WIDTH) / (right.thumbheight || right.height || HEIGHT);
-      return Math.abs(leftRatio - targetRatio) - Math.abs(rightRatio - targetRatio);
+      const aspectDifference = Math.abs(leftRatio - targetRatio) - Math.abs(rightRatio - targetRatio);
+      return Math.abs(aspectDifference) > 0.08 ? aspectDifference : left.searchIndex - right.searchIndex;
     })
-    .slice(0, 6);
+    .slice(0, 4);
   if (!candidates.length) return null;
   const selected = candidates[seed % candidates.length];
   return fetchImage(selected.thumburl || selected.url || "");

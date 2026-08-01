@@ -77,8 +77,12 @@ const accentColors = {
 
 function upgradeLegacyApp(savedApp: InkApp): InkApp {
   const prompt = savedApp.prompt || "";
-  const wantsFullscreen = ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
-    && ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"].some((term) => prompt.includes(term));
+  const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]
+    .some((term) => prompt.includes(term));
+  const wantsFullscreen = imageOnly && (
+    ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
+    || ["图片", "照片", "海报", "插画"].some((term) => prompt.includes(term))
+  );
   if (!wantsFullscreen || !savedApp.spec.artwork) return savedApp;
   const hasExplicitSchedule = /每\s*\d+\s*分钟|每(?:个)?小时|每天|每日|早上|上午|下午|晚上/.test(prompt);
   return {

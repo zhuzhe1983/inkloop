@@ -111,8 +111,11 @@ export function inferWeatherCity(source: string) {
 }
 
 function wantsFullscreenArtwork(source: string) {
-  return includesAny(source, ["全屏", "铺满", "满屏"])
-    && includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]);
+  const imageOnly = includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]);
+  return imageOnly && (
+    includesAny(source, ["全屏", "铺满", "满屏"])
+    || includesAny(source, ["图片", "照片", "海报", "插画"])
+  );
 }
 
 function wantsBackgroundArtwork(source: string) {
@@ -135,6 +138,26 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
   const background = wantsBackgroundArtwork(source);
   const style = inferArtworkStyle(source);
   const rotateOnRefresh = includesAny(source, ["随机", "每次换", "换一张", "轮换"]);
+  if (includesAny(source, ["漫威", "Marvel", "marvel", "蜘蛛侠", "钢铁侠", "美国队长", "复仇者联盟"])) {
+    const query = includesAny(source, ["蜘蛛侠"])
+      ? "Spider-Man superhero movie poster"
+      : includesAny(source, ["钢铁侠"])
+        ? "Iron Man superhero movie poster"
+        : includesAny(source, ["美国队长"])
+          ? "Captain America superhero movie poster"
+          : includesAny(source, ["复仇者联盟"])
+            ? "Avengers superhero movie poster"
+            : "Marvel superhero movie poster";
+    return {
+      mode: "web",
+      motif: "grid",
+      query,
+      style: "cinematic comic book poster high contrast",
+      layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
+      seed,
+      rotateOnRefresh,
+    };
+  }
   if (includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])) {
     return {
       mode: "web",

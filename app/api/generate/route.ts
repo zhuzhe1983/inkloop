@@ -89,7 +89,8 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 13. 用户明确要求“全屏图片、不要文字、不要其他内容”时，artwork.layout=fullscreen；此模式不会绘制任何标题、边框、页脚或信息卡。
 14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。
 15. 每张背景图都必须填写 artwork.style。优先遵循用户点名的风格；未指定时，像专业 stylist 一样选择适合主题的 editorial、cinematic、minimal、vintage、fashion 或 illustration 风格，并强调主体清晰、高对比、构图简洁，适合六色墨水屏。
-16. 只有用户需求明确包含天气、气温、温度、下雨、降雨或通勤信息时，spec.kind 才能使用 weather；海报、图片、时钟等其他需求不得使用 weather。`;
+16. 只有用户需求明确包含天气、气温、温度、下雨、降雨或通勤信息时，spec.kind 才能使用 weather；海报、图片、时钟等其他需求不得使用 weather。
+17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。`;
 
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
@@ -111,8 +112,12 @@ function screenText(value: unknown, fallback: string, max: number) {
 }
 
 function wantsFullscreenArtwork(prompt: string) {
-  return ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
-    && ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"].some((term) => prompt.includes(term));
+  const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]
+    .some((term) => prompt.includes(term));
+  return imageOnly && (
+    ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
+    || ["图片", "照片", "海报", "插画"].some((term) => prompt.includes(term))
+  );
 }
 
 function wantsBackgroundArtwork(prompt: string) {
@@ -121,6 +126,15 @@ function wantsBackgroundArtwork(prompt: string) {
 
 function wantsWeather(prompt: string) {
   return /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(prompt);
+}
+
+function namedArtworkQuery(prompt: string) {
+  if (/蜘蛛侠/.test(prompt)) return "Spider-Man superhero movie poster";
+  if (/钢铁侠/.test(prompt)) return "Iron Man superhero movie poster";
+  if (/美国队长/.test(prompt)) return "Captain America superhero movie poster";
+  if (/复仇者联盟/.test(prompt)) return "Avengers superhero movie poster";
+  if (/漫威|Marvel/i.test(prompt)) return "Marvel superhero movie poster";
+  return "";
 }
 
 function resolveSchedule(prompt: string, fallback: InkApp, rawMinutes: number, rawTime: string) {
@@ -190,7 +204,10 @@ function normalizeArtwork(
       : "grid";
   const requestedLayout = candidate.layout as ArtworkSpec["layout"];
   const promptRequestsCat = /猫|猫猫|猫咪|小猫/.test(prompt);
-  const normalizedQuery = promptRequestsCat ? "cute cat portrait photography" : query || "colorful editorial illustration";
+  const namedQuery = namedArtworkQuery(prompt);
+  const normalizedQuery = promptRequestsCat
+    ? "cute cat portrait photography"
+    : namedQuery || query || "colorful editorial illustration";
   return {
     mode: promptRequestsCat ? "web" : mode,
     motif,
