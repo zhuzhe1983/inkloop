@@ -1586,6 +1586,74 @@ input:focus-visible {
   line-height: 1.45;
 }
 
+.qr-mode-options {
+  padding: 3px;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  background: #f0f1ec;
+}
+
+.qr-mode-options button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #69716b;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.qr-mode-options button.selected {
+  background: var(--blue);
+  color: white;
+  box-shadow: 0 2px 7px rgba(39, 86, 199, 0.22);
+}
+
+.qr-wifi-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(124px, 0.6fr);
+  gap: 7px;
+}
+
+.qr-wifi-fields > label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.qr-wifi-fields > label > span {
+  color: #707871;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.qr-password-field,
+.qr-hidden-network {
+  grid-column: 1 / -1;
+}
+
+.qr-hidden-network {
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 7px;
+  display: flex !important;
+  align-items: center;
+  gap: 8px !important;
+  background: #f0f1ec;
+  cursor: pointer;
+}
+
+.qr-hidden-network input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--blue);
+}
+
 .quote-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 62px;
@@ -2298,8 +2366,26 @@ input:focus-visible {
   line-height: 1.6;
 }
 
-.app-card-copy button {
+.app-card-actions {
   margin-top: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.app-card-permalink {
+  width: fit-content;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.app-card-permalink:hover {
+  text-decoration: underline;
+}
+
+.app-card-copy button {
+  margin-top: 0;
   min-height: 48px;
   padding: 0 8px 0 15px;
   border: 1px solid var(--ink);
@@ -2351,6 +2437,58 @@ input:focus-visible {
 .app-card-copy button:active {
   box-shadow: 1px 1px 0 var(--ink);
   transform: translate(1px, 1px);
+}
+
+.public-app-detail {
+  min-height: calc(100vh - 82px);
+}
+
+.public-app-detail-head {
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+}
+
+.public-app-detail-head > button {
+  min-height: 42px;
+  padding: 0 15px;
+  border: 1px solid #bdc3bd;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.public-app-detail-head h1 {
+  margin: 5px 0 4px;
+  font-size: clamp(28px, 4vw, 46px);
+  line-height: 1;
+  letter-spacing: -1.8px;
+}
+
+.public-app-detail-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.public-app-detail-head .copy-public-link {
+  border-color: #a4c72b;
+  background: var(--lime);
+}
+
+.public-app-detail-card {
+  max-width: 800px;
+  margin: 30px auto 0;
+}
+
+.public-link-state {
+  margin-top: 30px;
 }
 
 .empty-state {
@@ -3042,6 +3180,21 @@ input:focus-visible {
     display: block;
   }
 
+  .public-app-detail-head {
+    grid-template-columns: 1fr auto;
+    align-items: start;
+    gap: 14px;
+  }
+
+  .public-app-detail-head > button:first-child {
+    grid-column: 1 / -1;
+    width: fit-content;
+  }
+
+  .public-app-detail-head .copy-public-link {
+    align-self: center;
+  }
+
   .gallery-stat {
     margin-top: 25px;
   }
@@ -3092,6 +3245,22 @@ input:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .qr-wifi-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .qr-wifi-fields > label {
+    grid-column: 1;
+  }
+
+  .public-app-detail-head {
+    grid-template-columns: 1fr;
+  }
+
+  .public-app-detail-head .copy-public-link {
+    width: 100%;
+  }
+
   .component-row:not(.border-control) {
     min-height: 102px;
     grid-template-columns: minmax(0, 1fr) 78px;

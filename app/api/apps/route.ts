@@ -63,9 +63,20 @@ function rowToApp(row: AppRow): InkApp {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const db = await ensureSchema();
+    const requestedId = cleanText(new URL(request.url).searchParams.get("id"), 90);
+    if (requestedId) {
+      const row = await db
+        .prepare(`SELECT id, title, description, prompt, spec, code, schedule_mode,
+          custom_minutes, daily_time, author, created_at
+          FROM public_apps WHERE id = ? LIMIT 1`)
+        .bind(requestedId)
+        .first<AppRow>();
+      if (!row) return Response.json({ error: "没有找到这个公开应用" }, { status: 404 });
+      return Response.json({ app: rowToApp(row) });
+    }
     const result = await db
       .prepare(`SELECT id, title, description, prompt, spec, code, schedule_mode,
         custom_minutes, daily_time, author, created_at

@@ -93,7 +93,12 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "border": false,
       "font": "sans|serif|rounded|mono|handwritten",
       "logoText": "INKLOOP",
-      "qrText": "二维码包含的网址或文字"
+      "qrMode": "text|wifi",
+      "qrText": "二维码包含的网址或文字",
+      "qrWifiSsid": "Wi-Fi 名称，未要求则留空",
+      "qrWifiPassword": "不要编造密码，默认留空",
+      "qrWifiSecurity": "WPA|WEP|nopass",
+      "qrWifiHidden": false
     },
     "table": {
       "type": "calendar|timetable",
@@ -132,7 +137,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。
 18. 用户没有明确要求图片、背景、海报、插画或视觉主题时，artwork.mode 必须是 none；信息卡优先使用清晰的纯文字排版。
 19. 海报不添加品牌签名、产品型号、水印或“6-COLOR E-PAPER”等脚注。避免无理由使用满屏高饱和蓝色、重复粗线和厚重发光描边；优先留白、清晰层级和至多两种强调色。
-20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；weather 是角落的一行小天气摘要，weatherLarge 是把城市、天气、温度和高低温组合成一个整体的大天气组件。天气应用默认使用 weatherLarge，二者不要同时开启。时钟默认使用 timeLarge。qr 是二维码元素，只有用户明确要求二维码时开启，并把用户要求编码的网址或文字原样放进 qrText。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；其他组件只按用户需求开启。
+20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；weather 是角落的一行小天气摘要，weatherLarge 是把城市、天气、温度和高低温组合成一个整体的大天气组件。天气应用默认使用 weatherLarge，二者不要同时开启。时钟默认使用 timeLarge。qr 是二维码元素，只有用户明确要求二维码时开启；普通内容使用 qrMode=text 并把内容原样放进 qrText。用户明确要求 Wi-Fi/WPA 二维码时使用 qrMode=wifi，填写 qrWifiSsid 和 qrWifiSecurity，但绝不编造 Wi-Fi 密码，qrWifiPassword 默认留空供用户手动填写。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；其他组件只按用户需求开启。
 21. 用户要求月历、日历或月度计划时使用 kind=calendar，table.type=calendar，提供 year、month、weekStartsOn 和最多 12 个简短 events；明确要求显示农历时 lunar=true。不需要输出 42 个日期格，系统会按月份计算。
 22. 用户要求课程表、课表或周时间表时使用 kind=timetable，table.type=timetable；columns 为 2—7 个列标题，rows 为 1—8 个时间段，每个 cells 长度与 columns 一致，每格最多 8 个汉字。表格数据只表达语义，不包含坐标、HTML、CSS 或绘图代码。
 
@@ -332,7 +337,14 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
     renderMode: defaults.renderMode,
     renderModeExplicit: false,
     logoText: trimText(candidate.logoText, defaults.logoText, 20),
+    qrMode: candidate.qrMode === "wifi" ? "wifi" as const : "text" as const,
     qrText: trimText(candidate.qrText, defaults.qrText, 512),
+    qrWifiSsid: trimText(candidate.qrWifiSsid, "", 64),
+    qrWifiPassword: trimText(candidate.qrWifiPassword, "", 128),
+    qrWifiSecurity: candidate.qrWifiSecurity === "WEP" || candidate.qrWifiSecurity === "nopass"
+      ? candidate.qrWifiSecurity
+      : "WPA" as const,
+    qrWifiHidden: candidate.qrWifiHidden === true,
     positions: defaults.positions,
     elementFonts: defaults.elementFonts,
     elementSizes: defaults.elementSizes,

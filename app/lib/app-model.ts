@@ -65,7 +65,12 @@ export type ScreenDisplay = {
   renderMode: ScreenRenderMode;
   renderModeExplicit: boolean;
   logoText: string;
+  qrMode: "text" | "wifi";
   qrText: string;
+  qrWifiSsid: string;
+  qrWifiPassword: string;
+  qrWifiSecurity: "WPA" | "WEP" | "nopass";
+  qrWifiHidden: boolean;
   positions: Record<ScreenElementKey, ScreenElementPosition>;
   elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
   elementSizes: Partial<Record<ScreenElementKey, number>>;
@@ -198,7 +203,12 @@ export function displaySettings(spec: ScreenSpec, hasLocalImage = false): Screen
     border: false,
     font: fallbackFont,
     logoText: "INKLOOP",
+    qrMode: "text",
     qrText: "https://p.todoo.tech/?lang=zh",
+    qrWifiSsid: "",
+    qrWifiPassword: "",
+    qrWifiSecurity: "WPA",
+    qrWifiHidden: false,
     ...saved,
     renderMode,
     renderModeExplicit,

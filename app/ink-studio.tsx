@@ -524,6 +524,19 @@ function screenQrSize(spec: ScreenSpec) {
   return Math.round(Math.min(260, Math.max(108, value)));
 }
 
+function escapeWifiQrValue(value: string) {
+  return value.replace(/([\\;,:"])/g, "\\$1");
+}
+
+function qrPayload(display: ScreenDisplay) {
+  if (display.qrMode !== "wifi") return display.qrText.trim();
+  const ssid = display.qrWifiSsid.trim();
+  if (!ssid) return "";
+  const security = display.qrWifiSecurity;
+  const password = security === "nopass" ? "" : display.qrWifiPassword;
+  return `WIFI:T:${security};S:${escapeWifiQrValue(ssid)};P:${escapeWifiQrValue(password)};${display.qrWifiHidden ? "H:true;" : ""};`;
+}
+
 function clockFontFamily(spec: ScreenSpec) {
   const requested = displaySettings(spec).elementFonts.timeLarge
     ?? spec.display?.font
@@ -1245,7 +1258,7 @@ function drawOuterScreenBorder(ctx: CanvasRenderingContext2D) {
 
 function drawQrElement(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const display = displaySettings(spec);
-  const content = display.qrText.trim();
+  const content = qrPayload(display);
   if (!display.qr || !content) return;
 
   try {
@@ -1648,7 +1661,30 @@ function MiniScreen({ app }: { app: InkApp }) {
   );
 }
 
-function AppCard({ app, onUse, local }: { app: InkApp; onUse: () => void; local?: boolean }) {
+function publicAppHref(appId: string) {
+  return `/?view=explore&app=${encodeURIComponent(appId)}`;
+}
+
+function uniquePublicApps(apps: InkApp[]) {
+  const seen = new Set<string>();
+  return apps.filter((app) => {
+    if (seen.has(app.id)) return false;
+    seen.add(app.id);
+    return true;
+  });
+}
+
+function AppCard({
+  app,
+  onUse,
+  local,
+  onOpen,
+}: {
+  app: InkApp;
+  onUse: () => void;
+  local?: boolean;
+  onOpen?: () => void;
+}) {
   return (
     <article className="app-card">
       <MiniScreen app={app} />
@@ -1659,10 +1695,25 @@ function AppCard({ app, onUse, local }: { app: InkApp; onUse: () => void; local?
         </div>
         <h3>{app.title}</h3>
         <p>{app.description}</p>
-        <button type="button" onClick={onUse} aria-label={`立即使用${app.title}`}>
-          <span className="app-card-cta-label"><i>✦</i> 立即使用此应用</span>
-          <span className="app-card-cta-arrow" aria-hidden="true">→</span>
-        </button>
+        <div className="app-card-actions">
+          {!local && onOpen && (
+            <a
+              className="app-card-permalink"
+              href={publicAppHref(app.id)}
+              onClick={(event) => {
+                event.preventDefault();
+                onOpen();
+              }}
+              aria-label={`打开${app.title}的独立链接`}
+            >
+              独立链接 <span aria-hidden="true">↗</span>
+            </a>
+          )}
+          <button type="button" onClick={onUse} aria-label={`立即使用${app.title}`}>
+            <span className="app-card-cta-label"><i>✦</i> 立即使用此应用</span>
+            <span className="app-card-cta-arrow" aria-hidden="true">→</span>
+          </button>
+        </div>
       </div>
     </article>
   );
@@ -1674,6 +1725,8 @@ export default function InkStudio() {
   const [app, setApp] = useState<InkApp>(starterApp);
   const [localApps, setLocalApps] = useState<InkApp[]>([]);
   const [publicApps, setPublicApps] = useState<InkApp[]>(featuredApps);
+  const [selectedPublicAppId, setSelectedPublicAppId] = useState<string | null>(null);
+  const [publicLinkStatus, setPublicLinkStatus] = useState<"idle" | "loading" | "missing">("idle");
   const [generating, setGenerating] = useState(false);
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
@@ -1700,6 +1753,7 @@ export default function InkStudio() {
   const [secondTick, setSecondTick] = useState(() => Date.now());
   const [bluetoothSupported, setBluetoothSupported] = useState(false);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
+  const [elementSizeDrafts, setElementSizeDrafts] = useState<Partial<Record<ScreenElementKey, string>>>({});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewVersionRef = useRef(0);
@@ -1720,6 +1774,38 @@ export default function InkStudio() {
     setToast({ message, tone });
     setTimeout(() => setToast(null), 3400);
   }, []);
+
+  const navigateToTab = useCallback((nextTab: Tab) => {
+    setTab(nextTab);
+    setSelectedPublicAppId(null);
+    setPublicLinkStatus("idle");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("app");
+    if (nextTab === "studio") url.searchParams.delete("view");
+    else url.searchParams.set("view", nextTab);
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  const openPublicApp = useCallback((appId: string) => {
+    setTab("explore");
+    setSelectedPublicAppId(appId);
+    setPublicLinkStatus("loading");
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "explore");
+    url.searchParams.set("app", appId);
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  const copyPublicAppLink = useCallback(async (appId: string) => {
+    const url = new URL(publicAppHref(appId), window.location.origin);
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      showToast("公开应用链接已复制", "success");
+    } catch {
+      showToast("复制失败，请从浏览器地址栏复制", "error");
+    }
+  }, [showToast]);
 
   const updateCalendarPreferences = useCallback((patch: Partial<CalendarPreferences>) => {
     setCalendarPreferences((current) => {
@@ -1762,6 +1848,25 @@ export default function InkStudio() {
   useEffect(() => {
     calendarPreferencesRef.current = calendarPreferences;
   }, [calendarPreferences]);
+
+  useEffect(() => {
+    const syncFromLocation = () => {
+      const params = new URLSearchParams(window.location.search);
+      const appId = params.get("app")?.trim() || null;
+      const requestedView = params.get("view");
+      const nextTab = appId
+        ? "explore"
+        : requestedView === "mine" || requestedView === "explore" || requestedView === "device"
+          ? requestedView
+          : "studio";
+      setSelectedPublicAppId(appId);
+      setPublicLinkStatus(appId ? "loading" : "idle");
+      setTab(nextTab);
+    };
+    syncFromLocation();
+    window.addEventListener("popstate", syncFromLocation);
+    return () => window.removeEventListener("popstate", syncFromLocation);
+  }, []);
 
   useEffect(() => {
     try {
@@ -1834,10 +1939,36 @@ export default function InkStudio() {
         return (await response.json()) as { apps?: InkApp[] };
       })
       .then((data) => {
-        if (data.apps?.length) setPublicApps([...data.apps.map(upgradeLegacyApp), ...featuredApps]);
+        if (data.apps?.length) {
+          setPublicApps((current) => uniquePublicApps([
+            ...data.apps!.map(upgradeLegacyApp),
+            ...current,
+            ...featuredApps,
+          ]));
+        }
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!selectedPublicAppId || publicApps.some((item) => item.id === selectedPublicAppId)) return;
+    const controller = new AbortController();
+    fetch(`/api/apps?id=${encodeURIComponent(selectedPublicAppId)}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("not found");
+        return (await response.json()) as { app?: InkApp };
+      })
+      .then((data) => {
+        if (!data.app) throw new Error("not found");
+        setPublicApps((current) => uniquePublicApps([upgradeLegacyApp(data.app!), ...current]));
+        setPublicLinkStatus("idle");
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setPublicLinkStatus("missing");
+      });
+    return () => controller.abort();
+  }, [publicApps, selectedPublicAppId]);
 
   useEffect(() => {
     setBluetoothSupported(
@@ -1922,7 +2053,7 @@ export default function InkStudio() {
 
   const applyGuideExample = (value: string) => {
     setPrompt(value);
-    setTab("studio");
+    navigateToTab("studio");
     setGuideOpen(false);
     window.setTimeout(() => document.getElementById("app-prompt")?.focus(), 0);
   };
@@ -2038,9 +2169,15 @@ export default function InkStudio() {
 
   const updateElementSize = (element: ScreenElementKey, value: number) => {
     const currentDisplay = displaySettings(currentAppRef.current.spec);
-    const nextSize = element === "qr"
-      ? Math.min(260, Math.max(108, value))
-      : value;
+    const minimum = element === "qr" ? 108 : 10;
+    const maximum = element === "qr"
+      ? 260
+      : element === "timeLarge"
+        ? 180
+        : element === "weatherLarge"
+          ? 132
+          : 72;
+    const nextSize = Math.min(maximum, Math.max(minimum, value));
     const positions = { ...currentDisplay.positions };
     if (element === "qr") {
       const current = positions.qr;
@@ -2057,6 +2194,18 @@ export default function InkStudio() {
         [element]: nextSize,
       },
     });
+    setElementSizeDrafts((current) => {
+      const next = { ...current };
+      delete next[element];
+      return next;
+    });
+  };
+
+  const commitElementSizeDraft = (element: ScreenElementKey) => {
+    const draft = elementSizeDrafts[element];
+    if (draft === undefined) return;
+    const parsed = Number.parseInt(draft, 10);
+    updateElementSize(element, Number.isFinite(parsed) ? parsed : DEFAULT_ELEMENT_SIZES[element]);
   };
 
   const randomizeQuote = () => {
@@ -2128,13 +2277,25 @@ export default function InkStudio() {
   };
 
   const saveApp = async () => {
-    const saved = { ...app, id: app.id.startsWith("starter") ? `app-${Date.now()}` : app.id };
+    const currentDisplay = displaySettings(app.spec, Boolean(app.localImage));
+    const containsWifiAccess = currentDisplay.qr && (
+      currentDisplay.qrMode === "wifi"
+      || /^WIFI:/i.test(currentDisplay.qrText.trim())
+    );
+    const requestedPublic = app.isPublic;
+    const saved = {
+      ...app,
+      id: app.id.startsWith("starter") ? `app-${Date.now()}` : app.id,
+      isPublic: requestedPublic && !containsWifiAccess,
+    };
     const next = [saved, ...localApps.filter((item) => item.id !== saved.id)].slice(0, 30);
     setApp(saved);
     setLocalApps(next);
     localStorage.setItem(LOCAL_APPS_KEY, JSON.stringify(next));
 
-    if (saved.isPublic) {
+    if (requestedPublic && containsWifiAccess) {
+      showToast("已保存到本机；Wi-Fi 二维码不会公开，避免泄露网络密码", "info");
+    } else if (saved.isPublic) {
       try {
         const publicPayload = { ...saved, localImage: undefined };
         const response = await fetch("/api/apps", {
@@ -2154,7 +2315,7 @@ export default function InkStudio() {
     }
   };
 
-  const useApp = (selected: InkApp) => {
+  const copyAppToStudio = (selected: InkApp) => {
     const upgraded = upgradeLegacyApp(selected);
     const cloned = {
       ...upgraded,
@@ -2165,7 +2326,8 @@ export default function InkStudio() {
     };
     setApp(cloned);
     setPrompt(cloned.prompt);
-    setTab("studio");
+    setElementSizeDrafts({});
+    navigateToTab("studio");
     showToast("已复制到创作台，可以继续调整", "success");
   };
 
@@ -2470,6 +2632,9 @@ export default function InkStudio() {
   };
 
   const contentTitle = tab === "mine" ? "我的应用" : tab === "explore" ? "发现灵感" : tab === "device" ? "设备中心" : null;
+  const selectedPublicApp = selectedPublicAppId
+    ? publicApps.find((item) => item.id === selectedPublicAppId) ?? null
+    : null;
   const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
   const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
   const deviceSummaries = devices.map((device) => {
@@ -2495,7 +2660,7 @@ export default function InkStudio() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <button className="brand" type="button" onClick={() => setTab("studio")} aria-label="返回创作台">
+        <button className="brand" type="button" onClick={() => navigateToTab("studio")} aria-label="返回创作台">
           <span className="brand-mark">I</span>
           <span>Inkloop</span>
         </button>
@@ -2505,7 +2670,7 @@ export default function InkStudio() {
               type="button"
               key={item.id}
               className={tab === item.id ? "active" : ""}
-              onClick={() => setTab(item.id)}
+              onClick={() => navigateToTab(item.id)}
             >
               <span>{item.glyph}</span>
               {item.label}
@@ -2921,11 +3086,16 @@ export default function InkStudio() {
                               min={key === "qr" ? 108 : 10}
                               max={key === "qr" ? 260 : key === "timeLarge" ? 180 : key === "weatherLarge" ? 132 : 72}
                               step={1}
-                              value={screenDisplay.elementSizes[key] ?? DEFAULT_ELEMENT_SIZES[key]}
-                              onChange={(event) => updateElementSize(
-                                key,
-                                Number.parseInt(event.target.value, 10) || DEFAULT_ELEMENT_SIZES[key],
-                              )}
+                              inputMode="numeric"
+                              value={elementSizeDrafts[key] ?? String(screenDisplay.elementSizes[key] ?? DEFAULT_ELEMENT_SIZES[key])}
+                              onChange={(event) => setElementSizeDrafts((current) => ({
+                                ...current,
+                                [key]: event.target.value,
+                              }))}
+                              onBlur={() => commitElementSizeDraft(key)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.currentTarget.blur();
+                              }}
                               aria-label={`${label}${key === "qr" ? "尺寸" : "字号"}`}
                               disabled={!screenDisplay[key]}
                             />
@@ -3015,17 +3185,84 @@ export default function InkStudio() {
                       </label>
                     )}
                     {screenDisplay.qr && (
-                      <label className="display-field qr-content-field">
+                      <div className="display-field qr-content-field">
                         <span>二维码内容</span>
-                        <textarea
-                          value={screenDisplay.qrText}
-                          maxLength={512}
-                          rows={3}
-                          onChange={(event) => updateDisplay({ qrText: event.target.value })}
-                          placeholder="输入网址、文字、Wi-Fi 信息等"
-                        />
-                        <small>内容只在本机生成二维码，不会发送到二维码服务；白色留边是扫码所必需。</small>
-                      </label>
+                        <div className="qr-mode-options" role="group" aria-label="二维码内容类型">
+                          <button
+                            type="button"
+                            className={screenDisplay.qrMode === "text" ? "selected" : ""}
+                            onClick={() => updateDisplay({ qrMode: "text" })}
+                          >
+                            文字 / 网址
+                          </button>
+                          <button
+                            type="button"
+                            className={screenDisplay.qrMode === "wifi" ? "selected" : ""}
+                            onClick={() => updateDisplay({ qrMode: "wifi" })}
+                          >
+                            Wi-Fi / WPA
+                          </button>
+                        </div>
+                        {screenDisplay.qrMode === "wifi" ? (
+                          <div className="qr-wifi-fields">
+                            <label>
+                              <span>Wi-Fi 名称（SSID）</span>
+                              <input
+                                value={screenDisplay.qrWifiSsid}
+                                maxLength={64}
+                                onChange={(event) => updateDisplay({ qrWifiSsid: event.target.value })}
+                                placeholder="例如 Home WiFi"
+                              />
+                            </label>
+                            <label>
+                              <span>安全类型</span>
+                              <select
+                                value={screenDisplay.qrWifiSecurity}
+                                onChange={(event) => updateDisplay({
+                                  qrWifiSecurity: event.target.value as ScreenDisplay["qrWifiSecurity"],
+                                })}
+                              >
+                                <option value="WPA">WPA / WPA2 / WPA3</option>
+                                <option value="WEP">WEP</option>
+                                <option value="nopass">无密码</option>
+                              </select>
+                            </label>
+                            {screenDisplay.qrWifiSecurity !== "nopass" && (
+                              <label className="qr-password-field">
+                                <span>Wi-Fi 密码</span>
+                                <input
+                                  type="password"
+                                  value={screenDisplay.qrWifiPassword}
+                                  maxLength={128}
+                                  autoComplete="off"
+                                  onChange={(event) => updateDisplay({ qrWifiPassword: event.target.value })}
+                                  placeholder="只保存在当前浏览器"
+                                />
+                              </label>
+                            )}
+                            <label className="qr-hidden-network">
+                              <input
+                                type="checkbox"
+                                checked={screenDisplay.qrWifiHidden}
+                                onChange={(event) => updateDisplay({ qrWifiHidden: event.target.checked })}
+                              />
+                              <span>这是隐藏网络</span>
+                            </label>
+                          </div>
+                        ) : (
+                          <textarea
+                            aria-label="二维码文字或网址"
+                            value={screenDisplay.qrText}
+                            maxLength={512}
+                            rows={3}
+                            onChange={(event) => updateDisplay({ qrText: event.target.value })}
+                            placeholder="输入网址或任意文字"
+                          />
+                        )}
+                        <small>{screenDisplay.qrMode === "wifi"
+                          ? "密码仅保存在当前浏览器；包含 Wi-Fi 凭据的应用不能公开到发现页。"
+                          : "内容只在本机生成二维码，不会发送到二维码服务；白色留边是扫码所必需。"}</small>
+                      </div>
                     )}
                     {(screenDisplay.weather || screenDisplay.weatherLarge) && (
                       <label className="display-field">
@@ -3207,11 +3444,11 @@ export default function InkStudio() {
               <span className="eyebrow">LOCAL LIBRARY</span>
               <h1>留在你设备里的应用</h1>
               <p>这些应用保存在浏览器本机，不上传个人数据。清理浏览器数据会一并删除。</p>
-              <button type="button" onClick={() => setTab("studio")}>＋ 创建新应用</button>
+              <button type="button" onClick={() => navigateToTab("studio")}>＋ 创建新应用</button>
             </div>
             {localApps.length ? (
               <div className="card-grid">
-                {localApps.map((item) => <AppCard key={item.id} app={item} local onUse={() => useApp(item)} />)}
+                {localApps.map((item) => <AppCard key={item.id} app={item} local onUse={() => copyAppToStudio(item)} />)}
               </div>
             ) : (
               <div className="empty-state">
@@ -3221,7 +3458,38 @@ export default function InkStudio() {
           </section>
         )}
 
-        {tab === "explore" && (
+        {tab === "explore" && selectedPublicAppId && (
+          <section className="collection-view public-app-detail">
+            <div className="public-app-detail-head">
+              <button type="button" onClick={() => navigateToTab("explore")}>← 返回发现</button>
+              <div>
+                <span className="eyebrow">PUBLIC APP</span>
+                <h1>{selectedPublicApp?.title || "公开应用"}</h1>
+                <p>这个地址可以直接访问并分享给其他人。</p>
+              </div>
+              <button
+                type="button"
+                className="copy-public-link"
+                onClick={() => void copyPublicAppLink(selectedPublicAppId)}
+              >
+                复制链接
+              </button>
+            </div>
+            {selectedPublicApp ? (
+              <div className="public-app-detail-card">
+                <AppCard app={selectedPublicApp} onUse={() => copyAppToStudio(selectedPublicApp)} />
+              </div>
+            ) : (
+              <div className="empty-state public-link-state">
+                <span>{publicLinkStatus === "loading" ? "…" : "◎"}</span>
+                <h2>{publicLinkStatus === "loading" ? "正在读取公开应用" : "这个公开应用暂时无法访问"}</h2>
+                <p>{publicLinkStatus === "loading" ? "很快就好。" : "它可能已经被移除，或链接不完整。"}</p>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === "explore" && !selectedPublicAppId && (
           <section className="collection-view explore-view">
             <div className="collection-hero split">
               <div>
@@ -3233,7 +3501,14 @@ export default function InkStudio() {
             </div>
             <div className="filter-row"><button className="active">精选</button><button>生活</button><button>效率</button><button>数据</button></div>
             <div className="card-grid">
-              {publicApps.map((item, index) => <AppCard key={`${item.id}-${index}`} app={item} onUse={() => useApp(item)} />)}
+              {publicApps.map((item) => (
+                <AppCard
+                  key={item.id}
+                  app={item}
+                  onUse={() => copyAppToStudio(item)}
+                  onOpen={() => openPublicApp(item.id)}
+                />
+              ))}
             </div>
           </section>
         )}
@@ -3317,7 +3592,7 @@ export default function InkStudio() {
                 <strong>写入前，把设备放在电脑附近</strong>
                 <p>建议保持在 1–3 米蓝牙范围内并唤醒屏幕。首次点击“开始写入”后选择 PICKSMART；之后保持这个页面打开、电脑不要休眠，就能按计划自动重连。</p>
               </div>
-              <button type="button" onClick={() => { setGuideOpen(false); setTab("device"); }}>查看设备说明</button>
+              <button type="button" onClick={() => { setGuideOpen(false); navigateToTab("device"); }}>查看设备说明</button>
             </div>
 
             <p className="guide-footnote">本机图片随应用保存在当前浏览器；公开分享时不会上传你的私人图片，而会保留可复用的版式和主题。</p>
