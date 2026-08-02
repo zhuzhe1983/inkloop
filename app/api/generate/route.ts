@@ -302,6 +302,7 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
     weather: candidate.weather === true || explicitWeather,
     border: explicitBorder && candidate.border !== false,
     font: ALLOWED_SCREEN_FONTS.has(requestedFont) ? requestedFont : defaults.font,
+    renderMode: defaults.renderMode,
     logoText: trimText(candidate.logoText, defaults.logoText, 20),
     positions: defaults.positions,
     elementFonts: defaults.elementFonts,

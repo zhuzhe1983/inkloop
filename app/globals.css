@@ -1071,6 +1071,7 @@ input:focus-visible {
   color: #697069;
   font-size: 12px;
   font-weight: 800;
+  cursor: pointer;
 }
 
 .preview-actions {
@@ -1103,9 +1104,11 @@ input:focus-visible {
 .canvas-stage {
   min-height: 510px;
   margin: 10px 0 6px;
+  padding: 12px 0;
   display: grid;
   place-items: center;
   position: relative;
+  overflow: auto;
 }
 
 .canvas-stage::before {
@@ -1126,6 +1129,20 @@ input:focus-visible {
   border-radius: 29px;
   background: rgba(27, 32, 28, 0.18);
   filter: blur(9px);
+}
+
+.device-preview-scale {
+  position: relative;
+  z-index: 1;
+  flex: none;
+}
+
+.device-preview-inner {
+  width: 288px;
+  height: 486px;
+  position: absolute;
+  inset: 0 auto auto 0;
+  transform-origin: top left;
 }
 
 .device-frame {
@@ -1441,6 +1458,72 @@ input:focus-visible {
   margin-top: 10px;
   display: grid;
   gap: 8px;
+}
+
+.render-mode-field {
+  padding: 10px;
+  border-radius: 9px;
+  background: #f0f1ec;
+  display: grid;
+  gap: 8px;
+}
+
+.render-mode-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.render-mode-heading span {
+  color: #555d57;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.render-mode-heading small,
+.render-mode-field p {
+  color: #747c76;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.render-mode-options {
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.render-mode-options button {
+  min-width: 0;
+  min-height: 36px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #687069;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.render-mode-options button:hover {
+  color: var(--blue);
+}
+
+.render-mode-options button.selected {
+  background: var(--blue);
+  color: white;
+  box-shadow: 0 2px 7px rgba(39, 86, 199, 0.2);
+}
+
+.render-mode-field p {
+  margin: 0;
+  line-height: 1.45;
 }
 
 .display-field {

@@ -27,6 +27,7 @@ import {
   type ScreenDisplay,
   type ScreenElementKey,
   type ScreenFont,
+  type ScreenRenderMode,
   type ScreenSpec,
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
@@ -117,6 +118,16 @@ const screenFontOptions: Array<{ value: ScreenFont; label: string }> = [
   { value: "rounded", label: "M PLUS 圆体 · 亲和" },
   { value: "mono", label: "等宽数字 · 精准" },
   { value: "handwritten", label: "马善政手写 · 醒目" },
+];
+
+const renderModeOptions: Array<{
+  value: ScreenRenderMode;
+  label: string;
+  description: string;
+}> = [
+  { value: "official", label: "Official Skill", description: "完整抖动，保留最多照片细节" },
+  { value: "inkloop-text", label: "Inkloop text", description: "低噪点，适合文字、图标和纯色画面" },
+  { value: "inkloop-image", label: "Inkloop Image", description: "兼顾照片层次与中性色稳定" },
 ];
 
 const knownWeatherCities = [
@@ -446,6 +457,15 @@ const ePaperPalette = [
   [8, 124, 78],
 ] as const;
 
+const nativeEPaperPalette = [
+  [0, 0, 0],
+  [255, 255, 255],
+  [255, 255, 0],
+  [255, 0, 0],
+  [0, 0, 255],
+  [0, 255, 0],
+] as const;
+
 function artworkUrl(artwork: ArtworkSpec) {
   const params = new URLSearchParams({
     v: "8",
@@ -521,6 +541,7 @@ function drawImageCover(
   y: number,
   width: number,
   height: number,
+  renderMode: ScreenRenderMode,
 ) {
   const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
   const drawWidth = image.naturalWidth * scale;
@@ -528,12 +549,105 @@ function drawImageCover(
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.filter = "saturate(0.96) contrast(0.96) brightness(1.02)";
+  ctx.filter = renderMode === "inkloop-text"
+    ? "saturate(0.96) contrast(0.96) brightness(1.02)"
+    : renderMode === "inkloop-image"
+      ? "saturate(0.96) contrast(0.98) brightness(1.01)"
+      : "none";
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
   ctx.restore();
 }
 
-function quantizeRegion(
+function quantizeNativeRegion(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  protectNeutral: boolean,
+) {
+  const image = ctx.getImageData(x, y, width, height);
+  let currentRed = new Float32Array(width);
+  let currentGreen = new Float32Array(width);
+  let currentBlue = new Float32Array(width);
+  let nextRed = new Float32Array(width);
+  let nextGreen = new Float32Array(width);
+  let nextBlue = new Float32Array(width);
+  const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
+  const errorStrength = protectNeutral ? 0.46 : 1;
+
+  for (let pixelY = 0; pixelY < height; pixelY += 1) {
+    for (let pixelX = 0; pixelX < width; pixelX += 1) {
+      const pixel = (pixelY * width + pixelX) * 4;
+      const sourceRed = image.data[pixel];
+      const sourceGreen = image.data[pixel + 1];
+      const sourceBlue = image.data[pixel + 2];
+      const sourceMaximum = Math.max(sourceRed, sourceGreen, sourceBlue);
+      const sourceChroma = sourceMaximum - Math.min(sourceRed, sourceGreen, sourceBlue);
+      const sourceSaturation = sourceChroma / Math.max(1, sourceMaximum);
+      const isNeutral = protectNeutral && (sourceChroma < 30 || sourceSaturation < 0.22);
+      const red = clamp(sourceRed + currentRed[pixelX], 0, 255);
+      const green = clamp(sourceGreen + currentGreen[pixelX], 0, 255);
+      const blue = clamp(sourceBlue + currentBlue[pixelX], 0, 255);
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      const availablePalette = isNeutral ? nativeEPaperPalette.slice(0, 2) : nativeEPaperPalette;
+      availablePalette.forEach((color, index) => {
+        const dr = red - color[0];
+        const dg = green - color[1];
+        const db = blue - color[2];
+        const distance = dr * dr + dg * dg + db * db;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+      const selectedNative = nativeEPaperPalette[bestIndex];
+      const selectedPreview = ePaperPalette[bestIndex];
+      image.data[pixel] = selectedPreview[0];
+      image.data[pixel + 1] = selectedPreview[1];
+      image.data[pixel + 2] = selectedPreview[2];
+      image.data[pixel + 3] = 255;
+
+      const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      const neutralError = (luminance - selectedNative[0]) * errorStrength;
+      const errors = isNeutral
+        ? [neutralError, neutralError, neutralError]
+        : [
+            (red - selectedNative[0]) * errorStrength,
+            (green - selectedNative[1]) * errorStrength,
+            (blue - selectedNative[2]) * errorStrength,
+          ];
+      if (pixelX + 1 < width) {
+        currentRed[pixelX + 1] += errors[0] * (7 / 16);
+        currentGreen[pixelX + 1] += errors[1] * (7 / 16);
+        currentBlue[pixelX + 1] += errors[2] * (7 / 16);
+      }
+      if (pixelX > 0) {
+        nextRed[pixelX - 1] += errors[0] * (3 / 16);
+        nextGreen[pixelX - 1] += errors[1] * (3 / 16);
+        nextBlue[pixelX - 1] += errors[2] * (3 / 16);
+      }
+      nextRed[pixelX] += errors[0] * (5 / 16);
+      nextGreen[pixelX] += errors[1] * (5 / 16);
+      nextBlue[pixelX] += errors[2] * (5 / 16);
+      if (pixelX + 1 < width) {
+        nextRed[pixelX + 1] += errors[0] * (1 / 16);
+        nextGreen[pixelX + 1] += errors[1] * (1 / 16);
+        nextBlue[pixelX + 1] += errors[2] * (1 / 16);
+      }
+    }
+    [currentRed, nextRed] = [nextRed, currentRed];
+    [currentGreen, nextGreen] = [nextGreen, currentGreen];
+    [currentBlue, nextBlue] = [nextBlue, currentBlue];
+    nextRed.fill(0);
+    nextGreen.fill(0);
+    nextBlue.fill(0);
+  }
+  ctx.putImageData(image, x, y);
+}
+
+function quantizeTextRegion(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -613,6 +727,21 @@ function quantizeRegion(
     nextBlue.fill(0);
   }
   ctx.putImageData(image, x, y);
+}
+
+function quantizeRegion(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  renderMode: ScreenRenderMode,
+) {
+  if (renderMode === "inkloop-text") {
+    quantizeTextRegion(ctx, x, y, width, height);
+    return;
+  }
+  quantizeNativeRegion(ctx, x, y, width, height, renderMode === "inkloop-image");
 }
 
 function drawGeneratedArtwork(
@@ -995,8 +1124,8 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     try {
       if (localImage || artwork.mode === "web") {
         const image = await loadArtwork(localImage || artworkUrl(artwork));
-        drawImageCover(ctx, image, area.x, area.y, area.width, area.height);
-        quantizeRegion(ctx, area.x, area.y, area.width, area.height);
+        drawImageCover(ctx, image, area.x, area.y, area.width, area.height, display.renderMode);
+        quantizeRegion(ctx, area.x, area.y, area.width, area.height, display.renderMode);
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
@@ -1171,6 +1300,7 @@ export default function InkStudio() {
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
+  const [previewScale, setPreviewScale] = useState<35 | 50 | 75 | 100>(50);
   const [artworkCredit, setArtworkCredit] = useState<ArtworkCredit | null>(null);
   const [preferredWeatherCity, setPreferredWeatherCity] = useState("上海");
   const [fontTick, setFontTick] = useState(0);
@@ -2169,44 +2299,70 @@ export default function InkStudio() {
                     >
                       ↻ 重新生成
                     </button>
-                    <span className="scale-chip">50%</span>
+                    <select
+                      className="scale-chip"
+                      value={previewScale}
+                      onChange={(event) => setPreviewScale(Number(event.target.value) as 35 | 50 | 75 | 100)}
+                      aria-label="调整屏幕预览缩放"
+                      title="只调整网页预览大小，不影响 528 × 792 写入画质"
+                    >
+                      {[35, 50, 75, 100].map((scale) => (
+                        <option value={scale} key={scale}>{scale}%</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
-                <div className="canvas-stage">
-                  <div className="device-shadow" />
-                  <div className="device-frame">
-                    <div className="device-label">TODOO</div>
-                    <div className="screen-canvas-wrap">
-                      <canvas ref={canvasRef} width={528} height={792} aria-label="电子墨水屏预览" />
-                      <div className="screen-drag-layer" aria-label="拖拽画面元素调整位置">
-                        {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
-                          const savedPosition = screenDisplay.positions[element.key];
-                          const position = dragPreview?.element === element.key ? dragPreview : savedPosition;
-                          return (
-                            <button
-                              type="button"
-                              className={`canvas-drag-handle canvas-drag-${element.key}${dragPreview?.element === element.key ? " dragging" : ""}`}
-                              key={element.key}
-                              style={{
-                                left: `${(position.x / 528) * 100}%`,
-                                top: `${(position.y / 792) * 100}%`,
-                                width: `${(element.width / 528) * 100}%`,
-                                height: `${(element.height / 792) * 100}%`,
-                              }}
-                              aria-label={`拖拽调整${element.label}位置，方向键可微调`}
-                              onPointerDown={(event) => handleElementPointerDown(element.key, event)}
-                              onPointerMove={handleElementPointerMove}
-                              onPointerUp={finishElementDrag}
-                              onPointerCancel={finishElementDrag}
-                              onKeyDown={(event) => handleElementKeyDown(element.key, event)}
-                            >
-                              <span>{element.label}</span>
-                            </button>
-                          );
-                        })}
+                <div
+                  className="canvas-stage"
+                  style={{ minHeight: `${Math.max(380, 486 * (previewScale / 50) + 24)}px` }}
+                >
+                  <div
+                    className="device-preview-scale"
+                    style={{
+                      width: `${288 * (previewScale / 50)}px`,
+                      height: `${486 * (previewScale / 50)}px`,
+                    }}
+                  >
+                    <div
+                      className="device-preview-inner"
+                      style={{ transform: `scale(${previewScale / 50})` }}
+                    >
+                      <div className="device-shadow" />
+                      <div className="device-frame">
+                        <div className="device-label">TODOO</div>
+                        <div className="screen-canvas-wrap">
+                          <canvas ref={canvasRef} width={528} height={792} aria-label="电子墨水屏预览" />
+                          <div className="screen-drag-layer" aria-label="拖拽画面元素调整位置">
+                            {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
+                              const savedPosition = screenDisplay.positions[element.key];
+                              const position = dragPreview?.element === element.key ? dragPreview : savedPosition;
+                              return (
+                                <button
+                                  type="button"
+                                  className={`canvas-drag-handle canvas-drag-${element.key}${dragPreview?.element === element.key ? " dragging" : ""}`}
+                                  key={element.key}
+                                  style={{
+                                    left: `${(position.x / 528) * 100}%`,
+                                    top: `${(position.y / 792) * 100}%`,
+                                    width: `${(element.width / 528) * 100}%`,
+                                    height: `${(element.height / 792) * 100}%`,
+                                  }}
+                                  aria-label={`拖拽调整${element.label}位置，方向键可微调`}
+                                  onPointerDown={(event) => handleElementPointerDown(element.key, event)}
+                                  onPointerMove={handleElementPointerMove}
+                                  onPointerUp={finishElementDrag}
+                                  onPointerCancel={finishElementDrag}
+                                  onKeyDown={(event) => handleElementKeyDown(element.key, event)}
+                                >
+                                  <span>{element.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="device-port" />
                       </div>
                     </div>
-                    <div className="device-port" />
                   </div>
                 </div>
                 <div className="palette-strip" aria-label="屏幕支持六种颜色">
@@ -2334,6 +2490,28 @@ export default function InkStudio() {
                     </div>
                   </div>
                   <div className="display-fields">
+                    {(app.spec.artwork || app.localImage) && (
+                      <div className="render-mode-field">
+                        <div className="render-mode-heading">
+                          <span>图片渲染</span>
+                          <small>默认使用 Official Skill</small>
+                        </div>
+                        <div className="render-mode-options" role="group" aria-label="图片渲染方式">
+                          {renderModeOptions.map((mode) => (
+                            <button
+                              type="button"
+                              key={mode.value}
+                              className={screenDisplay.renderMode === mode.value ? "selected" : ""}
+                              onClick={() => updateDisplay({ renderMode: mode.value })}
+                              aria-pressed={screenDisplay.renderMode === mode.value}
+                            >
+                              {mode.label}
+                            </button>
+                          ))}
+                        </div>
+                        <p>{renderModeOptions.find((mode) => mode.value === screenDisplay.renderMode)?.description}</p>
+                      </div>
+                    )}
                     <label className="display-field">
                       <span>画面默认字体</span>
                       <select

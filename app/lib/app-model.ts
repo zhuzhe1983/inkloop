@@ -20,6 +20,8 @@ export type ClockSpec = {
 
 export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 
+export type ScreenRenderMode = "official" | "inkloop-text" | "inkloop-image";
+
 export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather";
 
 export type ScreenElementPosition = {
@@ -54,6 +56,7 @@ export type ScreenDisplay = {
   weather: boolean;
   border: boolean;
   font: ScreenFont;
+  renderMode: ScreenRenderMode;
   logoText: string;
   positions: Record<ScreenElementKey, ScreenElementPosition>;
   elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
@@ -147,6 +150,9 @@ export function displaySettings(spec: ScreenSpec): ScreenDisplay {
     font: fallbackFont,
     logoText: "INKLOOP",
     ...saved,
+    renderMode: saved?.renderMode === "inkloop-text" || saved?.renderMode === "inkloop-image"
+      ? saved.renderMode
+      : "official",
     positions: {
       ...DEFAULT_ELEMENT_POSITIONS,
       ...saved?.positions,
