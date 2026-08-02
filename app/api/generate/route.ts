@@ -1,11 +1,13 @@
 import { env } from "cloudflare:workers";
 import {
+  displaySettings,
   generateInkApp,
   inferWeatherCity,
   type ArtworkSpec,
   type ClockSpec,
   type InkApp,
   type ScreenKind,
+  type ScreenFont,
   type ScreenSpec,
 } from "../../lib/app-model";
 
@@ -36,6 +38,7 @@ const ALLOWED_CLOCK_FONTS = new Set<ClockSpec["font"]>([
   "handwritten",
   "random",
 ]);
+const ALLOWED_SCREEN_FONTS = new Set<ScreenFont>(["sans", "serif", "rounded", "mono", "handwritten"]);
 
 const EPAPER_DESIGN_GUIDE = `
 默认视觉方向是“高级纸张便利贴 + 瑞士编辑排版”，而不是彩色电子屏 UI：
@@ -76,6 +79,16 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "enabled": false,
       "board": true,
       "font": "sans|serif|rounded|mono|handwritten|random"
+    },
+    "display": {
+      "quote": false,
+      "logo": false,
+      "date": false,
+      "time": false,
+      "weather": false,
+      "border": false,
+      "font": "sans|serif|rounded|mono|handwritten",
+      "logoText": "INKLOOP"
     }
   },
   "code": "可供用户审阅的 JavaScript 业务逻辑源码字符串",
@@ -104,6 +117,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。
 18. 用户没有明确要求图片、背景、海报、插画或视觉主题时，artwork.mode 必须是 none；信息卡优先使用清晰的纯文字排版。
 19. 海报不添加品牌签名、产品型号、水印或“6-COLOR E-PAPER”等脚注。避免无理由使用满屏高饱和蓝色、重复粗线和厚重发光描边；优先留白、清晰层级和至多两种强调色。
+20. display 控制可手动编辑的画面组件。border 默认且通常必须是 false，只有用户明确要求边框、描边框或画板时才设为 true；logo 只有用户明确要求 LOGO/品牌文字时开启；quote、date、time、weather 只按用户需求开启。clock.board 不得绕过 display.border。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
 ${EPAPER_DESIGN_GUIDE}`;
@@ -262,6 +276,30 @@ function normalizeClock(value: unknown, fallback: ClockSpec | undefined): ClockS
   };
 }
 
+function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
+  const defaults = displaySettings(fallback.spec);
+  const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const requestedFont = candidate.font as ScreenFont;
+  const forbidsBorder = /不要(?:任何|所有|这些|UI|ui|组件|卡片|画板)?边框|无边框|取消边框|去掉边框|所有.{0,8}(?:不要|不需要|没有)边框/.test(prompt);
+  const explicitBorder = !forbidsBorder
+    && /(?:显示|保留|添加|开启|要|有)(?:一个|外部|卡片|画板)?边框|描边框|带边框|有画板/.test(prompt);
+  const explicitLogo = /logo|标志|品牌字样/i.test(prompt);
+  const explicitQuote = /名言|金句|格言|一句话|鼓励|提醒/.test(prompt);
+  const explicitDate = /日期|年月日|星期|周几/.test(prompt) || Boolean(fallback.spec.clock?.enabled);
+  const explicitTime = /时间|时钟|几点|钟表/.test(prompt) || Boolean(fallback.spec.clock?.enabled);
+  const explicitWeather = wantsWeather(prompt);
+  return {
+    quote: candidate.quote === true || defaults.quote && explicitQuote,
+    logo: explicitLogo && candidate.logo !== false,
+    date: candidate.date === true || explicitDate,
+    time: candidate.time === true || explicitTime,
+    weather: candidate.weather === true || explicitWeather,
+    border: explicitBorder && candidate.border !== false,
+    font: ALLOWED_SCREEN_FONTS.has(requestedFont) ? requestedFont : defaults.font,
+    logoText: trimText(candidate.logoText, defaults.logoText, 20),
+  };
+}
+
 function normalizeBaseUrl(value?: string) {
   const raw = value?.trim() || DEFAULT_BASE_URL;
   return raw.replace(/\/+$/, "");
@@ -315,6 +353,7 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
       accent: ALLOWED_ACCENTS.has(candidateAccent) ? candidateAccent : fallback.spec.accent,
       artwork: normalizeArtwork(candidateSpec.artwork, fallback.spec.artwork, prompt),
       clock: normalizeClock(candidateSpec.clock, fallback.spec.clock),
+      display: normalizeDisplay(candidateSpec.display, fallback, prompt),
     },
     code: trimText(value.code, fallback.code, 8000),
     scheduleMode: schedule.mode,

@@ -762,6 +762,107 @@ input:focus-visible {
   border-radius: 2px;
 }
 
+.display-editor {
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-subhead strong {
+  color: #4e5750;
+  font-size: 13px;
+}
+
+.settings-subhead small {
+  color: #8a918b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.component-checks {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.component-check {
+  min-height: 42px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: #f0f1ec;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #555d57;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.component-check:has(input:checked) {
+  background: #e5ebff;
+  color: var(--blue);
+}
+
+.component-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.component-check:focus-within {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.display-fields {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.display-field {
+  display: grid;
+  gap: 5px;
+}
+
+.display-field > span {
+  color: #707871;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.display-field input,
+.display-field select {
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 7px;
+  outline: 0;
+  background: #f0f1ec;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.display-field input:focus,
+.display-field select:focus {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+  background: #fffefa;
+}
+
 .schedule-options {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1835,13 +1936,23 @@ input:focus-visible {
     gap: 16px 28px;
   }
 
-  .settings-panel .panel-heading,
-  .settings-panel > label,
-  .settings-panel .schedule-options,
-  .settings-panel .inline-field {
-    grid-column: 1;
+  .settings-panel .panel-heading {
+    grid-column: 1 / -1;
   }
 
+  .settings-panel .display-editor {
+    grid-column: 1;
+    grid-row: 2 / span 6;
+    margin-bottom: 0;
+    padding-right: 28px;
+    padding-bottom: 0;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+  }
+
+  .settings-panel > label,
+  .settings-panel .schedule-options,
+  .settings-panel .inline-field,
   .settings-panel .sharing-row,
   .settings-panel .code-toggle,
   .settings-panel .code-preview {
@@ -1849,7 +1960,6 @@ input:focus-visible {
   }
 
   .settings-panel .sharing-row {
-    grid-row: 1 / span 2;
     margin-top: 0;
   }
 
@@ -1964,6 +2074,14 @@ input:focus-visible {
 
   .settings-panel {
     display: block;
+  }
+
+  .settings-panel .display-editor {
+    margin-bottom: 18px;
+    padding-right: 0;
+    padding-bottom: 18px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 
   .settings-panel .sharing-row {

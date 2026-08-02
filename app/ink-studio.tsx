@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties } from "react";
 import {
+  displaySettings,
   featuredApps,
   generateInkApp,
   inferWeatherCity,
@@ -12,6 +13,8 @@ import {
   type ArtworkSpec,
   type InkApp,
   type ScheduleMode,
+  type ScreenDisplay,
+  type ScreenFont,
   type ScreenSpec,
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
@@ -76,6 +79,13 @@ const accentColors = {
 };
 
 function upgradeLegacyApp(savedApp: InkApp): InkApp {
+  const normalizedApp: InkApp = {
+    ...savedApp,
+    spec: {
+      ...savedApp.spec,
+      display: displaySettings(savedApp.spec),
+    },
+  };
   const prompt = savedApp.prompt || "";
   const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]
     .some((term) => prompt.includes(term));
@@ -83,13 +93,13 @@ function upgradeLegacyApp(savedApp: InkApp): InkApp {
     ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
     || ["图片", "照片", "海报", "插画"].some((term) => prompt.includes(term))
   );
-  if (!wantsFullscreen || !savedApp.spec.artwork) return savedApp;
+  if (!wantsFullscreen || !savedApp.spec.artwork) return normalizedApp;
   const hasExplicitSchedule = /每\s*\d+\s*分钟|每(?:个)?小时|每天|每日|早上|上午|下午|晚上/.test(prompt);
   return {
-    ...savedApp,
+    ...normalizedApp,
     scheduleMode: hasExplicitSchedule ? savedApp.scheduleMode : "once",
     spec: {
-      ...savedApp.spec,
+      ...normalizedApp.spec,
       eyebrow: "",
       title: "",
       value: "",
@@ -105,10 +115,16 @@ function upgradeLegacyApp(savedApp: InkApp): InkApp {
   };
 }
 
-function fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, startSize: number) {
+function fitText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  startSize: number,
+  family = 'Arial, "PingFang SC", sans-serif',
+) {
   let size = startSize;
   while (size > 24) {
-    ctx.font = `800 ${size}px Arial, "PingFang SC", sans-serif`;
+    ctx.font = `800 ${size}px ${family}`;
     if (ctx.measureText(text).width <= maxWidth) break;
     size -= 2;
   }
@@ -146,6 +162,9 @@ function replaceTimeVariables(value: string, now: Date) {
 }
 
 function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now);
   return {
     ...spec,
     eyebrow: replaceTimeVariables(spec.eyebrow, now),
@@ -154,6 +173,9 @@ function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
     unit: replaceTimeVariables(spec.unit, now),
     detail: replaceTimeVariables(spec.detail, now),
     footer: replaceTimeVariables(spec.footer, now),
+    display: displaySettings(spec),
+    dateText: `${weekday} · ${date}`,
+    timeText: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
   };
 }
 
@@ -170,9 +192,10 @@ type WeatherPayload = {
 async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promise<ScreenSpec> {
   const resolved = resolveTimeVariables(currentApp.spec, now);
   const weatherRequested = /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(currentApp.prompt);
+  const display = displaySettings(resolved);
   if (
-    resolved.kind !== "weather"
-    || !weatherRequested
+    !display.weather
+    || (resolved.kind !== "weather" && !weatherRequested && !resolved.city)
     || resolved.artwork?.layout === "fullscreen"
   ) return resolved;
   const city = resolved.city || inferWeatherCity(currentApp.prompt);
@@ -201,6 +224,15 @@ async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promi
     }
     const rainProbability = typeof weather.rainProbability === "number" ? weather.rainProbability : 0;
     const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now);
+    const weatherText = `${weather.city || city} · ${Math.round(weather.temperature)}° · ${weather.condition || "天气多变"}`;
+    if (resolved.clock?.enabled) {
+      return {
+        ...resolved,
+        city: weather.city || city,
+        weatherText,
+        accent: rainProbability >= 45 ? "red" : "yellow",
+      };
+    }
     return {
       ...resolved,
       city: weather.city || city,
@@ -209,6 +241,7 @@ async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promi
       value: String(Math.round(weather.temperature)),
       unit: "°C",
       detail: `${weather.condition || "天气多变"} · ${Math.round(weather.low)}—${Math.round(weather.high)}°C`,
+      weatherText,
       footer: rainProbability >= 45
         ? `降雨${Math.round(rainProbability)}% · 带伞 · Open-Meteo`
         : "少雨 · 适合出门 · Open-Meteo",
@@ -224,21 +257,27 @@ async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promi
       unit: "°C",
       detail: resolved.detail === "—" ? "天气数据暂不可用" : resolved.detail,
       footer: resolved.footer === "—" ? "稍后刷新重试" : resolved.footer,
+      weatherText: `${city} · 天气暂不可用`,
     };
   }
 }
 
+const screenFonts = {
+  sans: 'Arial, "PingFang SC", sans-serif',
+  serif: 'Georgia, "Songti SC", serif',
+  rounded: '"Arial Rounded MT Bold", "PingFang SC", sans-serif',
+  mono: '"Courier New", "SFMono-Regular", monospace',
+  handwritten: '"Comic Sans MS", "Kaiti SC", cursive',
+} as const;
+
+function screenFontFamily(spec: ScreenSpec) {
+  return screenFonts[displaySettings(spec).font];
+}
+
 function clockFontFamily(spec: ScreenSpec) {
-  const fonts = {
-    sans: 'Arial, "PingFang SC", sans-serif',
-    serif: 'Georgia, "Songti SC", serif',
-    rounded: '"Arial Rounded MT Bold", "PingFang SC", sans-serif',
-    mono: '"Courier New", "SFMono-Regular", monospace',
-    handwritten: '"Comic Sans MS", "Kaiti SC", cursive',
-  } as const;
-  const requested = spec.clock?.font ?? "sans";
-  if (requested !== "random") return fonts[requested];
-  const choices = Object.values(fonts);
+  const requested = spec.display?.font ?? spec.clock?.font ?? "sans";
+  if (requested !== "random") return screenFonts[requested];
+  const choices = Object.values(screenFonts);
   return choices[(spec.artwork?.seed ?? 0) % choices.length];
 }
 
@@ -518,17 +557,76 @@ function drawEditorialPlate(
   width: number,
   height: number,
   accent: string,
+  border: boolean,
 ) {
   ctx.save();
-  ctx.fillStyle = "#151816";
-  ctx.fillRect(x + 7, y + 7, width, height);
+  if (border) {
+    ctx.fillStyle = "#151816";
+    ctx.fillRect(x + 7, y + 7, width, height);
+  }
   ctx.fillStyle = "#f4f0dc";
   ctx.fillRect(x, y, width, height);
-  ctx.strokeStyle = "#151816";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, width, height);
+  if (border) {
+    ctx.strokeStyle = "#151816";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, width, height);
+  }
   ctx.fillStyle = accent;
-  ctx.fillRect(x, y, 12, height);
+  ctx.fillRect(x, y, 10, Math.min(height, 48));
+  ctx.restore();
+}
+
+function drawDisplayMeta(
+  ctx: CanvasRenderingContext2D,
+  spec: ScreenSpec,
+  accent: string,
+  transparentOverlay: boolean,
+) {
+  const display = displaySettings(spec);
+  const ink = "#151816";
+  const family = screenFontFamily(spec);
+  const leftLabel = display.date ? spec.dateText || spec.eyebrow : spec.eyebrow;
+  ctx.save();
+  ctx.font = `700 18px ${family}`;
+  if (leftLabel) {
+    if (display.border) {
+      const width = Math.min(310, Math.max(160, ctx.measureText(leftLabel).width + 42));
+      if (transparentOverlay) drawGlowFrame(ctx, 40, 38, width, 54);
+      else drawEditorialPlate(ctx, 40, 38, width, 54, accent, true);
+    }
+    if (transparentOverlay) drawGlowText(ctx, leftLabel.slice(0, 32), 56, 72, 300);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(leftLabel.slice(0, 32), display.border ? 68 : 48, 72, 330);
+    }
+  }
+
+  ctx.textAlign = "right";
+  if (display.time && !spec.clock?.enabled && spec.timeText) {
+    if (transparentOverlay) drawGlowText(ctx, spec.timeText, 480, 72, 120);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(spec.timeText, 480, 72, 120);
+    }
+  }
+  if (display.weather && spec.weatherText) {
+    ctx.font = `700 16px ${family}`;
+    if (transparentOverlay) drawGlowText(ctx, spec.weatherText.slice(0, 24), 480, 108, 260);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(spec.weatherText.slice(0, 24), 480, 108, 260);
+    }
+  }
+  ctx.textAlign = "left";
+
+  if (display.logo && display.logoText) {
+    ctx.font = `800 15px ${family}`;
+    if (transparentOverlay) drawGlowText(ctx, display.logoText.slice(0, 20), 48, 748, 240);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(display.logoText.slice(0, 20), 48, 748, 240);
+    }
+  }
   ctx.restore();
 }
 
@@ -540,11 +638,13 @@ function drawClockCopy(
 ) {
   const ink = "#151816";
   const paper = "#f4f0dc";
+  const display = displaySettings(spec);
   const family = clockFontFamily(spec);
-  const board = spec.clock?.board !== false;
+  const board = display.border && spec.clock?.board !== false;
+  const timeValue = spec.timeText || spec.value;
   const valueSize = fitClockText(
     ctx,
-    spec.value,
+    timeValue,
     transparentOverlay ? 360 : board ? 380 : 438,
     transparentOverlay ? 102 : board ? 112 : 126,
     family,
@@ -552,24 +652,26 @@ function drawClockCopy(
 
   ctx.textAlign = "center";
   if (transparentOverlay) {
-    if (board) drawGlowFrame(ctx, 64, 246, 400, 190);
-    ctx.font = '800 23px Arial, "PingFang SC", sans-serif';
-    drawGlowText(ctx, spec.title, 264, 292, 350);
-    ctx.font = `900 ${valueSize}px ${family}`;
-    drawGlowText(ctx, spec.value, 264, 382, 360);
-    ctx.font = '700 20px Arial, "PingFang SC", sans-serif';
-    drawGlowText(ctx, spec.detail.slice(0, 28), 264, 416, 350);
+    if (display.time) {
+      if (board) drawGlowFrame(ctx, 64, 246, 400, 190);
+      ctx.font = `800 23px ${family}`;
+      drawGlowText(ctx, spec.title, 264, 292, 350);
+      ctx.font = `900 ${valueSize}px ${family}`;
+      drawGlowText(ctx, timeValue, 264, 382, 360);
+      ctx.font = `700 20px ${family}`;
+      drawGlowText(ctx, spec.detail.slice(0, 28), 264, 416, 350);
+    }
 
-    if (spec.footer) {
-      drawGlowFrame(ctx, 76, 650, 376, 52);
-      ctx.font = '700 18px Arial, "PingFang SC", sans-serif';
+    if (display.quote && spec.footer) {
+      if (display.border) drawGlowFrame(ctx, 76, 650, 376, 52);
+      ctx.font = `700 18px ${family}`;
       drawGlowText(ctx, spec.footer.slice(0, 26), 264, 683, 340);
     }
     ctx.textAlign = "left";
     return;
   }
 
-  if (board) {
+  if (display.time && board) {
     ctx.fillStyle = paper;
     ctx.strokeStyle = ink;
     ctx.lineWidth = 5;
@@ -578,40 +680,34 @@ function drawClockCopy(
     ctx.fillStyle = accent;
     ctx.fillRect(72, 252, 76, 12);
     ctx.fillStyle = ink;
-    ctx.font = '800 25px Arial, "PingFang SC", sans-serif';
+    ctx.font = `800 25px ${family}`;
     ctx.fillText(spec.title, 264, 306);
     ctx.font = `900 ${valueSize}px ${family}`;
-    ctx.fillText(spec.value, 264, 424);
-    ctx.font = '700 22px Arial, "PingFang SC", sans-serif';
+    ctx.fillText(timeValue, 264, 424);
+    ctx.font = `700 22px ${family}`;
     ctx.fillText(spec.detail.slice(0, 28), 264, 474);
-  } else {
-    ctx.lineJoin = "round";
-    ctx.lineWidth = 14;
-    ctx.strokeStyle = paper;
+  } else if (display.time) {
     ctx.font = `900 ${valueSize}px ${family}`;
-    ctx.strokeText(spec.value, 264, 408);
     ctx.fillStyle = ink;
-    ctx.fillText(spec.value, 264, 408);
-    ctx.fillStyle = paper;
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = 3;
-    ctx.fillRect(62, 472, 404, 66);
-    ctx.strokeRect(62, 472, 404, 66);
-    ctx.fillStyle = ink;
-    ctx.font = '700 23px Arial, "PingFang SC", sans-serif';
-    ctx.fillText(spec.detail.slice(0, 28), 264, 514);
+    ctx.fillText(timeValue, 264, 398);
+    ctx.font = `700 23px ${family}`;
+    ctx.fillText(spec.detail.slice(0, 28), 264, 448);
   }
 
-  ctx.fillStyle = paper;
-  ctx.strokeStyle = ink;
-  ctx.lineWidth = 3;
-  ctx.fillRect(48, 628, 432, 72);
-  ctx.strokeRect(48, 628, 432, 72);
-  ctx.fillStyle = accent;
-  ctx.fillRect(70, 652, 20, 20);
-  ctx.fillStyle = ink;
-  ctx.font = '700 20px Arial, "PingFang SC", sans-serif';
-  ctx.fillText(spec.footer.slice(0, 26), 286, 671);
+  if (display.quote && spec.footer) {
+    if (display.border) {
+      ctx.fillStyle = paper;
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 2;
+      ctx.fillRect(48, 628, 432, 72);
+      ctx.strokeRect(48, 628, 432, 72);
+    }
+    ctx.fillStyle = accent;
+    ctx.fillRect(70, 650, 10, 24);
+    ctx.fillStyle = ink;
+    ctx.font = `700 20px ${family}`;
+    ctx.fillText(spec.footer.slice(0, 26), 286, 671);
+  }
   ctx.textAlign = "left";
 }
 
@@ -624,33 +720,11 @@ function drawArtworkCopy(
 ) {
   const ink = "#151816";
   const paper = "#f4f0dc";
+  const display = displaySettings(spec);
+  const family = screenFontFamily(spec);
   const backgroundLayout = layout === "background";
   const transparentOverlay = backgroundLayout && imageBackdrop;
-  if (transparentOverlay) {
-    ctx.font = "700 18px Arial, sans-serif";
-    const eyebrow = spec.eyebrow.toUpperCase().slice(0, 32);
-    ctx.fillStyle = accent;
-    ctx.fillRect(48, 48, 12, 34);
-    drawGlowText(ctx, eyebrow, 76, 74, 390);
-  } else if (backgroundLayout) {
-    ctx.font = "700 18px Arial, sans-serif";
-    const eyebrow = spec.eyebrow.toUpperCase().slice(0, 32);
-    const eyebrowWidth = Math.min(430, Math.max(190, ctx.measureText(eyebrow).width + 60));
-    drawEditorialPlate(ctx, 38, 42, eyebrowWidth, 58, accent);
-    ctx.fillStyle = ink;
-    ctx.fillText(eyebrow, 68, 78, eyebrowWidth - 46);
-  } else {
-    ctx.fillStyle = paper;
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = 3;
-    ctx.fillRect(38, 42, 452, 76);
-    ctx.strokeRect(38, 42, 452, 76);
-    ctx.fillStyle = ink;
-    ctx.font = "700 18px Arial, sans-serif";
-    ctx.fillText(spec.eyebrow.toUpperCase(), 56, 88);
-    ctx.fillStyle = accent;
-    ctx.fillRect(430, 65, 38, 14);
-  }
+  drawDisplayMeta(ctx, spec, accent, transparentOverlay);
 
   if (spec.clock?.enabled) {
     drawClockCopy(ctx, spec, accent, transparentOverlay);
@@ -659,64 +733,71 @@ function drawArtworkCopy(
 
   const valueWithUnit = `${spec.value}${spec.unit ? ` ${spec.unit}` : ""}`;
   if (transparentOverlay) {
-    ctx.font = `800 ${fitText(ctx, spec.title, 420, 38)}px Arial, "PingFang SC", sans-serif`;
+    ctx.font = `800 ${fitText(ctx, spec.title, 420, 38, family)}px ${family}`;
     drawGlowText(ctx, spec.title, 48, 248, 420);
-    const valueSize = fitText(ctx, valueWithUnit, 420, 78);
-    ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
+    const valueSize = fitText(ctx, valueWithUnit, 420, 78, family);
+    ctx.font = `900 ${valueSize}px ${family}`;
     drawGlowText(ctx, valueWithUnit, 48, 336, 420);
   } else if (backgroundLayout) {
-    drawEditorialPlate(ctx, 48, 216, 432, 226, accent);
+    drawEditorialPlate(ctx, 48, 216, 432, 226, accent, display.border);
     ctx.fillStyle = ink;
-    ctx.font = `800 ${fitText(ctx, spec.title, 368, 34)}px Arial, "PingFang SC", sans-serif`;
+    ctx.font = `800 ${fitText(ctx, spec.title, 368, 34, family)}px ${family}`;
     ctx.fillText(spec.title, 82, 274, 368);
-    const valueSize = fitText(ctx, valueWithUnit, 368, 82);
-    ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
+    const valueSize = fitText(ctx, valueWithUnit, 368, 82, family);
+    ctx.font = `900 ${valueSize}px ${family}`;
     ctx.fillText(valueWithUnit, 82, 382, 368);
   } else {
     ctx.fillStyle = paper;
     ctx.fillRect(38, 468, 452, 184);
-    ctx.strokeStyle = ink;
-    ctx.strokeRect(38, 468, 452, 184);
+    if (display.border) {
+      ctx.strokeStyle = ink;
+      ctx.strokeRect(38, 468, 452, 184);
+    }
     ctx.fillStyle = ink;
-    ctx.font = `800 ${fitText(ctx, spec.title, 402, 34)}px Arial, "PingFang SC", sans-serif`;
+    ctx.font = `800 ${fitText(ctx, spec.title, 402, 34, family)}px ${family}`;
     ctx.fillText(spec.title, 60, 516);
-    const valueSize = fitText(ctx, spec.value, 402, 64);
-    ctx.font = `900 ${valueSize}px Arial, "PingFang SC", sans-serif`;
+    const valueSize = fitText(ctx, spec.value, 402, 64, family);
+    ctx.font = `900 ${valueSize}px ${family}`;
     ctx.fillText(spec.value, 60, 592);
     if (spec.unit) {
-      ctx.font = "800 26px Arial, sans-serif";
+      ctx.font = `800 26px ${family}`;
       ctx.fillText(spec.unit, 60, 628);
     }
   }
 
   if (transparentOverlay) {
-    ctx.strokeStyle = paper;
-    ctx.lineWidth = 3;
-    ctx.shadowColor = ink;
-    ctx.shadowBlur = 4;
-    ctx.beginPath();
-    ctx.moveTo(48, 634);
-    ctx.lineTo(480, 634);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    ctx.font = "700 18px Arial, \"PingFang SC\", sans-serif";
+    if (display.border) {
+      ctx.strokeStyle = paper;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(48, 634);
+      ctx.lineTo(480, 634);
+      ctx.stroke();
+    }
+    ctx.font = `700 18px ${family}`;
     drawGlowText(ctx, spec.detail.slice(0, 30), 48, 672, 432);
-    ctx.font = "700 17px Arial, \"PingFang SC\", sans-serif";
-    drawGlowText(ctx, spec.footer.slice(0, 26), 48, 705, 432);
+    if (display.quote && spec.footer) {
+      ctx.font = `700 17px ${family}`;
+      drawGlowText(ctx, spec.footer.slice(0, 26), 48, 705, 432);
+    }
   } else if (backgroundLayout) {
-    drawEditorialPlate(ctx, 48, 614, 432, 102, accent);
+    drawEditorialPlate(ctx, 48, 614, 432, display.quote && spec.footer ? 102 : 64, accent, display.border);
     ctx.fillStyle = ink;
-    ctx.font = "700 18px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `700 18px ${family}`;
     ctx.fillText(spec.detail.slice(0, 30), 82, 655, 366);
-    ctx.font = "700 17px Arial, \"PingFang SC\", sans-serif";
-    ctx.fillText(spec.footer.slice(0, 26), 82, 690, 366);
+    if (display.quote && spec.footer) {
+      ctx.font = `700 17px ${family}`;
+      ctx.fillText(spec.footer.slice(0, 26), 82, 690, 366);
+    }
   } else {
     ctx.fillStyle = paper;
     ctx.fillRect(38, 666, 452, 46);
-    ctx.strokeStyle = ink;
-    ctx.strokeRect(38, 666, 452, 46);
+    if (display.border) {
+      ctx.strokeStyle = ink;
+      ctx.strokeRect(38, 666, 452, 46);
+    }
     ctx.fillStyle = ink;
-    ctx.font = "700 19px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `700 19px ${family}`;
     ctx.fillText(spec.detail.slice(0, 30), 58, 696);
   }
 
@@ -730,6 +811,8 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   const ink = "#151816";
   const paper = "#f4f0dc";
   const accent = accentColors[spec.accent];
+  const display = displaySettings(spec);
+  const family = screenFontFamily(spec);
 
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = paper;
@@ -759,7 +842,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       }
       if (artwork.layout === "fullscreen") return true;
       drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
-      if (artwork.layout === "hero") {
+      if (artwork.layout === "hero" && display.border) {
         ctx.strokeStyle = ink;
         ctx.lineWidth = 3;
         ctx.strokeRect(22, 22, width - 44, height - 44);
@@ -773,20 +856,19 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     }
   }
 
-  ctx.strokeStyle = ink;
-  ctx.lineWidth = 3;
-  ctx.strokeRect(22, 22, width - 44, height - 44);
+  if (display.border) {
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(22, 22, width - 44, height - 44);
+  }
+  drawDisplayMeta(ctx, spec, accent, false);
 
-  ctx.fillStyle = ink;
-  ctx.font = "700 18px Arial, sans-serif";
-  ctx.letterSpacing = "2px";
-  ctx.fillText(spec.eyebrow.toUpperCase(), 48, 74);
-  ctx.fillStyle = accent;
-  ctx.fillRect(48, 96, 70, 10);
-  ctx.fillStyle = ink;
-  ctx.fillRect(124, 96, 356, 2);
+  if (spec.clock?.enabled) {
+    drawClockCopy(ctx, spec, accent, false);
+    return false;
+  }
 
-  if (spec.kind === "weather") {
+  if (spec.kind === "weather" && display.weather) {
     ctx.fillStyle = "#e5c900";
     ctx.beginPath();
     ctx.arc(398, 208, 54, 0, Math.PI * 2);
@@ -800,68 +882,72 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       ctx.stroke();
     }
     ctx.fillStyle = ink;
-    ctx.font = "700 31px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `700 31px ${family}`;
     ctx.fillText(spec.title, 48, 182);
-    ctx.font = "800 164px Arial, sans-serif";
+    ctx.font = `800 164px ${family}`;
     ctx.fillText(spec.value, 42, 370);
-    ctx.font = "800 62px Arial, sans-serif";
+    ctx.font = `800 62px ${family}`;
     ctx.fillText(spec.unit, 264, 280);
   } else if (spec.kind === "countdown") {
     ctx.fillStyle = ink;
-    ctx.font = "700 34px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `700 34px ${family}`;
     ctx.fillText(spec.title, 48, 180);
     ctx.fillStyle = accent;
-    ctx.font = "900 238px Arial, sans-serif";
+    ctx.font = `900 238px ${family}`;
     ctx.fillText(spec.value, 34, 438);
     ctx.fillStyle = ink;
-    ctx.font = "800 58px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `800 58px ${family}`;
     ctx.fillText(spec.unit, 380, 408);
   } else if (spec.kind === "meeting") {
     ctx.fillStyle = accent;
     ctx.fillRect(48, 140, 432, 112);
     ctx.fillStyle = "#ffffff";
-    ctx.font = "800 54px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `800 54px ${family}`;
     ctx.fillText(spec.value, 74, 215);
     ctx.fillStyle = ink;
-    ctx.font = `800 ${fitText(ctx, spec.title, 430, 70)}px Arial, "PingFang SC", sans-serif`;
+    ctx.font = `800 ${fitText(ctx, spec.title, 430, 70, family)}px ${family}`;
     ctx.fillText(spec.title, 48, 360);
   } else if (spec.kind === "metric") {
     ctx.fillStyle = ink;
-    ctx.font = "700 34px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `700 34px ${family}`;
     ctx.fillText(spec.title, 48, 178);
-    ctx.font = "900 176px Arial, sans-serif";
+    ctx.font = `900 176px ${family}`;
     ctx.fillText(spec.value, 40, 370);
-    ctx.font = "800 62px Arial, sans-serif";
+    ctx.font = `800 62px ${family}`;
     ctx.fillText(spec.unit, 330, 350);
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = 5;
-    ctx.strokeRect(48, 432, 432, 46);
+    if (display.border) {
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 5;
+      ctx.strokeRect(48, 432, 432, 46);
+    }
     ctx.fillStyle = accent;
-    ctx.fillRect(57, 441, 316, 28);
+    ctx.fillRect(display.border ? 57 : 48, display.border ? 441 : 432, 316, display.border ? 28 : 18);
   } else {
     ctx.fillStyle = ink;
-    ctx.font = "700 34px Arial, \"PingFang SC\", sans-serif";
+    ctx.font = `700 34px ${family}`;
     ctx.fillText(spec.title, 48, 180);
     ctx.fillStyle = accent;
     ctx.fillRect(48, 226, 432, 206);
     ctx.fillStyle = "#ffffff";
-    const size = fitText(ctx, spec.value, 380, 74);
-    ctx.font = `900 ${size}px Arial, "PingFang SC", sans-serif`;
+    const size = fitText(ctx, spec.value, 380, 74, family);
+    ctx.font = `900 ${size}px ${family}`;
     ctx.fillText(spec.value, 72, 346);
   }
 
   ctx.fillStyle = ink;
-  ctx.font = "700 24px Arial, \"PingFang SC\", sans-serif";
+  ctx.font = `700 24px ${family}`;
   ctx.fillText(spec.detail, 48, 552);
-  ctx.fillRect(48, 590, 432, 3);
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.arc(68, 646, 18, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = ink;
-  ctx.font = "700 27px Arial, \"PingFang SC\", sans-serif";
-  const footer = spec.footer.length > 24 ? `${spec.footer.slice(0, 24)}…` : spec.footer;
-  ctx.fillText(footer, 100, 655);
+  if (display.border) ctx.fillRect(48, 590, 432, 3);
+  if (display.quote && spec.footer) {
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.arc(68, 646, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = ink;
+    ctx.font = `700 27px ${family}`;
+    const footer = spec.footer.length > 24 ? `${spec.footer.slice(0, 24)}…` : spec.footer;
+    ctx.fillText(footer, 100, 655);
+  }
 
   return false;
 }
@@ -1126,6 +1212,34 @@ export default function InkStudio() {
     setApp((current) => ({ ...current, scheduleMode }));
   };
 
+  const updateDisplay = (patch: Partial<ScreenDisplay>) => {
+    setApp((current) => {
+      const nextDisplay = { ...displaySettings(current.spec), ...patch };
+      const enablesOverlay = Object.entries(patch).some(([key, value]) => key !== "font" && key !== "logoText" && value === true);
+      const artwork = enablesOverlay && current.spec.artwork?.layout === "fullscreen"
+        ? { ...current.spec.artwork, layout: "background" as const }
+        : current.spec.artwork;
+      const clock = current.spec.clock
+        ? {
+            ...current.spec.clock,
+            board: patch.border === undefined ? current.spec.clock.board : nextDisplay.border,
+            font: patch.font ?? current.spec.clock.font,
+          }
+        : undefined;
+      return {
+        ...current,
+        spec: {
+          ...current.spec,
+          artwork,
+          clock,
+          city: nextDisplay.weather ? current.spec.city || inferWeatherCity(current.prompt) : current.spec.city,
+          footer: nextDisplay.quote && !current.spec.footer ? "今天也要保持好心情" : current.spec.footer,
+          display: nextDisplay,
+        },
+      };
+    });
+  };
+
   const regeneratePreviewArtwork = () => {
     const seed = randomArtworkSeed();
     setApp((current) => current.spec.artwork
@@ -1293,6 +1407,7 @@ export default function InkStudio() {
   };
 
   const contentTitle = tab === "mine" ? "我的应用" : tab === "explore" ? "发现灵感" : tab === "device" ? "设备中心" : null;
+  const screenDisplay = displaySettings(app.spec);
 
   return (
     <main className="app-shell">
@@ -1481,8 +1596,87 @@ export default function InkStudio() {
                 <div className="panel-heading compact">
                   <span className="step-number">03</span>
                   <div>
-                    <h2>保存与刷新</h2>
-                    <p>选择写入频率与分享范围。</p>
+                    <h2>画面、保存与刷新</h2>
+                    <p>生成后可继续手动调整画面元素。</p>
+                  </div>
+                </div>
+                <div className="display-editor">
+                  <div className="settings-subhead">
+                    <strong>画面元素</strong>
+                    <small>默认无边框</small>
+                  </div>
+                  <div className="component-checks">
+                    {([
+                      ["quote", "今日名言"],
+                      ["logo", "LOGO"],
+                      ["date", "日期"],
+                      ["time", "时间"],
+                      ["weather", "天气"],
+                      ["border", "边框"],
+                    ] as const).map(([key, label]) => (
+                      <label className="component-check" key={key}>
+                        <input
+                          type="checkbox"
+                          checked={screenDisplay[key]}
+                          onChange={(event) => updateDisplay({ [key]: event.target.checked })}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="display-fields">
+                    <label className="display-field">
+                      <span>画面字体</span>
+                      <select
+                        value={screenDisplay.font}
+                        onChange={(event) => updateDisplay({ font: event.target.value as ScreenFont })}
+                      >
+                        <option value="sans">现代黑体</option>
+                        <option value="serif">优雅宋体</option>
+                        <option value="rounded">圆润标题</option>
+                        <option value="mono">等宽数字</option>
+                        <option value="handwritten">手写风格</option>
+                      </select>
+                    </label>
+                    {screenDisplay.quote && (
+                      <label className="display-field">
+                        <span>今日名言</span>
+                        <input
+                          value={app.spec.footer}
+                          maxLength={40}
+                          onChange={(event) => setApp((current) => ({
+                            ...current,
+                            spec: { ...current.spec, footer: event.target.value },
+                          }))}
+                          placeholder="输入一句话"
+                        />
+                      </label>
+                    )}
+                    {screenDisplay.logo && (
+                      <label className="display-field">
+                        <span>LOGO 文字</span>
+                        <input
+                          value={screenDisplay.logoText}
+                          maxLength={20}
+                          onChange={(event) => updateDisplay({ logoText: event.target.value })}
+                          placeholder="例如 INKLOOP"
+                        />
+                      </label>
+                    )}
+                    {screenDisplay.weather && (
+                      <label className="display-field">
+                        <span>天气城市</span>
+                        <input
+                          value={app.spec.city || ""}
+                          maxLength={20}
+                          onChange={(event) => setApp((current) => ({
+                            ...current,
+                            spec: { ...current.spec, city: event.target.value },
+                          }))}
+                          placeholder="例如 上海"
+                        />
+                      </label>
+                    )}
                   </div>
                 </div>
                 <label>刷新计划</label>

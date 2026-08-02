@@ -18,6 +18,19 @@ export type ClockSpec = {
   font: "sans" | "serif" | "rounded" | "mono" | "handwritten" | "random";
 };
 
+export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
+
+export type ScreenDisplay = {
+  quote: boolean;
+  logo: boolean;
+  date: boolean;
+  time: boolean;
+  weather: boolean;
+  border: boolean;
+  font: ScreenFont;
+  logoText: string;
+};
+
 export type ScreenSpec = {
   kind: ScreenKind;
   city?: string;
@@ -30,6 +43,10 @@ export type ScreenSpec = {
   accent: "red" | "blue" | "green" | "yellow";
   artwork?: ArtworkSpec;
   clock?: ClockSpec;
+  display?: ScreenDisplay;
+  dateText?: string;
+  timeText?: string;
+  weatherText?: string;
 };
 
 export type InkApp = {
@@ -86,6 +103,21 @@ export const starterApp: InkApp = {
 };
 
 const includesAny = (source: string, terms: string[]) => terms.some((term) => source.includes(term));
+
+export function displaySettings(spec: ScreenSpec): ScreenDisplay {
+  const fallbackFont = spec.clock?.font && spec.clock.font !== "random" ? spec.clock.font : "sans";
+  return {
+    quote: Boolean(spec.footer),
+    logo: false,
+    date: Boolean(spec.clock?.enabled),
+    time: Boolean(spec.clock?.enabled),
+    weather: spec.kind === "weather",
+    border: false,
+    font: fallbackFont,
+    logoText: "INKLOOP",
+    ...spec.display,
+  };
+}
 
 function promptSeed(source: string) {
   let hash = 2166136261;
