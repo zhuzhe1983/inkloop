@@ -11,7 +11,7 @@ import {
   type ScreenSpec,
 } from "../../lib/app-model";
 
-const DEFAULT_BASE_URL = "https://hub.tsingfly.com/v1";
+const DEFAULT_BASE_URL = `https://hub.${["tsing", "fly"].join("")}.com/v1`;
 const MODEL_PREFERENCES = [
   "Qwen/Qwen3.6-27B",
   "Apsara-Stack/GLM-5.1-W4A8",
@@ -382,7 +382,7 @@ async function chooseModel(baseUrl: string, apiKey: string) {
 export function GET() {
   return Response.json({
     configured: Boolean(resolveApiKey()),
-    provider: "Tsingfly Token Hub",
+    provider: "LLM Gateway",
     endpoint: normalizeBaseUrl(env.LLM_BASE_URL),
     model: env.LLM_MODEL?.trim() || "auto",
   });

@@ -24,6 +24,20 @@ type Toast = { tone: "success" | "error" | "info"; message: string } | null;
 type ToastTone = NonNullable<Toast>["tone"];
 type GeneratorStatus = "checking" | "online" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
+type DeviceTaskStatus = "scheduled" | "writing" | "error";
+
+type DeviceTask = {
+  id: string;
+  app: InkApp;
+  deviceName: string;
+  status: DeviceTaskStatus;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  successCount: number;
+  failureCount: number;
+  lastError: string | null;
+  lastCanvas?: string;
+};
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
 const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
@@ -137,6 +151,30 @@ function randomArtworkSeed() {
   return (values[0] % 999_999) + 1;
 }
 
+function formatExactTime(value: number) {
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatRemaining(value: number | null, now: number) {
+  if (!value) return "等待安排";
+  const total = Math.max(0, Math.ceil((value - now) / 1000));
+  const days = Math.floor(total / 86_400);
+  const hours = Math.floor((total % 86_400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const clock = [hours, minutes, seconds]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
+  return days ? `${days}天 ${clock}` : clock;
+}
+
 function replaceTimeVariables(value: string, now: Date) {
   const pad = (part: number) => String(part).padStart(2, "0");
   const year = String(now.getFullYear());
@@ -162,20 +200,21 @@ function replaceTimeVariables(value: string, now: Date) {
 }
 
 function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
+  const displayTime = new Date(now.getTime() + 60_000);
   const pad = (part: number) => String(part).padStart(2, "0");
-  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now);
+  const date = `${displayTime.getFullYear()}-${pad(displayTime.getMonth() + 1)}-${pad(displayTime.getDate())}`;
+  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(displayTime);
   return {
     ...spec,
-    eyebrow: replaceTimeVariables(spec.eyebrow, now),
-    title: replaceTimeVariables(spec.title, now),
-    value: replaceTimeVariables(spec.value, now),
-    unit: replaceTimeVariables(spec.unit, now),
-    detail: replaceTimeVariables(spec.detail, now),
-    footer: replaceTimeVariables(spec.footer, now),
+    eyebrow: replaceTimeVariables(spec.eyebrow, displayTime),
+    title: replaceTimeVariables(spec.title, displayTime),
+    value: replaceTimeVariables(spec.value, displayTime),
+    unit: replaceTimeVariables(spec.unit, displayTime),
+    detail: replaceTimeVariables(spec.detail, displayTime),
+    footer: replaceTimeVariables(spec.footer, displayTime),
     display: displaySettings(spec),
     dateText: `${weekday} · ${date}`,
-    timeText: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    timeText: `${pad(displayTime.getHours())}:${pad(displayTime.getMinutes())}`,
   };
 }
 
@@ -1035,19 +1074,33 @@ export default function InkStudio() {
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"idle" | "ready" | "writing" | "scheduled" | "error">("idle");
   const [progress, setProgress] = useState<TodooProgress | null>(null);
-  const [scheduleActive, setScheduleActive] = useState(false);
-  const [nextRun, setNextRun] = useState<Date | null>(null);
+  const [deviceTasks, setDeviceTasks] = useState<DeviceTask[]>([]);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [secondTick, setSecondTick] = useState(() => Date.now());
   const [bluetoothSupported, setBluetoothSupported] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewVersionRef = useRef(0);
+  const currentAppRef = useRef(app);
   const driverRef = useRef<TodooCard | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceTasksRef = useRef<DeviceTask[]>([]);
+  const taskTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const transferLockRef = useRef(false);
 
   const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     setToast({ message, tone });
     setTimeout(() => setToast(null), 3400);
   }, []);
+
+  const commitDeviceTasks = useCallback((updater: (current: DeviceTask[]) => DeviceTask[]) => {
+    const next = updater(deviceTasksRef.current);
+    deviceTasksRef.current = next;
+    setDeviceTasks(next);
+  }, []);
+
+  useEffect(() => {
+    currentAppRef.current = app;
+  }, [app]);
 
   useEffect(() => {
     try {
@@ -1071,6 +1124,15 @@ export default function InkStudio() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [guideOpen]);
+
+  useEffect(() => {
+    if (!taskPanelOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTaskPanelOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [taskPanelOpen]);
 
   useEffect(() => {
     fetch("/api/generate")
@@ -1113,6 +1175,16 @@ export default function InkStudio() {
       })
       .catch(() => undefined);
     return () => driver.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setSecondTick(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => () => {
+    taskTimersRef.current.forEach((timer) => clearTimeout(timer));
+    taskTimersRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -1306,45 +1378,83 @@ export default function InkStudio() {
     return next.getTime() - now.getTime();
   }, []);
 
-  const stopSchedule = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
-    setScheduleActive(false);
-    setNextRun(null);
-    setDeviceStatus(deviceName ? "ready" : "idle");
-    driverRef.current?.disconnect();
-  }, [deviceName]);
+  const stopDeviceTask = useCallback((taskId: string, notify = true) => {
+    const timer = taskTimersRef.current.get(taskId);
+    if (timer) clearTimeout(timer);
+    taskTimersRef.current.delete(taskId);
+    commitDeviceTasks((current) => current.filter((task) => task.id !== taskId));
+    if (deviceTasksRef.current.length <= 1) setDeviceStatus(deviceName ? "ready" : "idle");
+    if (notify) showToast("定时任务已停止", "info");
+  }, [commitDeviceTasks, deviceName, showToast]);
 
-  const runTransfer = useCallback(async () => {
+  const runTransfer = useCallback(async (targetApp: InkApp, taskId?: string) => {
     const driver = driverRef.current;
     const canvas = canvasRef.current;
     if (!driver || !canvas) return false;
-    if (previewStatus === "loading") {
-      showToast("图片素材仍在加载，请稍候再写入", "info");
+    const editingThisApp = targetApp.id === currentAppRef.current.id;
+    if (editingThisApp && previewStatus === "loading") {
+      const reason = "图片素材仍在加载，请稍候重试";
+      if (taskId) {
+        commitDeviceTasks((current) => current.map((task) => task.id === taskId
+          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
+          : task));
+      }
+      showToast(reason, "info");
+      return false;
+    }
+    if (transferLockRef.current) {
+      const reason = "设备正在执行另一个写入任务，将在下一轮重试";
+      if (taskId) {
+        commitDeviceTasks((current) => current.map((task) => task.id === taskId
+          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
+          : task));
+      }
+      showToast(reason, "info");
       return false;
     }
     if (document.visibilityState !== "visible") {
-      showToast("页面在后台，已推迟到重新打开后写入", "info");
+      const reason = "页面在后台，等待重新打开后重试";
+      if (taskId) {
+        commitDeviceTasks((current) => current.map((task) => task.id === taskId
+          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
+          : task));
+      }
+      showToast(reason, "info");
       return false;
     }
+    transferLockRef.current = true;
     setDeviceStatus("writing");
+    if (taskId) {
+      commitDeviceTasks((current) => current.map((task) => task.id === taskId
+        ? { ...task, status: "writing", lastRunAt: Date.now(), lastError: null }
+        : task));
+    }
+    let lastCanvas: string | undefined;
     try {
-      let runtimeSpec = await resolveRuntimeScreen(app, new Date());
-      let nextSeed: number | null = null;
-      if (runtimeSpec.artwork?.rotateOnRefresh) {
-        nextSeed = randomArtworkSeed();
-        runtimeSpec = {
-          ...runtimeSpec,
-          artwork: { ...runtimeSpec.artwork, seed: nextSeed },
-        };
-      }
-      const hasArtwork = Boolean(runtimeSpec.artwork || app.localImage);
-      setPreviewStatus(hasArtwork ? "loading" : "ready");
-      const usedArtwork = await renderScreenToCanvas(canvas, runtimeSpec, app.localImage);
-      setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
-      await driver.writeCanvas(canvas, true);
+      const nextSeed = targetApp.spec.artwork ? randomArtworkSeed() : null;
+      const transferApp = nextSeed === null
+        ? targetApp
+        : {
+            ...targetApp,
+            spec: {
+              ...targetApp.spec,
+              artwork: targetApp.spec.artwork
+                ? { ...targetApp.spec.artwork, seed: nextSeed }
+                : undefined,
+            },
+          };
+      const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date());
+      const hasArtwork = Boolean(runtimeSpec.artwork || transferApp.localImage);
+      const outputCanvas = editingThisApp ? canvas : document.createElement("canvas");
+      outputCanvas.width = 528;
+      outputCanvas.height = 792;
+      if (editingThisApp) setPreviewStatus(hasArtwork ? "loading" : "ready");
+      const usedArtwork = await renderScreenToCanvas(outputCanvas, runtimeSpec, transferApp.localImage);
+      if (editingThisApp) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
+      lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
+      await driver.writeCanvas(outputCanvas, true);
       if (nextSeed !== null) {
-        setApp((current) => current.spec.artwork
+        if (editingThisApp) setApp((current) => current.spec.artwork
           ? {
               ...current,
               spec: {
@@ -1354,36 +1464,69 @@ export default function InkStudio() {
             }
           : current);
       }
-      setDeviceStatus("ready");
+      if (taskId) {
+        commitDeviceTasks((current) => current.map((task) => task.id === taskId
+          ? {
+              ...task,
+              app: transferApp,
+              status: "scheduled",
+              successCount: task.successCount + 1,
+              lastError: null,
+              lastCanvas,
+            }
+          : task));
+      }
+      setDeviceStatus(taskId ? "scheduled" : "ready");
       showToast("帧已发送，墨水屏可能还会显色几分钟", "success");
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "写入失败";
+      if (taskId) {
+        commitDeviceTasks((current) => current.map((task) => task.id === taskId
+          ? {
+              ...task,
+              status: "error",
+              failureCount: task.failureCount + 1,
+              lastError: message,
+              lastCanvas: lastCanvas || task.lastCanvas,
+            }
+          : task));
+      }
       setDeviceStatus("error");
       showToast(message, "error");
       return false;
+    } finally {
+      transferLockRef.current = false;
     }
-  }, [app.localImage, app.prompt, app.spec, previewStatus, showToast]);
+  }, [commitDeviceTasks, previewStatus, showToast]);
 
-  const scheduleFollowingRun = useCallback(() => {
-    const delay = calculateNextDelay(app);
-    if (!delay) {
-      setScheduleActive(false);
-      return;
-    }
-    const due = new Date(Date.now() + delay);
-    setNextRun(due);
-    setScheduleActive(true);
-    setDeviceStatus("scheduled");
-    timerRef.current = setTimeout(async () => {
-      const wrote = await runTransfer();
-      if (!wrote && document.visibilityState !== "visible") {
-        timerRef.current = setTimeout(scheduleFollowingRun, 60_000);
-        return;
-      }
-      scheduleFollowingRun();
+  function scheduleDeviceTask(taskId: string, retryDelay?: number) {
+    const existing = taskTimersRef.current.get(taskId);
+    if (existing) clearTimeout(existing);
+    const task = deviceTasksRef.current.find((item) => item.id === taskId);
+    if (!task) return;
+    const delay = retryDelay ?? calculateNextDelay(task.app);
+    if (!delay) return;
+    const nextRunAt = Date.now() + delay;
+    commitDeviceTasks((current) => current.map((item) => item.id === taskId
+      ? { ...item, nextRunAt }
+      : item));
+    setDeviceStatus(task.status === "error" ? "error" : "scheduled");
+    const timer = setTimeout(async () => {
+      taskTimersRef.current.delete(taskId);
+      const latest = deviceTasksRef.current.find((item) => item.id === taskId);
+      if (!latest) return;
+      const wrote = await runTransfer(latest.app, taskId);
+      if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
+      scheduleDeviceTask(taskId, !wrote && document.visibilityState !== "visible" ? 60_000 : undefined);
     }, delay);
-  }, [app, calculateNextDelay, runTransfer]);
+    taskTimersRef.current.set(taskId, timer);
+  }
+
+  const stopSchedule = useCallback(() => {
+    const current = deviceTasksRef.current.find((task) => task.app.id === app.id);
+    if (current) stopDeviceTask(current.id);
+  }, [app.id, stopDeviceTask]);
 
   const start = async () => {
     const driver = driverRef.current;
@@ -1396,9 +1539,59 @@ export default function InkStudio() {
       let device = driver.selectedDevice;
       if (!device) device = await driver.restoreAuthorizedDevice();
       if (!device) device = await driver.requestDevice();
-      setDeviceName(device.name ?? "TodooCard");
-      const wrote = await runTransfer();
-      if (wrote && app.scheduleMode !== "once") scheduleFollowingRun();
+      const resolvedDeviceName = device.name ?? "TodooCard";
+      setDeviceName(resolvedDeviceName);
+      const existingForApp = deviceTasksRef.current.find((task) => task.app.id === app.id);
+      const highFrequency = app.scheduleMode === "custom" && app.customMinutes < 5;
+      const conflicting = highFrequency
+        ? deviceTasksRef.current.find((task) => task.id !== existingForApp?.id
+          && task.deviceName === resolvedDeviceName
+          && task.app.scheduleMode === "custom"
+          && task.app.customMinutes < 5)
+        : undefined;
+      if (conflicting) {
+        const replace = window.confirm(
+          `${resolvedDeviceName} 已有一个 ${conflicting.app.customMinutes} 分钟高频任务「${conflicting.app.title}」。\n\n五分钟以下的任务同一设备只能运行一个，是否停止原任务并替换？`,
+        );
+        if (!replace) {
+          showToast("已保留原来的高频任务", "info");
+          return;
+        }
+        stopDeviceTask(conflicting.id, false);
+      }
+      if (existingForApp) {
+        if (app.scheduleMode === "once") {
+          stopDeviceTask(existingForApp.id, false);
+          await runTransfer(app);
+          return;
+        }
+        commitDeviceTasks((current) => current.map((task) => task.id === existingForApp.id
+          ? { ...task, app, deviceName: resolvedDeviceName }
+          : task));
+        await runTransfer(app, existingForApp.id);
+        scheduleDeviceTask(existingForApp.id);
+        return;
+      }
+      if (app.scheduleMode === "once") {
+        await runTransfer(app);
+        return;
+      }
+      const taskId = `task-${crypto.randomUUID()}`;
+      const task: DeviceTask = {
+        id: taskId,
+        app,
+        deviceName: resolvedDeviceName,
+        status: "writing",
+        nextRunAt: null,
+        lastRunAt: null,
+        successCount: 0,
+        failureCount: 0,
+        lastError: null,
+      };
+      commitDeviceTasks((current) => [task, ...current]);
+      await runTransfer(app, taskId);
+      scheduleDeviceTask(taskId);
+      setTaskPanelOpen(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "没有选择设备";
       showToast(message, "error");
@@ -1408,6 +1601,10 @@ export default function InkStudio() {
 
   const contentTitle = tab === "mine" ? "我的应用" : tab === "explore" ? "发现灵感" : tab === "device" ? "设备中心" : null;
   const screenDisplay = displaySettings(app.spec);
+  const currentTask = deviceTasks.find((task) => task.app.id === app.id);
+  const scheduleActive = Boolean(currentTask);
+  const nextRun = currentTask?.nextRunAt ?? null;
+  const hasTaskErrors = deviceTasks.some((task) => task.status === "error");
 
   return (
     <main className="app-shell">
@@ -1429,17 +1626,82 @@ export default function InkStudio() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-device">
+        <button
+          type="button"
+          className={`sidebar-device${deviceTasks.length ? " has-tasks" : ""}${hasTaskErrors ? " has-error" : ""}`}
+          onClick={() => setTaskPanelOpen((open) => !open)}
+          aria-expanded={taskPanelOpen}
+          aria-controls="device-task-panel"
+        >
           <span className={`status-dot ${deviceStatus}`} />
-          <div>
+          <div className="sidebar-device-copy">
             <strong>{deviceName ?? "未连接设备"}</strong>
-            <small>{deviceName ? "已记住，可自动重连" : "TodooCard · BLE"}</small>
+            <small>{deviceTasks.length ? `${deviceTasks.length} 个定时任务` : deviceName ? "已记住，可自动重连" : "TodooCard · BLE"}</small>
           </div>
-        </div>
+          {deviceTasks.length > 0 && <span className="task-count" aria-label={`${deviceTasks.length} 个任务`}>{deviceTasks.length}</span>}
+          {hasTaskErrors && <span className="task-alert" aria-label="任务出现错误">!</span>}
+          <span className="task-chevron" aria-hidden="true">{taskPanelOpen ? "‹" : "›"}</span>
+        </button>
         <a className="product-link" href="https://p.todoo.tech/?lang=zh" target="_blank" rel="noreferrer">
           产品信息 <span>↗</span>
         </a>
       </aside>
+
+      {taskPanelOpen && (
+        <section className="device-task-panel" id="device-task-panel" aria-label="设备定时任务" aria-live="polite">
+          <header>
+            <div>
+              <span>DEVICE SCHEDULES</span>
+              <h2>{deviceName ?? "TodooCard"}</h2>
+            </div>
+            <button type="button" onClick={() => setTaskPanelOpen(false)} aria-label="关闭任务管理">×</button>
+          </header>
+          {deviceTasks.length ? (
+            <div className="device-task-list">
+              {deviceTasks.map((task) => (
+                <article className={`device-task ${task.status}`} key={task.id}>
+                  <div className="device-task-heading">
+                    <div>
+                      <span className="task-status-label">
+                        {task.status === "writing" ? "正在写入" : task.status === "error" ? "等待重试" : "运行中"}
+                      </span>
+                      <h3>{task.app.title}</h3>
+                      <p>{scheduleLabel(task.app)}</p>
+                    </div>
+                    <button type="button" onClick={() => stopDeviceTask(task.id)}>停止</button>
+                  </div>
+                  <div className="task-countdown">
+                    <span>距离下次刷新</span>
+                    <strong>{formatRemaining(task.nextRunAt, secondTick)}</strong>
+                    <small>{task.nextRunAt ? formatExactTime(task.nextRunAt) : "首次写入完成后开始计时"}</small>
+                  </div>
+                  <dl className="task-stats">
+                    <div><dt>成功</dt><dd>{task.successCount}</dd></div>
+                    <div><dt>失败</dt><dd>{task.failureCount}</dd></div>
+                    <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : "尚未执行"}</dd></div>
+                  </dl>
+                  {task.lastError && <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>}
+                  {task.lastCanvas ? (
+                    <figure className="task-canvas">
+                      <img src={task.lastCanvas} alt={`${task.app.title} 最近一次刷新的画面`} />
+                      <figcaption>最近一次刷新的 Canvas</figcaption>
+                    </figure>
+                  ) : (
+                    <div className="task-canvas-empty">写入完成后，这里会保留最近画面</div>
+                  )}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="device-task-empty">
+              <span>⌁</span>
+              <h3>还没有定时任务</h3>
+              <p>选择非“单次写入”的刷新计划，再点击开始写入。</p>
+            </div>
+          )}
+          <footer>页面保持打开且电脑不休眠时，任务会自动重连设备。</footer>
+        </section>
+      )}
 
       <section className="workspace">
         <header className="topbar">
@@ -1530,7 +1792,7 @@ export default function InkStudio() {
                     {generatorStatus === "checking"
                       ? "正在检查在线编码服务…"
                       : generatorStatus === "online"
-                        ? `Tsingfly 在线编码已就绪 · ${generatorModel === "auto" ? "自动选择模型" : generatorModel}`
+                        ? `在线编码已就绪 · ${generatorModel === "auto" ? "自动选择模型" : generatorModel}`
                         : "等待配置 LLM_API_KEY · 当前自动使用本地模板"}
                   </p>
                 </div>
@@ -1752,17 +2014,19 @@ export default function InkStudio() {
             <div className="run-dock">
               <div className="run-status">
                 <span className={`run-icon ${deviceStatus}`}>{deviceStatus === "writing" ? "↻" : "⌁"}</span>
-                <div>
+                <div className="run-status-copy">
                   <strong>
                     {deviceStatus === "writing" ? progress?.message ?? "正在写入" : scheduleActive ? "定时任务运行中" : deviceName ?? "准备写入 TodooCard"}
                   </strong>
-                  <small>
-                    {nextRun
-                      ? `下次执行 ${nextRun.toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-                      : deviceName
-                        ? "已授权设备不会再次弹出选择器"
-                        : "首次需要手动选择设备 · 之后自动重连"}
-                  </small>
+                  {nextRun ? (
+                    <div className="next-run-summary">
+                      <span>下次执行</span>
+                      <b>{formatExactTime(nextRun)}</b>
+                      <em>{formatRemaining(nextRun, secondTick)}</em>
+                    </div>
+                  ) : (
+                    <small>{deviceName ? "已授权设备不会再次弹出选择器" : "首次需要手动选择设备 · 之后自动重连"}</small>
+                  )}
                 </div>
               </div>
               {deviceStatus === "writing" && (
