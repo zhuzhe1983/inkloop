@@ -223,7 +223,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       style: includesAny(source, ["复古", "胶片", "日系", "电影感", "极简"])
         ? style
         : "fashion editorial studio lighting",
-      layout: "background",
+      layout: fullscreen ? "fullscreen" : "background",
       seed,
       rotateOnRefresh: true,
     };

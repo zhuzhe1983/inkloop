@@ -141,12 +141,21 @@ input:focus-visible {
   color: var(--ink);
 }
 
-.sidebar-device {
+.sidebar-devices {
   width: 100%;
+  max-height: 38vh;
   margin-top: auto;
-  padding: 14px 10px;
   border-top: 1px solid #354039;
   border-bottom: 1px solid #354039;
+  flex: none;
+  overflow-y: auto;
+}
+
+.sidebar-device {
+  width: 100%;
+  padding: 14px 10px;
+  border-top: 0;
+  border-bottom: 1px solid rgba(53, 64, 57, 0.72);
   border-right: 0;
   border-left: 0;
   background: transparent;
@@ -163,6 +172,43 @@ input:focus-visible {
 .sidebar-device:hover,
 .sidebar-device[aria-expanded="true"] {
   background: rgba(255, 255, 255, 0.055);
+}
+
+.sidebar-device.active {
+  background: rgba(217, 255, 76, 0.09);
+}
+
+.sidebar-device.empty {
+  cursor: default;
+}
+
+.add-device-button {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: #b9c3bb;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.add-device-button span {
+  color: var(--lime);
+  font-size: 19px;
+  line-height: 1;
+}
+
+.add-device-button:hover,
+.add-device-button:focus-visible {
+  background: rgba(255, 255, 255, 0.055);
+  color: white;
 }
 
 .sidebar-device-copy {

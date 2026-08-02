@@ -163,6 +163,7 @@ function wantsWeather(prompt: string) {
 }
 
 function namedArtworkQuery(prompt: string) {
+  if (/美女|女性|女人|女孩|人物时钟/.test(prompt)) return "fashion model woman portrait photography";
   if (/蜘蛛侠/.test(prompt)) return "Spider-Man superhero movie poster";
   if (/钢铁侠/.test(prompt)) return "Iron Man superhero movie poster";
   if (/美国队长/.test(prompt)) return "Captain America superhero movie poster";

@@ -26,9 +26,20 @@ type GeneratorStatus = "checking" | "online" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
 type DeviceTaskStatus = "scheduled" | "writing" | "error";
 
+type DeviceProfile = {
+  id: string;
+  name: string;
+};
+
+type AuthorizedBluetoothDevice = {
+  id: string;
+  name?: string | null;
+};
+
 type DeviceTask = {
   id: string;
   app: InkApp;
+  deviceId: string;
   deviceName: string;
   status: DeviceTaskStatus;
   nextRunAt: number | null;
@@ -347,7 +358,7 @@ const ePaperPalette = [
 
 function artworkUrl(artwork: ArtworkSpec) {
   const params = new URLSearchParams({
-    v: "3",
+    v: "4",
     query: artwork.query,
     style: artwork.style || "editorial high contrast composition",
     seed: String(artwork.seed),
@@ -624,7 +635,7 @@ function drawDisplayMeta(
   const display = displaySettings(spec);
   const ink = "#151816";
   const family = screenFontFamily(spec);
-  const leftLabel = display.date ? spec.dateText || spec.eyebrow : spec.eyebrow;
+  const leftLabel = display.date ? spec.dateText || spec.eyebrow : "";
   ctx.save();
   ctx.font = `700 18px ${family}`;
   if (leftLabel) {
@@ -866,7 +877,13 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       }
     : undefined);
   if (artwork) {
-    const area = artwork.layout === "fullscreen" || artwork.layout === "background"
+    const imageOnly = !display.quote
+      && !display.logo
+      && !display.date
+      && !display.time
+      && !display.weather
+      && !display.border;
+    const area = imageOnly || artwork.layout === "fullscreen" || artwork.layout === "background"
       ? { x: 0, y: 0, width, height }
       : artwork.layout === "hero"
       ? { x: 48, y: 132, width: 432, height: 314 }
@@ -879,7 +896,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
-      if (artwork.layout === "fullscreen") return true;
+      if (imageOnly || artwork.layout === "fullscreen") return true;
       drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
       if (artwork.layout === "hero" && display.border) {
         ctx.strokeStyle = ink;
@@ -891,7 +908,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = paper;
       ctx.fillRect(0, 0, width, height);
-      if (artwork.layout === "fullscreen") return false;
+      if (imageOnly || artwork.layout === "fullscreen") return false;
     }
   }
 
@@ -1072,6 +1089,9 @@ export default function InkStudio() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
+  const [devices, setDevices] = useState<DeviceProfile[]>([]);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [taskPanelDeviceId, setTaskPanelDeviceId] = useState<string | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"idle" | "ready" | "writing" | "scheduled" | "error">("idle");
   const [progress, setProgress] = useState<TodooProgress | null>(null);
   const [deviceTasks, setDeviceTasks] = useState<DeviceTask[]>([]);
@@ -1083,9 +1103,10 @@ export default function InkStudio() {
   const previewVersionRef = useRef(0);
   const currentAppRef = useRef(app);
   const driverRef = useRef<TodooCard | null>(null);
+  const deviceDriversRef = useRef(new Map<string, TodooCard>());
   const deviceTasksRef = useRef<DeviceTask[]>([]);
   const taskTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const transferLockRef = useRef(false);
+  const transferLocksRef = useRef(new Set<string>());
 
   const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     setToast({ message, tone });
@@ -1096,6 +1117,26 @@ export default function InkStudio() {
     const next = updater(deviceTasksRef.current);
     deviceTasksRef.current = next;
     setDeviceTasks(next);
+  }, []);
+
+  const rememberDevice = useCallback((driver: TodooCard, device: AuthorizedBluetoothDevice) => {
+    const profile = { id: device.id, name: device.name ?? "TodooCard" };
+    const previousDriver = deviceDriversRef.current.get(profile.id);
+    if (previousDriver && previousDriver !== driver) previousDriver.disconnect();
+    deviceDriversRef.current.set(profile.id, driver);
+    driverRef.current = driver;
+    setDevices((current) => [profile, ...current.filter((item) => item.id !== profile.id)]);
+    setActiveDeviceId(profile.id);
+    setDeviceName(profile.name);
+    setDeviceStatus("ready");
+    return profile;
+  }, []);
+
+  const activateDevice = useCallback((profile: DeviceProfile) => {
+    setActiveDeviceId(profile.id);
+    setDeviceName(profile.name);
+    const driver = deviceDriversRef.current.get(profile.id);
+    if (driver) driverRef.current = driver;
   }, []);
 
   useEffect(() => {
@@ -1168,14 +1209,16 @@ export default function InkStudio() {
     driver
       .restoreAuthorizedDevice()
       .then((device) => {
-        if (device) {
-          setDeviceName(device.name ?? "已授权设备");
-          setDeviceStatus("ready");
-        }
+        if (device) rememberDevice(driver, device);
       })
       .catch(() => undefined);
-    return () => driver.disconnect();
-  }, []);
+    return () => {
+      const knownDrivers = new Set(deviceDriversRef.current.values());
+      knownDrivers.add(driver);
+      knownDrivers.forEach((knownDriver) => knownDriver.disconnect());
+      deviceDriversRef.current.clear();
+    };
+  }, [rememberDevice]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setSecondTick(Date.now()), 1000);
@@ -1378,6 +1421,24 @@ export default function InkStudio() {
     return next.getTime() - now.getTime();
   }, []);
 
+  const selectNewDevice = useCallback(async () => {
+    const driver = new TodooCard(setProgress);
+    if (!driver.supported) {
+      showToast("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站", "error");
+      return null;
+    }
+    try {
+      const device = await driver.requestDevice();
+      const profile = rememberDevice(driver, device);
+      showToast(`已添加设备 ${profile.name}，尚未执行写入`, "success");
+      return profile;
+    } catch (error) {
+      driver.disconnect();
+      showToast(error instanceof Error ? error.message : "没有选择设备", "error");
+      return null;
+    }
+  }, [rememberDevice, showToast]);
+
   const stopDeviceTask = useCallback((taskId: string, notify = true) => {
     const timer = taskTimersRef.current.get(taskId);
     if (timer) clearTimeout(timer);
@@ -1387,12 +1448,22 @@ export default function InkStudio() {
     if (notify) showToast("定时任务已停止", "info");
   }, [commitDeviceTasks, deviceName, showToast]);
 
-  const runTransfer = useCallback(async (targetApp: InkApp, taskId?: string) => {
-    const driver = driverRef.current;
+  const runTransfer = useCallback(async (targetApp: InkApp, deviceId: string, taskId?: string) => {
+    const driver = deviceDriversRef.current.get(deviceId)
+      ?? (driverRef.current?.selectedDevice?.id === deviceId ? driverRef.current : null);
     const canvas = canvasRef.current;
-    if (!driver || !canvas) return false;
+    if (!driver) {
+      const reason = "找不到这台设备的授权，请重新选择设备";
+      if (taskId) {
+        commitDeviceTasks((current) => current.map((task) => task.id === taskId
+          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
+          : task));
+      }
+      return false;
+    }
     const editingThisApp = targetApp.id === currentAppRef.current.id;
-    if (editingThisApp && previewStatus === "loading") {
+    const renderInPreview = editingThisApp && !taskId && Boolean(canvas);
+    if (renderInPreview && previewStatus === "loading") {
       const reason = "图片素材仍在加载，请稍候重试";
       if (taskId) {
         commitDeviceTasks((current) => current.map((task) => task.id === taskId
@@ -1402,8 +1473,8 @@ export default function InkStudio() {
       showToast(reason, "info");
       return false;
     }
-    if (transferLockRef.current) {
-      const reason = "设备正在执行另一个写入任务，将在下一轮重试";
+    if (transferLocksRef.current.has(deviceId)) {
+      const reason = "这台设备正在执行另一个写入任务，将在下一轮重试";
       if (taskId) {
         commitDeviceTasks((current) => current.map((task) => task.id === taskId
           ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
@@ -1422,7 +1493,7 @@ export default function InkStudio() {
       showToast(reason, "info");
       return false;
     }
-    transferLockRef.current = true;
+    transferLocksRef.current.add(deviceId);
     setDeviceStatus("writing");
     if (taskId) {
       commitDeviceTasks((current) => current.map((task) => task.id === taskId
@@ -1445,12 +1516,12 @@ export default function InkStudio() {
           };
       const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date());
       const hasArtwork = Boolean(runtimeSpec.artwork || transferApp.localImage);
-      const outputCanvas = editingThisApp ? canvas : document.createElement("canvas");
+      const outputCanvas = renderInPreview && canvas ? canvas : document.createElement("canvas");
       outputCanvas.width = 528;
       outputCanvas.height = 792;
-      if (editingThisApp) setPreviewStatus(hasArtwork ? "loading" : "ready");
+      if (renderInPreview) setPreviewStatus(hasArtwork ? "loading" : "ready");
       const usedArtwork = await renderScreenToCanvas(outputCanvas, runtimeSpec, transferApp.localImage);
-      if (editingThisApp) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
+      if (renderInPreview) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
       await driver.writeCanvas(outputCanvas, true);
       if (nextSeed !== null) {
@@ -1496,7 +1567,7 @@ export default function InkStudio() {
       showToast(message, "error");
       return false;
     } finally {
-      transferLockRef.current = false;
+      transferLocksRef.current.delete(deviceId);
     }
   }, [commitDeviceTasks, previewStatus, showToast]);
 
@@ -1516,7 +1587,7 @@ export default function InkStudio() {
       taskTimersRef.current.delete(taskId);
       const latest = deviceTasksRef.current.find((item) => item.id === taskId);
       if (!latest) return;
-      const wrote = await runTransfer(latest.app, taskId);
+      const wrote = await runTransfer(latest.app, latest.deviceId, taskId);
       if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
       scheduleDeviceTask(taskId, !wrote && document.visibilityState !== "visible" ? 60_000 : undefined);
     }, delay);
@@ -1524,12 +1595,17 @@ export default function InkStudio() {
   }
 
   const stopSchedule = useCallback(() => {
-    const current = deviceTasksRef.current.find((task) => task.app.id === app.id);
+    const current = deviceTasksRef.current.find((task) => task.app.id === app.id
+      && (!activeDeviceId || task.deviceId === activeDeviceId));
     if (current) stopDeviceTask(current.id);
-  }, [app.id, stopDeviceTask]);
+  }, [activeDeviceId, app.id, stopDeviceTask]);
 
   const start = async () => {
-    const driver = driverRef.current;
+    let driver = activeDeviceId ? deviceDriversRef.current.get(activeDeviceId) ?? null : driverRef.current;
+    if (!driver) {
+      driver = new TodooCard(setProgress);
+      driverRef.current = driver;
+    }
     if (!driver?.supported) {
       showToast("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站", "error");
       setDeviceStatus("error");
@@ -1539,13 +1615,15 @@ export default function InkStudio() {
       let device = driver.selectedDevice;
       if (!device) device = await driver.restoreAuthorizedDevice();
       if (!device) device = await driver.requestDevice();
-      const resolvedDeviceName = device.name ?? "TodooCard";
-      setDeviceName(resolvedDeviceName);
-      const existingForApp = deviceTasksRef.current.find((task) => task.app.id === app.id);
+      const profile = rememberDevice(driver, device);
+      const resolvedDeviceName = profile.name;
+      const resolvedDeviceId = profile.id;
+      const existingForApp = deviceTasksRef.current.find((task) => task.app.id === app.id
+        && task.deviceId === resolvedDeviceId);
       const highFrequency = app.scheduleMode === "custom" && app.customMinutes < 5;
       const conflicting = highFrequency
         ? deviceTasksRef.current.find((task) => task.id !== existingForApp?.id
-          && task.deviceName === resolvedDeviceName
+          && task.deviceId === resolvedDeviceId
           && task.app.scheduleMode === "custom"
           && task.app.customMinutes < 5)
         : undefined;
@@ -1562,24 +1640,25 @@ export default function InkStudio() {
       if (existingForApp) {
         if (app.scheduleMode === "once") {
           stopDeviceTask(existingForApp.id, false);
-          await runTransfer(app);
+          await runTransfer(app, resolvedDeviceId);
           return;
         }
         commitDeviceTasks((current) => current.map((task) => task.id === existingForApp.id
-          ? { ...task, app, deviceName: resolvedDeviceName }
+          ? { ...task, app, deviceId: resolvedDeviceId, deviceName: resolvedDeviceName }
           : task));
-        await runTransfer(app, existingForApp.id);
+        await runTransfer(app, resolvedDeviceId, existingForApp.id);
         scheduleDeviceTask(existingForApp.id);
         return;
       }
       if (app.scheduleMode === "once") {
-        await runTransfer(app);
+        await runTransfer(app, resolvedDeviceId);
         return;
       }
       const taskId = `task-${crypto.randomUUID()}`;
       const task: DeviceTask = {
         id: taskId,
         app,
+        deviceId: resolvedDeviceId,
         deviceName: resolvedDeviceName,
         status: "writing",
         nextRunAt: null,
@@ -1589,8 +1668,9 @@ export default function InkStudio() {
         lastError: null,
       };
       commitDeviceTasks((current) => [task, ...current]);
-      await runTransfer(app, taskId);
+      await runTransfer(app, resolvedDeviceId, taskId);
       scheduleDeviceTask(taskId);
+      setTaskPanelDeviceId(resolvedDeviceId);
       setTaskPanelOpen(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "没有选择设备";
@@ -1601,10 +1681,26 @@ export default function InkStudio() {
 
   const contentTitle = tab === "mine" ? "我的应用" : tab === "explore" ? "发现灵感" : tab === "device" ? "设备中心" : null;
   const screenDisplay = displaySettings(app.spec);
-  const currentTask = deviceTasks.find((task) => task.app.id === app.id);
+  const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
+  const deviceSummaries = devices.map((device) => {
+    const tasks = deviceTasks.filter((task) => task.deviceId === device.id);
+    const hasError = tasks.some((task) => task.status === "error");
+    const isWriting = tasks.some((task) => task.status === "writing");
+    return {
+      ...device,
+      tasks,
+      hasError,
+      status: hasError ? "error" : isWriting ? "writing" : tasks.length ? "scheduled" : "ready",
+    };
+  });
+  const panelDevice = devices.find((device) => device.id === taskPanelDeviceId) ?? activeDevice;
+  const panelTasks = panelDevice
+    ? deviceTasks.filter((task) => task.deviceId === panelDevice.id)
+    : [];
+  const currentTask = deviceTasks.find((task) => task.app.id === app.id
+    && (!activeDevice?.id || task.deviceId === activeDevice.id));
   const scheduleActive = Boolean(currentTask);
   const nextRun = currentTask?.nextRunAt ?? null;
-  const hasTaskErrors = deviceTasks.some((task) => task.status === "error");
 
   return (
     <main className="app-shell">
@@ -1626,22 +1722,39 @@ export default function InkStudio() {
             </button>
           ))}
         </nav>
-        <button
-          type="button"
-          className={`sidebar-device${deviceTasks.length ? " has-tasks" : ""}${hasTaskErrors ? " has-error" : ""}`}
-          onClick={() => setTaskPanelOpen((open) => !open)}
-          aria-expanded={taskPanelOpen}
-          aria-controls="device-task-panel"
-        >
-          <span className={`status-dot ${deviceStatus}`} />
-          <div className="sidebar-device-copy">
-            <strong>{deviceName ?? "未连接设备"}</strong>
-            <small>{deviceTasks.length ? `${deviceTasks.length} 个定时任务` : deviceName ? "已记住，可自动重连" : "TodooCard · BLE"}</small>
-          </div>
-          {deviceTasks.length > 0 && <span className="task-count" aria-label={`${deviceTasks.length} 个任务`}>{deviceTasks.length}</span>}
-          {hasTaskErrors && <span className="task-alert" aria-label="任务出现错误">!</span>}
-          <span className="task-chevron" aria-hidden="true">{taskPanelOpen ? "‹" : "›"}</span>
-        </button>
+        <div className="sidebar-devices" aria-label="已选择的设备">
+          {deviceSummaries.length ? deviceSummaries.map((device) => (
+            <button
+              type="button"
+              key={device.id}
+              className={`sidebar-device${device.tasks.length ? " has-tasks" : ""}${device.hasError ? " has-error" : ""}${activeDevice?.id === device.id ? " active" : ""}`}
+              onClick={() => {
+                activateDevice(device);
+                setTaskPanelDeviceId(device.id);
+                setTaskPanelOpen((open) => taskPanelDeviceId === device.id ? !open : true);
+              }}
+              aria-expanded={taskPanelOpen && panelDevice?.id === device.id}
+              aria-controls="device-task-panel"
+            >
+              <span className={`status-dot ${device.status}`} />
+              <div className="sidebar-device-copy">
+                <strong>{device.name}</strong>
+                <small>{device.tasks.length ? `${device.tasks.length} 个定时任务` : "已记住，可自动重连"}</small>
+              </div>
+              {device.tasks.length > 0 && <span className="task-count" aria-label={`${device.tasks.length} 个任务`}>{device.tasks.length}</span>}
+              {device.hasError && <span className="task-alert" aria-label="任务出现错误">!</span>}
+              <span className="task-chevron" aria-hidden="true">{taskPanelOpen && panelDevice?.id === device.id ? "‹" : "›"}</span>
+            </button>
+          )) : (
+            <div className="sidebar-device empty">
+              <span className="status-dot idle" />
+              <div className="sidebar-device-copy"><strong>未连接设备</strong><small>TodooCard · BLE</small></div>
+            </div>
+          )}
+          <button type="button" className="add-device-button" onClick={() => void selectNewDevice()}>
+            <span>＋</span> 添加设备
+          </button>
+        </div>
         <a className="product-link" href="https://p.todoo.tech/?lang=zh" target="_blank" rel="noreferrer">
           产品信息 <span>↗</span>
         </a>
@@ -1652,13 +1765,13 @@ export default function InkStudio() {
           <header>
             <div>
               <span>DEVICE SCHEDULES</span>
-              <h2>{deviceName ?? "TodooCard"}</h2>
+              <h2>{panelDevice?.name ?? "TodooCard"}</h2>
             </div>
             <button type="button" onClick={() => setTaskPanelOpen(false)} aria-label="关闭任务管理">×</button>
           </header>
-          {deviceTasks.length ? (
+          {panelTasks.length ? (
             <div className="device-task-list">
-              {deviceTasks.map((task) => (
+              {panelTasks.map((task) => (
                 <article className={`device-task ${task.status}`} key={task.id}>
                   <div className="device-task-heading">
                     <div>
@@ -2089,10 +2202,12 @@ export default function InkStudio() {
                 <p>首选 Android 或桌面版 Chromium。首次必须由点击唤起设备选择；授权后本页面会保留设备，并优先恢复历史授权。</p>
               </div>
               <div className="connection-card">
-                <span className={`status-orb ${deviceName ? "connected" : ""}`}>⌁</span>
-                <strong>{deviceName ?? "TodooCard 未连接"}</strong>
-                <small>{deviceName ? "授权已保存 · 等待写入" : "NEMR99803797 / PICKSMART · 528 × 792"}</small>
-                <button type="button" onClick={start}>{deviceName ? "测试写入" : "选择设备"}</button>
+                <span className={`status-orb ${devices.length ? "connected" : ""}`}>⌁</span>
+                <strong>{activeDevice?.name ?? "TodooCard 未连接"}</strong>
+                <small>{devices.length
+                  ? `已添加 ${devices.length} 台设备 · 写入任务按设备独立管理`
+                  : "NEMR99803797 / PICKSMART · 528 × 792"}</small>
+                <button type="button" onClick={() => void selectNewDevice()}>{devices.length ? "添加另一台设备" : "选择设备"}</button>
               </div>
             </div>
             <div className="feasibility-grid">

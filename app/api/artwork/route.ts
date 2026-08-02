@@ -126,7 +126,29 @@ export async function GET(request: Request) {
   const style = cleanStyle(url.searchParams.get("style"));
   const seed = cleanSeed(url.searchParams.get("seed"));
   const keywords = `${query} ${style}`.split(/[\s,]+/).filter(Boolean).slice(0, 10).join(",");
+  const subjectKeywords = query.split(/[\s,]+/)
+    .filter((token) => token && !["photo", "photography", "image", "background", "adult"].includes(token.toLowerCase()))
+    .slice(0, 6)
+    .join(",");
   const failures: string[] = [];
+
+  try {
+    const themedUrl = `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(subjectKeywords || keywords)}?lock=${seed}`;
+    const image = await fetchImage(themedUrl);
+    if (image) {
+      return new Response(image.body, {
+        headers: {
+          "Content-Type": image.contentType,
+          "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
+          "X-Content-Type-Options": "nosniff",
+          "X-Inkloop-Image-Source": "loremflickr",
+        },
+      });
+    }
+    failures.push("loremflickr returned no image");
+  } catch (error) {
+    failures.push(error instanceof Error ? `loremflickr: ${error.message}` : "loremflickr failed");
+  }
 
   try {
     const image = await fetchCommonsImage(query, seed);
@@ -145,10 +167,10 @@ export async function GET(request: Request) {
     failures.push(error instanceof Error ? error.message : "Wikimedia Commons failed");
   }
 
-  const providers: Array<[string, string]> = [
-    ["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`],
-    ["loremflickr", `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(keywords)}?lock=${seed}`],
-  ];
+  const genericQuery = /^(colorful editorial illustration|abstract|texture|pattern)/i.test(query);
+  const providers: Array<[string, string]> = genericQuery
+    ? [["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`]]
+    : [];
 
   for (const [name, provider] of providers) {
     try {
