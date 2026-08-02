@@ -134,17 +134,20 @@ export async function GET(request: Request) {
       "photo", "photography", "image", "background", "adult", "cinematic", "editorial",
       "lighting", "composition", "high", "contrast", "cute", "movie", "poster",
     ].includes(token.toLowerCase()));
-  const loremTokens = lowerQuery.includes("woman") || lowerQuery.includes("girl")
-    ? ["woman", "portrait"]
-    : lowerQuery.includes("spider-man")
-      ? ["spider-man", "cosplay"]
-      : lowerQuery.includes("marvel") || lowerQuery.includes("avengers")
-        ? ["marvel", "cosplay"]
-        : lowerQuery.includes("cat")
-          ? ["cat", "portrait"]
-          : lowerQuery.includes("dog") || lowerQuery.includes("pet")
-            ? ["dog", "portrait"]
-            : subjectTokens.slice(0, 2);
+  let loremTokens = subjectTokens.slice(0, 2);
+  if (lowerQuery.includes("border collie") || (lowerQuery.includes("border") && lowerQuery.includes("collie"))) {
+    loremTokens = ["border", "collie", "dog"];
+  } else if (lowerQuery.includes("woman") || lowerQuery.includes("girl")) {
+    loremTokens = ["fashion", "model", "woman", "portrait"];
+  } else if (lowerQuery.includes("spider-man")) {
+    loremTokens = ["spider-man", "cosplay"];
+  } else if (lowerQuery.includes("marvel") || lowerQuery.includes("avengers")) {
+    loremTokens = ["marvel", "cosplay"];
+  } else if (lowerQuery.includes("cat")) {
+    loremTokens = ["cat", "portrait"];
+  } else if (lowerQuery.includes("dog") || lowerQuery.includes("pet")) {
+    loremTokens = ["dog", "portrait"];
+  }
   const subjectKeywords = loremTokens.join(",");
   const failures: string[] = [];
 

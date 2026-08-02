@@ -156,7 +156,7 @@ function wantsBackgroundArtwork(prompt: string) {
 }
 
 function wantsArtwork(prompt: string) {
-  return /图片|照片|摄影|背景|海报|插画|图案|彩虹|彩纸|礼花|波浪|网格|太阳|阳光|漫威|Marvel|蜘蛛侠|钢铁侠|美国队长|复仇者联盟|猫|猫咪|小猫|狗|宠物|美女|女性|人物|城市|风景|产品图/i.test(prompt);
+  return /图片|照片|摄影|背景|海报|插画|图案|彩虹|彩纸|礼花|波浪|网格|太阳|阳光|漫威|Marvel|蜘蛛侠|钢铁侠|美国队长|复仇者联盟|猫|猫咪|小猫|狗|宠物|边牧|边境牧羊犬|美女|女性|人物|城市|风景|产品图/i.test(prompt);
 }
 
 function wantsWeather(prompt: string) {
@@ -164,6 +164,7 @@ function wantsWeather(prompt: string) {
 }
 
 function namedArtworkQuery(prompt: string) {
+  if (/边牧|边境牧羊犬/.test(prompt)) return "border collie dog portrait photography";
   if (/美女|女性|女人|女孩|人物时钟/.test(prompt)) return "fashion model woman portrait photography";
   if (/蜘蛛侠/.test(prompt)) return "Spider-Man superhero movie poster";
   if (/钢铁侠/.test(prompt)) return "Iron Man superhero movie poster";

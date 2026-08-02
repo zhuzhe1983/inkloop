@@ -231,6 +231,17 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       rotateOnRefresh,
     };
   }
+  if (includesAny(source, ["边牧", "边境牧羊犬"])) {
+    return {
+      mode: "web",
+      motif: "grid",
+      query: "border collie dog portrait photography",
+      style,
+      layout: fullscreen ? "fullscreen" : background ? "background" : "hero",
+      seed,
+      rotateOnRefresh,
+    };
+  }
   if (includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])) {
     return {
       mode: "web",

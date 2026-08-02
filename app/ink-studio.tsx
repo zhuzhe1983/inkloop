@@ -448,7 +448,7 @@ const ePaperPalette = [
 
 function artworkUrl(artwork: ArtworkSpec) {
   const params = new URLSearchParams({
-    v: "7",
+    v: "8",
     query: artwork.query,
     style: artwork.style || "editorial high contrast composition",
     seed: String(artwork.seed),
@@ -554,12 +554,21 @@ function quantizeRegion(
     for (let pixelX = 0; pixelX < width; pixelX += 1) {
       const pixel = (pixelY * width + pixelX) * 4;
       const orderedBias = (bayer4[(pixelY % 4) * 4 + (pixelX % 4)] - 7.5) * 0.35;
-      const red = clamp(image.data[pixel] + currentRed[pixelX] + orderedBias, 0, 255);
-      const green = clamp(image.data[pixel + 1] + currentGreen[pixelX] + orderedBias, 0, 255);
-      const blue = clamp(image.data[pixel + 2] + currentBlue[pixelX] + orderedBias, 0, 255);
+      const sourceRed = image.data[pixel];
+      const sourceGreen = image.data[pixel + 1];
+      const sourceBlue = image.data[pixel + 2];
+      const sourceMaximum = Math.max(sourceRed, sourceGreen, sourceBlue);
+      const sourceChroma = sourceMaximum - Math.min(sourceRed, sourceGreen, sourceBlue);
+      const sourceSaturation = sourceChroma / Math.max(1, sourceMaximum);
+      const isNeutral = sourceChroma < 36 || sourceSaturation < 0.28;
+      const neutralError = (currentRed[pixelX] + currentGreen[pixelX] + currentBlue[pixelX]) / 3;
+      const red = clamp(sourceRed + (isNeutral ? neutralError : currentRed[pixelX]) + orderedBias, 0, 255);
+      const green = clamp(sourceGreen + (isNeutral ? neutralError : currentGreen[pixelX]) + orderedBias, 0, 255);
+      const blue = clamp(sourceBlue + (isNeutral ? neutralError : currentBlue[pixelX]) + orderedBias, 0, 255);
       let best: readonly [number, number, number] = ePaperPalette[0];
       let bestDistance = Number.POSITIVE_INFINITY;
-      for (const color of ePaperPalette) {
+      const availablePalette = isNeutral ? ePaperPalette.slice(0, 2) : ePaperPalette;
+      for (const color of availablePalette) {
         const dr = red - color[0];
         const dg = green - color[1];
         const db = blue - color[2];
@@ -2215,7 +2224,7 @@ export default function InkStudio() {
                 {(app.spec.artwork || app.localImage) && (
                   <div className="preview-source-note">
                     {app.spec.artwork?.mode === "web" && (
-                      <p>猫雕塑是图片网站返回的默认内容，请点击“重新生成”。</p>
+                      <p>如果图片主题与要求不符，请点击“重新生成”。</p>
                     )}
                     {app.localImage ? (
                       <p><strong>图片来源</strong> 本机上传（无外部地址）</p>
