@@ -39,6 +39,7 @@ const stateProgress: Record<string, TodooProgress> = {
 export class TodooCard {
   private core: CoreTodooCard;
   private onProgress?: ProgressHandler;
+  private reconnectPromise: Promise<void> | null = null;
 
   constructor(onProgress?: ProgressHandler) {
     this.onProgress = onProgress;
@@ -95,6 +96,26 @@ export class TodooCard {
 
   disconnect() {
     this.core.disconnect();
+  }
+
+  /**
+   * Rebuild the whole GATT session after a range or transport failure.
+   * A disconnected Web Bluetooth characteristic cannot be reused, so the core
+   * reconnect performs service and characteristic discovery again. Keep a
+   * single promise here so an automatic timer and a manual retry cannot race.
+   */
+  reconnect() {
+    if (this.reconnectPromise) return this.reconnectPromise;
+    this.reconnectPromise = (async () => {
+      this.onProgress?.({ phase: "connecting", percent: 2, message: "正在清理旧连接…" });
+      this.core.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      this.onProgress?.({ phase: "connecting", percent: 4, message: "正在重新连接 TodooCard…" });
+      await this.core.connect();
+    })().finally(() => {
+      this.reconnectPromise = null;
+    });
+    return this.reconnectPromise;
   }
 
   static encodeImageData(imageData: ImageData) {

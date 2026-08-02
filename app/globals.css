@@ -2014,8 +2014,8 @@ input:focus-visible {
 
 .mini-screen {
   width: 168px;
-  height: 250px;
-  padding: 17px 14px;
+  height: 252px;
+  padding: 0;
   position: relative;
   overflow: hidden;
   border: 6px solid #f5f5ef;
@@ -2026,14 +2026,11 @@ input:focus-visible {
   color: var(--ink);
 }
 
-.mini-screen::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(circle, rgba(0, 0, 0, 0.09) 0.5px, transparent 0.7px);
-  background-size: 3px 3px;
-  opacity: 0.2;
+.mini-screen canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #fafaf8;
 }
 
 .mini-screen.has-artwork > * {

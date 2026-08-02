@@ -1,4 +1,4 @@
-export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric";
+export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable";
 
 export type ScheduleMode = "once" | "hourly" | "daily" | "custom";
 
@@ -20,9 +20,9 @@ export type ClockSpec = {
 
 export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 
-export type ScreenRenderMode = "official" | "inkloop-text" | "inkloop-image";
+export type ScreenRenderMode = "official" | "inkloop-text";
 
-export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather";
+export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather" | "weatherLarge";
 
 export type ScreenElementPosition = {
   x: number;
@@ -35,7 +35,8 @@ export const DEFAULT_ELEMENT_POSITIONS: Record<ScreenElementKey, ScreenElementPo
   date: { x: 160, y: 70 },
   time: { x: 444, y: 70 },
   timeLarge: { x: 264, y: 390 },
-  weather: { x: 374, y: 110 },
+  weather: { x: 350, y: 108 },
+  weatherLarge: { x: 264, y: 350 },
 };
 
 export const DEFAULT_ELEMENT_SIZES: Record<ScreenElementKey, number> = {
@@ -44,7 +45,8 @@ export const DEFAULT_ELEMENT_SIZES: Record<ScreenElementKey, number> = {
   date: 18,
   time: 22,
   timeLarge: 112,
-  weather: 16,
+  weather: 18,
+  weatherLarge: 88,
 };
 
 export type ScreenDisplay = {
@@ -54,6 +56,7 @@ export type ScreenDisplay = {
   time: boolean;
   timeLarge: boolean;
   weather: boolean;
+  weatherLarge: boolean;
   border: boolean;
   font: ScreenFont;
   renderMode: ScreenRenderMode;
@@ -62,6 +65,30 @@ export type ScreenDisplay = {
   elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
   elementSizes: Partial<Record<ScreenElementKey, number>>;
 };
+
+export type CalendarEvent = {
+  day: number;
+  text: string;
+};
+
+export type TimetableRow = {
+  label: string;
+  cells: string[];
+};
+
+export type ScreenTable =
+  | {
+      type: "calendar";
+      year: number;
+      month: number;
+      weekStartsOn: "monday" | "sunday";
+      events: CalendarEvent[];
+    }
+  | {
+      type: "timetable";
+      columns: string[];
+      rows: TimetableRow[];
+    };
 
 export type ScreenSpec = {
   kind: ScreenKind;
@@ -79,6 +106,7 @@ export type ScreenSpec = {
   dateText?: string;
   timeText?: string;
   weatherText?: string;
+  table?: ScreenTable;
 };
 
 export type InkApp = {
@@ -145,14 +173,13 @@ export function displaySettings(spec: ScreenSpec): ScreenDisplay {
     date: Boolean(spec.clock?.enabled),
     time: false,
     timeLarge: Boolean(spec.clock?.enabled),
-    weather: spec.kind === "weather",
+    weather: saved?.weather ?? false,
+    weatherLarge: saved?.weatherLarge ?? (!saved && spec.kind === "weather"),
     border: false,
     font: fallbackFont,
     logoText: "INKLOOP",
     ...saved,
-    renderMode: saved?.renderMode === "inkloop-text" || saved?.renderMode === "inkloop-image"
-      ? saved.renderMode
-      : "official",
+    renderMode: saved?.renderMode === "inkloop-text" ? saved.renderMode : "official",
     positions: {
       ...DEFAULT_ELEMENT_POSITIONS,
       ...saved?.positions,
@@ -339,6 +366,34 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
   return undefined;
 }
 
+function requestedCalendarMonth(source: string) {
+  const now = new Date();
+  const full = source.match(/(20\d{2})\s*年\s*(1[0-2]|0?[1-9])\s*月/);
+  const monthOnly = source.match(/(?:^|\D)(1[0-2]|0?[1-9])\s*月/);
+  return {
+    year: full ? Number(full[1]) : now.getFullYear(),
+    month: full ? Number(full[2]) : monthOnly ? Number(monthOnly[1]) : now.getMonth() + 1,
+  };
+}
+
+function requestedCalendarEvents(source: string): CalendarEvent[] {
+  return [...source.matchAll(/(3[01]|[12]?\d)\s*[日号]\s*([^，。,；;\n]{1,12})/g)]
+    .map((match) => ({ day: Number(match[1]), text: match[2].trim().slice(0, 8) }))
+    .filter((event) => event.day >= 1 && event.day <= 31 && event.text)
+    .slice(0, 12);
+}
+
+function fallbackTimetable(source: string): TimetableRow[] {
+  const knownSubjects = ["语文", "数学", "英语", "物理", "化学", "生物", "历史", "地理", "政治", "美术", "音乐", "体育", "编程"];
+  const subjects = knownSubjects.filter((subject) => source.includes(subject));
+  const pool = subjects.length ? subjects : ["语文", "数学", "英语", "科学", "体育"];
+  const labels = ["08:00", "09:00", "10:15", "13:30", "14:40", "15:50"];
+  return labels.map((label, row) => ({
+    label,
+    cells: Array.from({ length: 5 }, (_, column) => pool[(row * 2 + column) % pool.length]),
+  }));
+}
+
 export function generateInkApp(prompt: string, stableId?: string): InkApp {
   const source = prompt.trim() || starterPrompt;
   const promptHour = source.match(/(\d{1,2})\s*[点:时]/)?.[1];
@@ -377,6 +432,89 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
       },
       code: `export function render() {
   return { artwork: { layout: "fullscreen", query: ${JSON.stringify(artwork.query)} } };
+}`,
+    };
+  }
+
+  if (includesAny(source, ["月历", "日历", "月度计划", "月计划"])) {
+    const { year, month } = requestedCalendarMonth(source);
+    const events = requestedCalendarEvents(source);
+    return {
+      ...base,
+      title: `${year} 年 ${month} 月月历`,
+      description: "完整六周月历，可在日期中显示简短事项",
+      scheduleMode: includesAny(source, ["每天", "每日"]) ? "daily" : "once",
+      dailyTime: "00:05",
+      spec: {
+        kind: "calendar",
+        eyebrow: "MONTHLY OVERVIEW",
+        title: `${year} 年 ${month} 月`,
+        value: "",
+        unit: "",
+        detail: events.length ? `${events.length} 个日程已标记` : "本月安排一览",
+        footer: "",
+        accent: "blue",
+        table: { type: "calendar", year, month, weekStartsOn: "monday", events },
+        display: {
+          ...displaySettings({
+            kind: "calendar",
+            eyebrow: "",
+            title: "",
+            value: "",
+            unit: "",
+            detail: "",
+            footer: "",
+            accent: "blue",
+          }),
+          quote: false,
+          date: false,
+          weather: false,
+          weatherLarge: false,
+        },
+      },
+      code: `export function render() {
+  return ${JSON.stringify({ type: "calendar", year, month, weekStartsOn: "monday", events }, null, 2)};
+}`,
+    };
+  }
+
+  if (includesAny(source, ["课程表", "课表", "排课表", "时间表"])) {
+    const columns = ["周一", "周二", "周三", "周四", "周五"];
+    const rows = fallbackTimetable(source);
+    return {
+      ...base,
+      title: "一周课程表",
+      description: "按星期和时段整理的一页课程安排",
+      scheduleMode: "once",
+      spec: {
+        kind: "timetable",
+        eyebrow: "WEEKLY SCHEDULE",
+        title: "一周课程表",
+        value: "",
+        unit: "",
+        detail: "",
+        footer: "",
+        accent: "green",
+        table: { type: "timetable", columns, rows },
+        display: {
+          ...displaySettings({
+            kind: "timetable",
+            eyebrow: "",
+            title: "",
+            value: "",
+            unit: "",
+            detail: "",
+            footer: "",
+            accent: "green",
+          }),
+          quote: false,
+          date: false,
+          weather: false,
+          weatherLarge: false,
+        },
+      },
+      code: `export function render() {
+  return ${JSON.stringify({ type: "timetable", columns, rows }, null, 2)};
 }`,
     };
   }

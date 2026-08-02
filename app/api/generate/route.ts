@@ -9,6 +9,7 @@ import {
   type ScreenKind,
   type ScreenFont,
   type ScreenSpec,
+  type ScreenTable,
 } from "../../lib/app-model";
 
 const DEFAULT_BASE_URL = `https://hub.${["tsing", "fly"].join("")}.com/v1`;
@@ -19,7 +20,7 @@ const MODEL_PREFERENCES = [
   "qwen3-32b",
 ];
 
-const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric"]);
+const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric", "calendar", "timetable"]);
 const ALLOWED_ACCENTS = new Set<ScreenSpec["accent"]>(["red", "blue", "green", "yellow"]);
 const ALLOWED_ARTWORK_MODES = new Set<ArtworkSpec["mode"] | "none">(["none", "generated", "web"]);
 const ALLOWED_ARTWORK_MOTIFS = new Set<ArtworkSpec["motif"]>([
@@ -58,7 +59,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
   "title": "应用名，最多20个汉字",
   "description": "一句用途说明",
   "spec": {
-    "kind": "weather|focus|countdown|meeting|metric",
+    "kind": "weather|focus|countdown|meeting|metric|calendar|timetable",
     "city": "天气应用填写城市，其他应用省略",
     "eyebrow": "屏幕顶部短标签",
     "title": "屏幕标题",
@@ -87,9 +88,19 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "time": false,
       "timeLarge": false,
       "weather": false,
+      "weatherLarge": false,
       "border": false,
       "font": "sans|serif|rounded|mono|handwritten",
       "logoText": "INKLOOP"
+    },
+    "table": {
+      "type": "calendar|timetable",
+      "year": 2026,
+      "month": 8,
+      "weekStartsOn": "monday|sunday",
+      "events": [{ "day": 8, "text": "项目发布" }],
+      "columns": ["周一", "周二", "周三", "周四", "周五"],
+      "rows": [{ "label": "08:00", "cells": ["语文", "数学", "英语", "体育", "美术"] }]
     }
   },
   "code": "可供用户审阅的 JavaScript 业务逻辑源码字符串",
@@ -118,7 +129,9 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。
 18. 用户没有明确要求图片、背景、海报、插画或视觉主题时，artwork.mode 必须是 none；信息卡优先使用清晰的纯文字排版。
 19. 海报不添加品牌签名、产品型号、水印或“6-COLOR E-PAPER”等脚注。避免无理由使用满屏高饱和蓝色、重复粗线和厚重发光描边；优先留白、清晰层级和至多两种强调色。
-20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；时钟默认使用 timeLarge。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；quote、date、time、timeLarge、weather 只按用户需求开启。
+20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；weather 是角落的一行小天气摘要，weatherLarge 是把城市、天气、温度和高低温组合成一个整体的大天气组件。天气应用默认使用 weatherLarge，二者不要同时开启。时钟默认使用 timeLarge。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；其他组件只按用户需求开启。
+21. 用户要求月历、日历或月度计划时使用 kind=calendar，table.type=calendar，提供 year、month、weekStartsOn 和最多 12 个简短 events；不需要输出 42 个日期格，系统会按月份计算。
+22. 用户要求课程表、课表或周时间表时使用 kind=timetable，table.type=timetable；columns 为 2—7 个列标题，rows 为 1—8 个时间段，每个 cells 长度与 columns 一致，每格最多 8 个汉字。表格数据只表达语义，不包含坐标、HTML、CSS 或绘图代码。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
 ${EPAPER_DESIGN_GUIDE}`;
@@ -161,6 +174,14 @@ function wantsArtwork(prompt: string) {
 
 function wantsWeather(prompt: string) {
   return /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(prompt);
+}
+
+function wantsCalendar(prompt: string) {
+  return /月历|日历|月度计划|月计划/.test(prompt);
+}
+
+function wantsTimetable(prompt: string) {
+  return /课程表|课表|排课表|周时间表/.test(prompt);
 }
 
 function namedArtworkQuery(prompt: string) {
@@ -299,7 +320,8 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
     date: candidate.date === true || explicitDate,
     time: candidate.time === true || (explicitTime && !explicitLargeTime),
     timeLarge: candidate.timeLarge === true || explicitLargeTime,
-    weather: candidate.weather === true || explicitWeather,
+    weather: candidate.weather === true,
+    weatherLarge: candidate.weatherLarge === true || (explicitWeather && candidate.weather !== true),
     border: explicitBorder && candidate.border !== false,
     font: ALLOWED_SCREEN_FONTS.has(requestedFont) ? requestedFont : defaults.font,
     renderMode: defaults.renderMode,
@@ -307,6 +329,58 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
     positions: defaults.positions,
     elementFonts: defaults.elementFonts,
     elementSizes: defaults.elementSizes,
+  };
+}
+
+function normalizeTable(value: unknown, fallback: ScreenTable | undefined, kind: ScreenKind) {
+  if (kind !== "calendar" && kind !== "timetable") return undefined;
+  const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
+
+  if (kind === "calendar") {
+    const fallbackCalendar = fallback?.type === "calendar" ? fallback : undefined;
+    const year = Math.round(Number(candidate.year) || fallbackCalendar?.year || new Date().getFullYear());
+    const month = Math.round(Number(candidate.month) || fallbackCalendar?.month || new Date().getMonth() + 1);
+    const rawEvents = Array.isArray(candidate.events) ? candidate.events : fallbackCalendar?.events ?? [];
+    const events = rawEvents.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const event = entry as Record<string, unknown>;
+      const day = Math.round(Number(event.day));
+      const text = typeof event.text === "string" ? event.text.trim().slice(0, 8) : "";
+      return day >= 1 && day <= 31 && text ? [{ day, text }] : [];
+    }).slice(0, 12);
+    return {
+      type: "calendar" as const,
+      year: Math.min(2100, Math.max(2020, year)),
+      month: Math.min(12, Math.max(1, month)),
+      weekStartsOn: candidate.weekStartsOn === "sunday" ? "sunday" as const : "monday" as const,
+      events,
+    };
+  }
+
+  const fallbackTimetable = fallback?.type === "timetable" ? fallback : undefined;
+  const rawColumns = Array.isArray(candidate.columns) ? candidate.columns : fallbackTimetable?.columns ?? [];
+  const columns = rawColumns
+    .filter((column): column is string => typeof column === "string")
+    .map((column) => column.trim().slice(0, 6))
+    .filter(Boolean)
+    .slice(0, 7);
+  const safeColumns = columns.length >= 2 ? columns : ["周一", "周二", "周三", "周四", "周五"];
+  const rawRows = Array.isArray(candidate.rows) ? candidate.rows : fallbackTimetable?.rows ?? [];
+  const rows = rawRows.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const row = entry as Record<string, unknown>;
+    const label = typeof row.label === "string" ? row.label.trim().slice(0, 8) : "";
+    const rawCells = Array.isArray(row.cells) ? row.cells : [];
+    const cells = Array.from({ length: safeColumns.length }, (_, index) => {
+      const cell = rawCells[index];
+      return typeof cell === "string" ? cell.trim().slice(0, 8) : "";
+    });
+    return label ? [{ label, cells }] : [];
+  }).slice(0, 8);
+  return {
+    type: "timetable" as const,
+    columns: safeColumns,
+    rows: rows.length ? rows : fallbackTimetable?.rows ?? [],
   };
 }
 
@@ -339,9 +413,13 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
   const schedule = resolveSchedule(prompt, fallback, rawMinutes, rawTime);
   const normalizedKind = wantsWeather(prompt)
     ? "weather"
-    : ALLOWED_KINDS.has(candidateKind) && candidateKind !== "weather"
-      ? candidateKind
-      : fallback.spec.kind;
+    : wantsCalendar(prompt)
+      ? "calendar"
+      : wantsTimetable(prompt)
+        ? "timetable"
+        : ALLOWED_KINDS.has(candidateKind) && !["weather", "calendar", "timetable"].includes(candidateKind)
+          ? candidateKind
+          : fallback.spec.kind;
 
   return {
     ...fallback,
@@ -364,6 +442,7 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
       artwork: normalizeArtwork(candidateSpec.artwork, fallback.spec.artwork, prompt),
       clock: normalizeClock(candidateSpec.clock, fallback.spec.clock),
       display: normalizeDisplay(candidateSpec.display, fallback, prompt),
+      table: normalizeTable(candidateSpec.table, fallback.spec.table, normalizedKind),
     },
     code: trimText(value.code, fallback.code, 8000),
     scheduleMode: schedule.mode,

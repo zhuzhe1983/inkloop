@@ -21,6 +21,7 @@ export default class CoreTodooCard {
   listAuthorizedDevices(options?: Record<string, unknown>): Promise<CoreBluetoothDevice[]>;
   useDevice(device: CoreBluetoothDevice, options?: Record<string, unknown>): this;
   requestDevice(options?: Record<string, unknown>): Promise<CoreBluetoothDevice>;
+  connect(options?: Record<string, unknown>): Promise<unknown>;
   disconnect(): void;
   writeImageData(imageData: ImageData, options?: Record<string, unknown>): Promise<unknown>;
   static encodeImageData(imageData: ImageData, options?: Record<string, unknown>): Uint8Array;

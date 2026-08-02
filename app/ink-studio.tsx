@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
-  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -88,6 +87,8 @@ const samplePrompts = [
   "显示新品发布倒计时",
   "彩虹背景，中间写一句今天也很棒",
   "美女时钟，每分钟换背景和字体",
+  "生成本月日历，8号项目发布，18号复盘",
+  "生成周一到周五的课程表",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
 ];
@@ -109,7 +110,8 @@ const screenElementOptions: Array<{ key: ScreenElementKey; label: string; width:
   { key: "date", label: "日期", width: 260, height: 54 },
   { key: "time", label: "时间", width: 170, height: 56 },
   { key: "timeLarge", label: "时间（大）", width: 430, height: 154 },
-  { key: "weather", label: "天气", width: 290, height: 54 },
+  { key: "weather", label: "天气（小）", width: 310, height: 64 },
+  { key: "weatherLarge", label: "天气（大）", width: 430, height: 230 },
 ];
 
 const screenFontOptions: Array<{ value: ScreenFont; label: string }> = [
@@ -127,7 +129,6 @@ const renderModeOptions: Array<{
 }> = [
   { value: "official", label: "Official Skill", description: "完整抖动，保留最多照片细节" },
   { value: "inkloop-text", label: "Inkloop text", description: "低噪点，适合文字、图标和纯色画面" },
-  { value: "inkloop-image", label: "Inkloop Image", description: "兼顾照片层次与中性色稳定" },
 ];
 
 const knownWeatherCities = [
@@ -138,7 +139,7 @@ const knownWeatherCities = [
 
 function applyPreferredCityToGeneratedApp(generated: InkApp, sourcePrompt: string, preferredCity: string) {
   const display = displaySettings(generated.spec);
-  if (!display.weather && generated.spec.kind !== "weather") return generated;
+  if (!display.weather && !display.weatherLarge && generated.spec.kind !== "weather") return generated;
   const explicitCity = knownWeatherCities.find((city) => sourcePrompt.includes(city));
   return {
     ...generated,
@@ -329,6 +330,7 @@ async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promi
   const display = displaySettings(resolved);
   if (
     !display.weather
+    && !display.weatherLarge
     || (resolved.kind !== "weather" && !weatherRequested && !resolved.city)
     || resolved.artwork?.layout === "fullscreen"
   ) return resolved;
@@ -419,7 +421,8 @@ function screenElementPosition(spec: ScreenSpec, element: ScreenElementKey) {
 
 function screenElementFontSize(spec: ScreenSpec, element: ScreenElementKey) {
   const value = displaySettings(spec).elementSizes[element] ?? DEFAULT_ELEMENT_SIZES[element];
-  return Math.round(Math.min(element === "timeLarge" ? 180 : 72, Math.max(10, value)));
+  const maximum = element === "timeLarge" ? 180 : element === "weatherLarge" ? 132 : 72;
+  return Math.round(Math.min(maximum, Math.max(10, value)));
 }
 
 function clockFontFamily(spec: ScreenSpec) {
@@ -551,9 +554,7 @@ function drawImageCover(
   ctx.imageSmoothingQuality = "high";
   ctx.filter = renderMode === "inkloop-text"
     ? "saturate(0.96) contrast(0.96) brightness(1.02)"
-    : renderMode === "inkloop-image"
-      ? "saturate(0.96) contrast(0.98) brightness(1.01)"
-      : "none";
+    : "none";
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
   ctx.restore();
 }
@@ -741,7 +742,7 @@ function quantizeRegion(
     quantizeTextRegion(ctx, x, y, width, height);
     return;
   }
-  quantizeNativeRegion(ctx, x, y, width, height, renderMode === "inkloop-image");
+  quantizeNativeRegion(ctx, x, y, width, height, false);
 }
 
 function drawGeneratedArtwork(
@@ -886,6 +887,67 @@ function drawGlowText(
   ctx.restore();
 }
 
+function drawWeatherGroup(
+  ctx: CanvasRenderingContext2D,
+  spec: ScreenSpec,
+  accent: string,
+  transparentOverlay: boolean,
+  large: boolean,
+) {
+  const element: ScreenElementKey = large ? "weatherLarge" : "weather";
+  const position = screenElementPosition(spec, element);
+  const family = screenElementFontFamily(spec, element);
+  const fontSize = screenElementFontSize(spec, element);
+  const ink = "#151816";
+  const summary = spec.weatherText || `${spec.city || "天气"} · ${spec.value}${spec.unit}`;
+  const condition = spec.detail.split("·")[0]?.trim() || "天气多变";
+
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.fillStyle = accent;
+
+  if (!large) {
+    ctx.beginPath();
+    ctx.arc(position.x - 142, position.y - fontSize * 0.3, Math.max(6, fontSize * 0.34), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = `800 ${fontSize}px ${family}`;
+    if (transparentOverlay) drawGlowText(ctx, summary.slice(0, 28), position.x + 8, position.y, 280);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(summary.slice(0, 28), position.x + 8, position.y, 280);
+    }
+    ctx.restore();
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.arc(position.x - 154, position.y - 42, 34, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = `800 ${Math.max(18, Math.round(fontSize * 0.3))}px ${family}`;
+  const heading = `${spec.city || "当前城市"} · ${condition}`.slice(0, 24);
+  if (transparentOverlay) drawGlowText(ctx, heading, position.x, position.y - 68, 390);
+  else {
+    ctx.fillStyle = ink;
+    ctx.fillText(heading, position.x, position.y - 68, 390);
+  }
+
+  const temperature = `${spec.value}${spec.unit}`;
+  ctx.font = `900 ${fitClockText(ctx, temperature, 390, fontSize, family)}px ${family}`;
+  if (transparentOverlay) drawGlowText(ctx, temperature, position.x, position.y + 38, 390);
+  else {
+    ctx.fillStyle = ink;
+    ctx.fillText(temperature, position.x, position.y + 38, 390);
+  }
+
+  ctx.font = `700 ${Math.max(16, Math.round(fontSize * 0.24))}px ${family}`;
+  if (transparentOverlay) drawGlowText(ctx, spec.detail.slice(0, 34), position.x, position.y + 90, 400);
+  else {
+    ctx.fillStyle = ink;
+    ctx.fillText(spec.detail.slice(0, 34), position.x, position.y + 90, 400);
+  }
+  ctx.restore();
+}
+
 function drawEditorialPlate(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -942,15 +1004,8 @@ function drawDisplayMeta(
       ctx.fillText(spec.timeText, position.x, position.y, 140);
     }
   }
-  if (display.weather && spec.weatherText) {
-    const position = screenElementPosition(spec, "weather");
-    ctx.font = `700 ${screenElementFontSize(spec, "weather")}px ${screenElementFontFamily(spec, "weather")}`;
-    if (transparentOverlay) drawGlowText(ctx, spec.weatherText.slice(0, 24), position.x, position.y, 280);
-    else {
-      ctx.fillStyle = ink;
-      ctx.fillText(spec.weatherText.slice(0, 24), position.x, position.y, 280);
-    }
-  }
+  if (display.weather && spec.weatherText) drawWeatherGroup(ctx, spec, accent, transparentOverlay, false);
+  if (display.weatherLarge && spec.weatherText) drawWeatherGroup(ctx, spec, accent, transparentOverlay, true);
 
   if (display.logo && display.logoText) {
     const position = screenElementPosition(spec, "logo");
@@ -1027,6 +1082,8 @@ function drawArtworkCopy(
     return;
   }
 
+  if (spec.kind === "weather" && (display.weather || display.weatherLarge)) return;
+
   const valueWithUnit = `${spec.value}${spec.unit ? ` ${spec.unit}` : ""}`;
   if (transparentOverlay) {
     ctx.font = `800 ${fitText(ctx, spec.title, 420, 38, family)}px ${family}`;
@@ -1085,6 +1142,151 @@ function drawOuterScreenBorder(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
+function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  if (spec.table?.type !== "calendar") return;
+  const { year, month, weekStartsOn, events } = spec.table;
+  const family = screenFontFamily(spec);
+  const ink = "#151816";
+  const accent = accentColors[spec.accent];
+  const weekdays = weekStartsOn === "sunday"
+    ? ["日", "一", "二", "三", "四", "五", "六"]
+    : ["一", "二", "三", "四", "五", "六", "日"];
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const offset = weekStartsOn === "sunday" ? firstWeekday : (firstWeekday + 6) % 7;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const today = new Date();
+  const eventMap = new Map(events.map((event) => [event.day, event.text]));
+  const left = 24;
+  const top = 118;
+  const width = 480;
+  const weekdayHeight = 42;
+  const rowHeight = 98;
+  const columnWidth = width / 7;
+
+  ctx.save();
+  ctx.fillStyle = ink;
+  ctx.textAlign = "left";
+  ctx.font = `900 42px ${family}`;
+  ctx.fillText(`${year} 年 ${month} 月`, left, 68, 360);
+  ctx.fillStyle = accent;
+  ctx.fillRect(left, 88, 88, 8);
+  ctx.textAlign = "center";
+  weekdays.forEach((weekday, column) => {
+    ctx.fillStyle = column >= 5 ? "#dc3f2f" : ink;
+    ctx.font = `800 18px ${family}`;
+    ctx.fillText(weekday, left + columnWidth * (column + 0.5), top + 27);
+  });
+
+  for (let index = 0; index < 42; index += 1) {
+    const day = index - offset + 1;
+    const column = index % 7;
+    const row = Math.floor(index / 7);
+    const x = left + column * columnWidth;
+    const y = top + weekdayHeight + row * rowHeight;
+    const isToday = day >= 1
+      && day <= daysInMonth
+      && today.getFullYear() === year
+      && today.getMonth() + 1 === month
+      && today.getDate() === day;
+    if (isToday) {
+      ctx.fillStyle = "#e5c900";
+      ctx.fillRect(x + 2, y + 2, columnWidth - 4, rowHeight - 4);
+    }
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + columnWidth, y);
+    ctx.stroke();
+    if (day < 1 || day > daysInMonth) continue;
+    ctx.fillStyle = ink;
+    ctx.font = `900 23px ${family}`;
+    ctx.fillText(String(day), x + columnWidth / 2, y + 30);
+    const event = eventMap.get(day);
+    if (event) {
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.arc(x + columnWidth / 2, y + 44, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = ink;
+      ctx.font = `700 13px ${family}`;
+      const firstLine = event.slice(0, 4);
+      const secondLine = event.slice(4, 8);
+      ctx.fillText(firstLine, x + columnWidth / 2, y + 64, columnWidth - 7);
+      if (secondLine) ctx.fillText(secondLine, x + columnWidth / 2, y + 82, columnWidth - 7);
+    }
+  }
+  ctx.restore();
+}
+
+function tableAccent(text: string) {
+  const choices = ["#2756c7", "#087c4e", "#e5c900", "#dc3f2f"];
+  let hash = 0;
+  for (const character of text) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return choices[hash % choices.length];
+}
+
+function drawTimetable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  if (spec.table?.type !== "timetable") return;
+  const { columns, rows } = spec.table;
+  const family = screenFontFamily(spec);
+  const ink = "#151816";
+  const left = 24;
+  const top = 122;
+  const width = 480;
+  const labelWidth = 66;
+  const headerHeight = 48;
+  const usableRows = rows.slice(0, 8);
+  const rowHeight = Math.min(94, Math.floor((744 - top - headerHeight) / Math.max(1, usableRows.length)));
+  const columnWidth = (width - labelWidth) / Math.max(1, columns.length);
+
+  ctx.save();
+  ctx.fillStyle = ink;
+  ctx.textAlign = "left";
+  ctx.font = `900 42px ${family}`;
+  ctx.fillText(spec.title || "一周课程表", left, 68, 400);
+  ctx.fillStyle = accentColors[spec.accent];
+  ctx.fillRect(left, 88, 88, 8);
+
+  ctx.textAlign = "center";
+  columns.forEach((column, index) => {
+    ctx.fillStyle = ink;
+    ctx.font = `800 17px ${family}`;
+    ctx.fillText(column, left + labelWidth + columnWidth * (index + 0.5), top + 30, columnWidth - 6);
+  });
+
+  usableRows.forEach((row, rowIndex) => {
+    const y = top + headerHeight + rowIndex * rowHeight;
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(left + width, y);
+    ctx.stroke();
+    ctx.fillStyle = ink;
+    ctx.font = `800 14px ${family}`;
+    ctx.fillText(row.label, left + labelWidth / 2, y + rowHeight / 2 + 5, labelWidth - 8);
+    columns.forEach((_, columnIndex) => {
+      const text = row.cells[columnIndex] || "";
+      const x = left + labelWidth + columnIndex * columnWidth;
+      if (text) {
+        ctx.fillStyle = tableAccent(text);
+        ctx.fillRect(x + 6, y + 10, columnWidth - 12, 5);
+      }
+      ctx.fillStyle = ink;
+      const fontSize = text.length > 5 ? 14 : text.length > 3 ? 16 : 18;
+      ctx.font = `800 ${fontSize}px ${family}`;
+      ctx.fillText(text, x + columnWidth / 2, y + rowHeight / 2 + 7, columnWidth - 9);
+    });
+  });
+  ctx.restore();
+}
+
+function drawStructuredTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  if (spec.table?.type === "calendar") drawCalendarTable(ctx, spec);
+  if (spec.table?.type === "timetable") drawTimetable(ctx, spec);
+}
+
 async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
@@ -1099,6 +1301,12 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, width, height);
+  if (spec.table) {
+    drawStructuredTable(ctx, spec);
+    drawDisplayMeta(ctx, spec, accent, false);
+    if (display.border) drawOuterScreenBorder(ctx);
+    return false;
+  }
   const artwork = spec.artwork ?? (localImage
     ? {
         mode: "web" as const,
@@ -1115,6 +1323,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       && !display.time
       && !display.timeLarge
       && !display.weather
+      && !display.weatherLarge
       && !display.border;
     const area = imageOnly || artwork.layout === "fullscreen" || artwork.layout === "background"
       ? { x: 0, y: 0, width, height }
@@ -1153,27 +1362,9 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     return false;
   }
 
-  if (spec.kind === "weather" && display.weather) {
-    ctx.fillStyle = "#e5c900";
-    ctx.beginPath();
-    ctx.arc(398, 208, 54, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = 8;
-    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-      ctx.beginPath();
-      ctx.moveTo(398 + Math.cos(angle) * 72, 208 + Math.sin(angle) * 72);
-      ctx.lineTo(398 + Math.cos(angle) * 90, 208 + Math.sin(angle) * 90);
-      ctx.stroke();
-    }
-    ctx.fillStyle = ink;
-    ctx.font = `700 31px ${family}`;
-    ctx.fillText(spec.title, 48, 182);
-    ctx.font = `800 164px ${family}`;
-    ctx.fillText(spec.value, 42, 370);
-    ctx.font = `800 62px ${family}`;
-    ctx.fillText(spec.unit, 264, 280);
-  } else if (spec.kind === "countdown") {
+  if (spec.kind === "weather" && (display.weather || display.weatherLarge)) return false;
+
+  if (spec.kind === "countdown") {
     ctx.fillStyle = ink;
     ctx.font = `700 34px ${family}`;
     ctx.fillText(spec.title, 48, 180);
@@ -1237,35 +1428,35 @@ async function renderScreenToCanvas(canvas: HTMLCanvasElement, spec: ScreenSpec,
 }
 
 function MiniScreen({ app }: { app: InkApp }) {
-  const spec = resolveTimeVariables(app.spec, GALLERY_PREVIEW_DATE);
-  const artwork = spec.artwork;
-  const generatedBackgrounds: Record<ArtworkSpec["motif"], string> = {
-    rainbow: "linear-gradient(135deg, #dc3f2f 0 22%, #e5c900 22% 46%, #087c4e 46% 70%, #2756c7 70%)",
-    sunburst: "conic-gradient(from 12deg, #e5c900, #dc3f2f, #fafaf8, #2756c7, #e5c900)",
-    confetti: "repeating-linear-gradient(115deg, #fafaf8 0 14px, #dc3f2f 14px 20px, #e5c900 20px 34px, #2756c7 34px 40px)",
-    waves: "repeating-linear-gradient(0deg, #2756c7 0 18px, #fafaf8 18px 32px, #087c4e 32px 48px)",
-    grid: "conic-gradient(#dc3f2f 25%, #e5c900 0 50%, #087c4e 0 75%, #2756c7 0) 0 0 / 40px 40px",
-  };
-  const style: CSSProperties | undefined = artwork
-    ? {
-        backgroundImage: artwork.mode === "web"
-          ? `url("${artworkUrl(artwork)}")`
-          : generatedBackgrounds[artwork.motif],
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }
-    : undefined;
-  if (artwork?.layout === "fullscreen") {
-    return <div className="mini-screen image-only" style={style} aria-label={`${app.title} 全屏图片预览`} />;
-  }
+  const thumbnailRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = thumbnailRef.current;
+    if (!canvas) return;
+    let active = true;
+    const staging = document.createElement("canvas");
+    staging.width = 528;
+    staging.height = 792;
+
+    resolveRuntimeScreen(app, GALLERY_PREVIEW_DATE)
+      .then((spec) => renderScreenToCanvas(staging, spec, app.localImage))
+      .then(() => {
+        if (!active) return;
+        const context = canvas.getContext("2d");
+        if (!context) return;
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(staging, 0, 0);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [app]);
+
   return (
-    <div className={`mini-screen mini-${spec.accent}${artwork ? " has-artwork" : ""}`} style={style}>
-      <span className="mini-eyebrow">{spec.eyebrow}</span>
-      <i />
-      <b>{spec.value}</b>
-      <em>{spec.unit}</em>
-      <small>{spec.title}</small>
-      <span className="mini-footer">{spec.detail}</span>
+    <div className="mini-screen" aria-label={`${app.title} 保存时的画布预览`}>
+      <canvas ref={thumbnailRef} width={528} height={792} />
     </div>
   );
 }
@@ -1591,7 +1782,7 @@ export default function InkStudio() {
           ...current.spec,
           artwork,
           clock,
-          city: nextDisplay.weather
+          city: nextDisplay.weather || nextDisplay.weatherLarge
             ? current.spec.city || preferredWeatherCity || inferWeatherCity(current.prompt)
             : current.spec.city,
           footer: nextDisplay.quote && !current.spec.footer ? "今天也要保持好心情" : current.spec.footer,
@@ -1769,7 +1960,7 @@ export default function InkStudio() {
     targetApp: InkApp,
     deviceId: string,
     taskId?: string,
-    options: { reusePreview?: boolean } = {},
+    options: { reusePreview?: boolean; reconnect?: boolean } = {},
   ) => {
     const driver = deviceDriversRef.current.get(deviceId)
       ?? (driverRef.current?.selectedDevice?.id === deviceId ? driverRef.current : null);
@@ -1849,6 +2040,7 @@ export default function InkStudio() {
         if (renderInPreview) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       }
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
+      if (options.reconnect) await driver.reconnect();
       await driver.writeCanvas(outputCanvas, true);
       if (nextSeed !== null && renderInPreview) {
         setApp((current) => current.spec.artwork
@@ -1872,7 +2064,10 @@ export default function InkStudio() {
       showToast("帧已发送，墨水屏可能还会显色几分钟", "success");
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "写入失败";
+      const rawMessage = error instanceof Error ? error.message : "写入失败";
+      const message = /no longer in range|GATT.*断开|设备.*范围|connection failed/i.test(rawMessage)
+        ? "设备已离开蓝牙范围；旧连接已清理，靠近设备后会重新发现服务并重试"
+        : rawMessage;
       driver.disconnect();
       markTaskFailure(message, lastCanvas);
       setDeviceStatus("error");
@@ -1899,7 +2094,9 @@ export default function InkStudio() {
       taskTimersRef.current.delete(taskId);
       const latest = deviceTasksRef.current.find((item) => item.id === taskId);
       if (!latest) return;
-      const wrote = await runTransfer(latest.app, latest.deviceId, taskId);
+      const wrote = await runTransfer(latest.app, latest.deviceId, taskId, {
+        reconnect: latest.consecutiveFailures > 0,
+      });
       if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
       const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
       const retryDelay = !wrote
@@ -1918,13 +2115,11 @@ export default function InkStudio() {
     taskTimersRef.current.delete(taskId);
     const task = deviceTasksRef.current.find((item) => item.id === taskId);
     if (!task || task.status === "writing") return;
-    const driver = deviceDriversRef.current.get(task.deviceId);
-    driver?.disconnect();
     commitDeviceTasks((current) => current.map((item) => item.id === taskId
       ? { ...item, status: "writing", nextRunAt: null, lastError: null }
       : item));
     showToast("正在重新连接设备并重试", "info");
-    const wrote = await runTransfer(task.app, task.deviceId, taskId);
+    const wrote = await runTransfer(task.app, task.deviceId, taskId, { reconnect: true });
     if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
     const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
     scheduleDeviceTask(
@@ -2423,7 +2618,16 @@ export default function InkStudio() {
                             <input
                               type="checkbox"
                               checked={screenDisplay[key]}
-                              onChange={(event) => updateDisplay({ [key]: event.target.checked })}
+                              onChange={(event) => {
+                                const checked = event.target.checked;
+                                if (key === "weather" && checked) {
+                                  updateDisplay({ weather: true, weatherLarge: false });
+                                } else if (key === "weatherLarge" && checked) {
+                                  updateDisplay({ weather: false, weatherLarge: true });
+                                } else {
+                                  updateDisplay({ [key]: checked });
+                                }
+                              }}
                             />
                             <span>{label}</span>
                           </label>
@@ -2461,7 +2665,7 @@ export default function InkStudio() {
                             <input
                               type="number"
                               min={10}
-                              max={key === "timeLarge" ? 180 : 72}
+                              max={key === "timeLarge" ? 180 : key === "weatherLarge" ? 132 : 72}
                               step={1}
                               value={screenDisplay.elementSizes[key] ?? DEFAULT_ELEMENT_SIZES[key]}
                               onChange={(event) => updateDisplay({
@@ -2558,7 +2762,7 @@ export default function InkStudio() {
                         />
                       </label>
                     )}
-                    {screenDisplay.weather && (
+                    {(screenDisplay.weather || screenDisplay.weatherLarge) && (
                       <label className="display-field">
                         <span>天气城市</span>
                         <input
