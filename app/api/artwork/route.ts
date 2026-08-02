@@ -44,7 +44,10 @@ function cleanSeed(value: string | null) {
 async function fetchImage(url: string) {
   const response = await fetch(url, {
     redirect: "follow",
-    headers: { Accept: "image/avif,image/webp,image/jpeg,image/png" },
+    headers: {
+      Accept: "image/avif,image/webp,image/jpeg,image/png",
+      "User-Agent": "Inkloop/1.1 (TodooCard artwork preview)",
+    },
     signal: AbortSignal.timeout(12_000),
   });
   const contentType = response.headers.get("content-type") || "";
@@ -131,7 +134,7 @@ export async function GET(request: Request) {
       return new Response(image.body, {
         headers: {
           "Content-Type": image.contentType,
-          "Cache-Control": "public, max-age=86400, s-maxage=604800, immutable",
+          "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
           "X-Content-Type-Options": "nosniff",
           "X-Inkloop-Image-Source": "wikimedia-commons",
         },
@@ -143,8 +146,8 @@ export async function GET(request: Request) {
   }
 
   const providers: Array<[string, string]> = [
-    ["loremflickr", `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(keywords)}?lock=${seed}`],
     ["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`],
+    ["loremflickr", `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(keywords)}?lock=${seed}`],
   ];
 
   for (const [name, provider] of providers) {
@@ -157,7 +160,7 @@ export async function GET(request: Request) {
       return new Response(image.body, {
         headers: {
           "Content-Type": image.contentType,
-          "Cache-Control": "public, max-age=86400, s-maxage=604800, immutable",
+          "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
           "X-Content-Type-Options": "nosniff",
           "X-Inkloop-Image-Source": name,
         },
