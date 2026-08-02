@@ -20,15 +20,34 @@ export type ClockSpec = {
 
 export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 
+export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather";
+
+export type ScreenElementPosition = {
+  x: number;
+  y: number;
+};
+
+export const DEFAULT_ELEMENT_POSITIONS: Record<ScreenElementKey, ScreenElementPosition> = {
+  quote: { x: 264, y: 682 },
+  logo: { x: 142, y: 746 },
+  date: { x: 160, y: 70 },
+  time: { x: 444, y: 70 },
+  timeLarge: { x: 264, y: 390 },
+  weather: { x: 374, y: 110 },
+};
+
 export type ScreenDisplay = {
   quote: boolean;
   logo: boolean;
   date: boolean;
   time: boolean;
+  timeLarge: boolean;
   weather: boolean;
   border: boolean;
   font: ScreenFont;
   logoText: string;
+  positions: Record<ScreenElementKey, ScreenElementPosition>;
+  elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
 };
 
 export type ScreenSpec = {
@@ -106,16 +125,25 @@ const includesAny = (source: string, terms: string[]) => terms.some((term) => so
 
 export function displaySettings(spec: ScreenSpec): ScreenDisplay {
   const fallbackFont = spec.clock?.font && spec.clock.font !== "random" ? spec.clock.font : "sans";
+  const saved = spec.display as Partial<ScreenDisplay> | undefined;
   return {
     quote: Boolean(spec.footer),
     logo: false,
     date: Boolean(spec.clock?.enabled),
-    time: Boolean(spec.clock?.enabled),
+    time: false,
+    timeLarge: Boolean(spec.clock?.enabled),
     weather: spec.kind === "weather",
     border: false,
     font: fallbackFont,
     logoText: "INKLOOP",
-    ...spec.display,
+    ...saved,
+    positions: {
+      ...DEFAULT_ELEMENT_POSITIONS,
+      ...saved?.positions,
+    },
+    elementFonts: {
+      ...saved?.elementFonts,
+    },
   };
 }
 
@@ -143,7 +171,7 @@ export function inferWeatherCity(source: string) {
 }
 
 function wantsFullscreenArtwork(source: string) {
-  const imageOnly = includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]);
+  const imageOnly = includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片", "纯图"]);
   return imageOnly && (
     includesAny(source, ["全屏", "铺满", "满屏"])
     || includesAny(source, ["图片", "照片", "海报", "插画"])

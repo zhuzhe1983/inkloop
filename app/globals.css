@@ -444,13 +444,33 @@ input:focus-visible {
 }
 
 .task-error {
-  margin: 10px 0 0;
+  margin: 0;
   display: flex;
   align-items: flex-start;
   gap: 8px;
   color: #9c2f23;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.task-error-actions {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-error-actions > button {
+  min-width: 82px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--red);
+  color: white;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
 }
 
 .task-error b {
@@ -1075,13 +1095,71 @@ input:focus-visible {
   letter-spacing: 2px;
 }
 
-.device-frame canvas {
+.screen-canvas-wrap {
+  width: 264px;
+  height: 396px;
+  position: relative;
+}
+
+.screen-canvas-wrap canvas {
   width: 264px;
   height: 396px;
   display: block;
   border: 1px solid #666b66;
   background: #f4f0dc;
   image-rendering: auto;
+}
+
+.screen-drag-layer {
+  position: absolute;
+  inset: 1px;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.canvas-drag-handle {
+  min-width: 44px;
+  min-height: 28px;
+  padding: 0;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: transparent;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.canvas-drag-handle span {
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(12, 16, 14, 0.72);
+  color: white;
+  font: 800 8px/1.2 Arial, sans-serif;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.canvas-drag-handle:hover,
+.canvas-drag-handle:focus-visible,
+.canvas-drag-handle.dragging {
+  border-color: var(--lime);
+  background: rgba(210, 255, 67, 0.11);
+  outline: none;
+}
+
+.canvas-drag-handle:hover span,
+.canvas-drag-handle:focus-visible span,
+.canvas-drag-handle.dragging span {
+  opacity: 1;
+}
+
+.canvas-drag-handle.dragging {
+  cursor: grabbing;
 }
 
 .device-port {
@@ -1143,43 +1221,86 @@ input:focus-visible {
   font-weight: 700;
 }
 
-.component-checks {
+.component-list {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
-.component-check {
-  min-height: 42px;
-  padding: 0 9px;
+.component-row {
+  min-height: 48px;
+  padding: 6px;
   border-radius: 8px;
   background: #f0f1ec;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(104px, 1fr) minmax(104px, 1fr) 50px;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   color: #555d57;
   font-size: 11px;
   font-weight: 800;
-  cursor: pointer;
   transition: background 140ms ease, color 140ms ease;
 }
 
-.component-check:has(input:checked) {
+.component-row.enabled {
   background: #e5ebff;
   color: var(--blue);
 }
 
-.component-check input {
+.component-toggle {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.component-toggle input {
   width: 16px;
   height: 16px;
   margin: 0;
   accent-color: var(--blue);
 }
 
-.component-check:focus-within {
+.component-row:focus-within {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
+}
+
+.component-row select,
+.component-row button {
+  height: 36px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #4f5751;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.component-row select {
+  min-width: 0;
+  padding: 0 7px;
+}
+
+.component-row button {
+  cursor: pointer;
+}
+
+.component-row select:disabled,
+.component-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.component-row.border-control {
+  grid-template-columns: minmax(104px, 1fr) minmax(0, 1.45fr);
+}
+
+.component-row.border-control small {
+  color: #7c847e;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .display-fields {
@@ -1211,6 +1332,23 @@ input:focus-visible {
   color: var(--ink);
   font-size: 12px;
   font-weight: 700;
+}
+
+.quote-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px;
+  gap: 6px;
+}
+
+.quote-input-row button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: white;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
 }
 
 .display-field input:focus,

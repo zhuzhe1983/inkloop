@@ -1,6 +1,8 @@
-const WIDTH = 528;
-const HEIGHT = 792;
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const OUTPUT_WIDTH = 528;
+const OUTPUT_HEIGHT = 792;
+const REQUEST_WIDTH = OUTPUT_WIDTH * 2;
+const REQUEST_HEIGHT = OUTPUT_HEIGHT * 2;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 type CommonsResponse = {
   query?: {
@@ -79,7 +81,7 @@ async function fetchCommonsImage(query: string, seed: number) {
     gsrlimit: "16",
     prop: "imageinfo",
     iiprop: "url|mime|size",
-    iiurlwidth: "900",
+    iiurlwidth: String(REQUEST_WIDTH),
     format: "json",
     formatversion: "2",
   }).toString();
@@ -92,7 +94,7 @@ async function fetchCommonsImage(query: string, seed: number) {
   });
   if (!response.ok) throw new Error(`Wikimedia Commons ${response.status}`);
   const payload = (await response.json()) as CommonsResponse;
-  const targetRatio = WIDTH / HEIGHT;
+  const targetRatio = OUTPUT_WIDTH / OUTPUT_HEIGHT;
   const candidates = (payload.query?.pages || [])
     .flatMap((page) => (page.imageinfo || []).map((info) => ({
       ...info,
@@ -109,8 +111,8 @@ async function fetchCommonsImage(query: string, seed: number) {
     }))
     .sort((left, right) => {
       if (left.relevance !== right.relevance) return right.relevance - left.relevance;
-      const leftRatio = (left.thumbwidth || left.width || WIDTH) / (left.thumbheight || left.height || HEIGHT);
-      const rightRatio = (right.thumbwidth || right.width || WIDTH) / (right.thumbheight || right.height || HEIGHT);
+      const leftRatio = (left.thumbwidth || left.width || OUTPUT_WIDTH) / (left.thumbheight || left.height || OUTPUT_HEIGHT);
+      const rightRatio = (right.thumbwidth || right.width || OUTPUT_WIDTH) / (right.thumbheight || right.height || OUTPUT_HEIGHT);
       const aspectDifference = Math.abs(leftRatio - targetRatio) - Math.abs(rightRatio - targetRatio);
       return Math.abs(aspectDifference) > 0.08 ? aspectDifference : left.searchIndex - right.searchIndex;
     })
@@ -126,14 +128,28 @@ export async function GET(request: Request) {
   const style = cleanStyle(url.searchParams.get("style"));
   const seed = cleanSeed(url.searchParams.get("seed"));
   const keywords = `${query} ${style}`.split(/[\s,]+/).filter(Boolean).slice(0, 10).join(",");
-  const subjectKeywords = query.split(/[\s,]+/)
-    .filter((token) => token && !["photo", "photography", "image", "background", "adult"].includes(token.toLowerCase()))
-    .slice(0, 6)
-    .join(",");
+  const lowerQuery = query.toLowerCase();
+  const subjectTokens = query.split(/[\s,]+/)
+    .filter((token) => token && ![
+      "photo", "photography", "image", "background", "adult", "cinematic", "editorial",
+      "lighting", "composition", "high", "contrast", "cute", "movie", "poster",
+    ].includes(token.toLowerCase()));
+  const loremTokens = lowerQuery.includes("woman") || lowerQuery.includes("girl")
+    ? ["woman", "portrait"]
+    : lowerQuery.includes("spider-man")
+      ? ["spider-man", "cosplay"]
+      : lowerQuery.includes("marvel") || lowerQuery.includes("avengers")
+        ? ["marvel", "cosplay"]
+        : lowerQuery.includes("cat")
+          ? ["cat", "portrait"]
+          : lowerQuery.includes("dog") || lowerQuery.includes("pet")
+            ? ["dog", "portrait"]
+            : subjectTokens.slice(0, 2);
+  const subjectKeywords = loremTokens.join(",");
   const failures: string[] = [];
 
   try {
-    const themedUrl = `https://loremflickr.com/${WIDTH}/${HEIGHT}/${encodeURIComponent(subjectKeywords || keywords)}?lock=${seed}`;
+    const themedUrl = `https://loremflickr.com/${REQUEST_WIDTH}/${REQUEST_HEIGHT}/${encodeURIComponent(subjectKeywords || keywords)}/all?lock=${seed}`;
     const image = await fetchImage(themedUrl);
     if (image) {
       return new Response(image.body, {
@@ -169,7 +185,7 @@ export async function GET(request: Request) {
 
   const genericQuery = /^(colorful editorial illustration|abstract|texture|pattern)/i.test(query);
   const providers: Array<[string, string]> = genericQuery
-    ? [["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${WIDTH}/${HEIGHT}`]]
+    ? [["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${REQUEST_WIDTH}/${REQUEST_HEIGHT}`]]
     : [];
 
   for (const [name, provider] of providers) {

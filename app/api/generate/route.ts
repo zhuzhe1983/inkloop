@@ -85,6 +85,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "logo": false,
       "date": false,
       "time": false,
+      "timeLarge": false,
       "weather": false,
       "border": false,
       "font": "sans|serif|rounded|mono|handwritten",
@@ -111,13 +112,13 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 11. 用户要求时钟时，clock.enabled=true；board 表示是否在画板中显示时间；不同字体或每页换字体使用 font=random。刷新计划用 custom，最小 customMinutes=1。
 12. 用户要求每次换背景时，artwork.rotateOnRefresh=true。女性人物主题使用 woman 而不是 girl，禁止生成或搜索未成年人；画板由 clock.board 控制，不要求照片本身带画板。
 13. 用户明确要求“全屏图片、不要文字、不要其他内容”时，artwork.layout=fullscreen；此模式不会绘制任何标题、边框、页脚或信息卡。
-14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 528×792 竖屏比例图片，并居中裁剪到全屏无边框显示，文字或信息卡叠加在图片上。只有独立图片区域才使用 hero。
+14. 用户要求“图片做背景”时使用 artwork.layout=background：系统会优先取 1056×1584 的 2 倍竖屏素材，再高质量缩小并居中裁剪到 528×792 全屏无边框显示。只有独立图片区域才使用 hero。
 15. 每张背景图都必须填写 artwork.style。优先遵循用户点名的风格；未指定时，像专业 stylist 一样选择适合主题的 editorial、cinematic、minimal、vintage、fashion 或 illustration 风格，并强调主体清晰、高对比、构图简洁，适合六色墨水屏。
 16. 只有用户需求明确包含天气、气温、温度、下雨、降雨或通勤信息时，spec.kind 才能使用 weather；海报、图片、时钟等其他需求不得使用 weather。
 17. 用户点名漫威、蜘蛛侠、钢铁侠、美国队长、复仇者联盟等明确主题时，query 必须保留对应的英文专名，不能泛化成 colorful illustration、superhero 或 cat 等无关主题。
 18. 用户没有明确要求图片、背景、海报、插画或视觉主题时，artwork.mode 必须是 none；信息卡优先使用清晰的纯文字排版。
 19. 海报不添加品牌签名、产品型号、水印或“6-COLOR E-PAPER”等脚注。避免无理由使用满屏高饱和蓝色、重复粗线和厚重发光描边；优先留白、清晰层级和至多两种强调色。
-20. display 控制可手动编辑的画面组件。border 默认且通常必须是 false，只有用户明确要求边框、描边框或画板时才设为 true；logo 只有用户明确要求 LOGO/品牌文字时开启；quote、date、time、weather 只按用户需求开启。clock.board 不得绕过 display.border。
+20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；时钟默认使用 timeLarge。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；quote、date、time、timeLarge、weather 只按用户需求开启。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
 ${EPAPER_DESIGN_GUIDE}`;
@@ -142,7 +143,7 @@ function screenText(value: unknown, fallback: string, max: number) {
 }
 
 function wantsFullscreenArtwork(prompt: string) {
-  const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]
+  const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片", "纯图"]
     .some((term) => prompt.includes(term));
   return imageOnly && (
     ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
@@ -287,17 +288,22 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
   const explicitLogo = /logo|标志|品牌字样/i.test(prompt);
   const explicitQuote = /名言|金句|格言|一句话|鼓励|提醒/.test(prompt);
   const explicitDate = /日期|年月日|星期|周几/.test(prompt) || Boolean(fallback.spec.clock?.enabled);
-  const explicitTime = /时间|时钟|几点|钟表/.test(prompt) || Boolean(fallback.spec.clock?.enabled);
+  const explicitTime = /时间|时钟|几点|钟表/.test(prompt);
+  const explicitLargeTime = /大时间|大号时间|超大时间|时间\s*[（(]?大[）)]?|时钟/.test(prompt)
+    || Boolean(fallback.spec.clock?.enabled);
   const explicitWeather = wantsWeather(prompt);
   return {
-    quote: candidate.quote === true || defaults.quote && explicitQuote,
+    quote: candidate.quote === true || (defaults.quote && explicitQuote),
     logo: explicitLogo && candidate.logo !== false,
     date: candidate.date === true || explicitDate,
-    time: candidate.time === true || explicitTime,
+    time: candidate.time === true || (explicitTime && !explicitLargeTime),
+    timeLarge: candidate.timeLarge === true || explicitLargeTime,
     weather: candidate.weather === true || explicitWeather,
     border: explicitBorder && candidate.border !== false,
     font: ALLOWED_SCREEN_FONTS.has(requestedFont) ? requestedFont : defaults.font,
     logoText: trimText(candidate.logoText, defaults.logoText, 20),
+    positions: defaults.positions,
+    elementFonts: defaults.elementFonts,
   };
 }
 

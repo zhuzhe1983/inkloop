@@ -1,7 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type CSSProperties } from "react";
 import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  DEFAULT_ELEMENT_POSITIONS,
   displaySettings,
   featuredApps,
   generateInkApp,
@@ -14,6 +24,7 @@ import {
   type InkApp,
   type ScheduleMode,
   type ScreenDisplay,
+  type ScreenElementKey,
   type ScreenFont,
   type ScreenSpec,
 } from "./lib/app-model";
@@ -46,8 +57,15 @@ type DeviceTask = {
   lastRunAt: number | null;
   successCount: number;
   failureCount: number;
+  consecutiveFailures: number;
   lastError: string | null;
   lastCanvas?: string;
+};
+
+type DragPreview = {
+  element: ScreenElementKey;
+  x: number;
+  y: number;
 };
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
@@ -67,6 +85,34 @@ const samplePrompts = [
   "美女时钟，每分钟换背景和字体",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
+];
+
+const quoteOptions = [
+  "把注意力留给真正重要的事",
+  "今天也值得认真生活",
+  "慢一点，也是在向前",
+  "先完成，再完善",
+  "愿每一步都有清晰的回响",
+  "专注当下，一次只做一件事",
+  "保持好奇，保持热爱",
+  "去做让自己眼睛发亮的事",
+];
+
+const screenElementOptions: Array<{ key: ScreenElementKey; label: string; width: number; height: number }> = [
+  { key: "quote", label: "今日名言", width: 400, height: 58 },
+  { key: "logo", label: "LOGO", width: 220, height: 48 },
+  { key: "date", label: "日期", width: 260, height: 54 },
+  { key: "time", label: "时间", width: 170, height: 56 },
+  { key: "timeLarge", label: "时间（大）", width: 430, height: 154 },
+  { key: "weather", label: "天气", width: 290, height: 54 },
+];
+
+const screenFontOptions: Array<{ value: ScreenFont; label: string }> = [
+  { value: "sans", label: "现代黑体" },
+  { value: "serif", label: "优雅宋体" },
+  { value: "rounded", label: "圆润标题" },
+  { value: "mono", label: "等宽数字" },
+  { value: "handwritten", label: "手写风格" },
 ];
 
 const guideExamples = [
@@ -112,7 +158,7 @@ function upgradeLegacyApp(savedApp: InkApp): InkApp {
     },
   };
   const prompt = savedApp.prompt || "";
-  const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片"]
+  const imageOnly = ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片", "纯图"]
     .some((term) => prompt.includes(term));
   const wantsFullscreen = imageOnly && (
     ["全屏", "铺满", "满屏"].some((term) => prompt.includes(term))
@@ -184,6 +230,10 @@ function formatRemaining(value: number | null, now: number) {
     .map((part) => String(part).padStart(2, "0"))
     .join(":");
   return days ? `${days}天 ${clock}` : clock;
+}
+
+function retryDelayForFailures(failures: number) {
+  return Math.min(300_000, 15_000 * 2 ** Math.max(0, failures - 1));
 }
 
 function replaceTimeVariables(value: string, now: Date) {
@@ -324,8 +374,20 @@ function screenFontFamily(spec: ScreenSpec) {
   return screenFonts[displaySettings(spec).font];
 }
 
+function screenElementFontFamily(spec: ScreenSpec, element: ScreenElementKey) {
+  const display = displaySettings(spec);
+  return screenFonts[display.elementFonts[element] ?? display.font];
+}
+
+function screenElementPosition(spec: ScreenSpec, element: ScreenElementKey) {
+  return displaySettings(spec).positions[element] ?? DEFAULT_ELEMENT_POSITIONS[element];
+}
+
 function clockFontFamily(spec: ScreenSpec) {
-  const requested = spec.display?.font ?? spec.clock?.font ?? "sans";
+  const requested = displaySettings(spec).elementFonts.timeLarge
+    ?? spec.display?.font
+    ?? spec.clock?.font
+    ?? "sans";
   if (requested !== "random") return screenFonts[requested];
   const choices = Object.values(screenFonts);
   return choices[(spec.artwork?.seed ?? 0) % choices.length];
@@ -358,7 +420,7 @@ const ePaperPalette = [
 
 function artworkUrl(artwork: ArtworkSpec) {
   const params = new URLSearchParams({
-    v: "4",
+    v: "6",
     query: artwork.query,
     style: artwork.style || "editorial high contrast composition",
     seed: String(artwork.seed),
@@ -418,7 +480,12 @@ function drawImageCover(
   const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
   const drawWidth = image.naturalWidth * scale;
   const drawHeight = image.naturalHeight * scale;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.filter = "saturate(0.86) contrast(1.04)";
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+  ctx.restore();
 }
 
 function quantizeRegion(
@@ -429,22 +496,20 @@ function quantizeRegion(
   height: number,
 ) {
   const image = ctx.getImageData(x, y, width, height);
-  const matrix = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
   for (let pixel = 0; pixel < image.data.length; pixel += 4) {
-    const point = pixel / 4;
-    const px = point % width;
-    const py = Math.floor(point / width);
-    const bias = (matrix[(py % 4) * 4 + (px % 4)] - 7.5) * 4;
-    const red = Math.max(0, Math.min(255, image.data[pixel] + bias));
-    const green = Math.max(0, Math.min(255, image.data[pixel + 1] + bias));
-    const blue = Math.max(0, Math.min(255, image.data[pixel + 2] + bias));
+    const red = image.data[pixel];
+    const green = image.data[pixel + 1];
+    const blue = image.data[pixel + 2];
     let best: readonly [number, number, number] = ePaperPalette[0];
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const color of ePaperPalette) {
       const dr = red - color[0];
       const dg = green - color[1];
       const db = blue - color[2];
-      const distance = dr * dr * 0.3 + dg * dg * 0.59 + db * db * 0.11;
+      const redMean = (red + color[0]) / 2;
+      const distance = (2 + redMean / 256) * dr * dr
+        + 4 * dg * dg
+        + (2 + (255 - redMean) / 256) * db * db;
       if (distance < bestDistance) {
         bestDistance = distance;
         best = color;
@@ -634,47 +699,55 @@ function drawDisplayMeta(
 ) {
   const display = displaySettings(spec);
   const ink = "#151816";
-  const family = screenFontFamily(spec);
   const leftLabel = display.date ? spec.dateText || spec.eyebrow : "";
   ctx.save();
-  ctx.font = `700 18px ${family}`;
+  ctx.textAlign = "center";
   if (leftLabel) {
-    if (display.border) {
-      const width = Math.min(310, Math.max(160, ctx.measureText(leftLabel).width + 42));
-      if (transparentOverlay) drawGlowFrame(ctx, 40, 38, width, 54);
-      else drawEditorialPlate(ctx, 40, 38, width, 54, accent, true);
-    }
-    if (transparentOverlay) drawGlowText(ctx, leftLabel.slice(0, 32), 56, 72, 300);
+    const position = screenElementPosition(spec, "date");
+    ctx.font = `700 18px ${screenElementFontFamily(spec, "date")}`;
+    if (transparentOverlay) drawGlowText(ctx, leftLabel.slice(0, 32), position.x, position.y, 300);
     else {
       ctx.fillStyle = ink;
-      ctx.fillText(leftLabel.slice(0, 32), display.border ? 68 : 48, 72, 330);
+      ctx.fillText(leftLabel.slice(0, 32), position.x, position.y, 300);
     }
   }
 
-  ctx.textAlign = "right";
-  if (display.time && !spec.clock?.enabled && spec.timeText) {
-    if (transparentOverlay) drawGlowText(ctx, spec.timeText, 480, 72, 120);
+  if (display.time && spec.timeText) {
+    const position = screenElementPosition(spec, "time");
+    ctx.font = `800 22px ${screenElementFontFamily(spec, "time")}`;
+    if (transparentOverlay) drawGlowText(ctx, spec.timeText, position.x, position.y, 140);
     else {
       ctx.fillStyle = ink;
-      ctx.fillText(spec.timeText, 480, 72, 120);
+      ctx.fillText(spec.timeText, position.x, position.y, 140);
     }
   }
   if (display.weather && spec.weatherText) {
-    ctx.font = `700 16px ${family}`;
-    if (transparentOverlay) drawGlowText(ctx, spec.weatherText.slice(0, 24), 480, 108, 260);
+    const position = screenElementPosition(spec, "weather");
+    ctx.font = `700 16px ${screenElementFontFamily(spec, "weather")}`;
+    if (transparentOverlay) drawGlowText(ctx, spec.weatherText.slice(0, 24), position.x, position.y, 280);
     else {
       ctx.fillStyle = ink;
-      ctx.fillText(spec.weatherText.slice(0, 24), 480, 108, 260);
+      ctx.fillText(spec.weatherText.slice(0, 24), position.x, position.y, 280);
     }
   }
-  ctx.textAlign = "left";
 
   if (display.logo && display.logoText) {
-    ctx.font = `800 15px ${family}`;
-    if (transparentOverlay) drawGlowText(ctx, display.logoText.slice(0, 20), 48, 748, 240);
+    const position = screenElementPosition(spec, "logo");
+    ctx.font = `800 15px ${screenElementFontFamily(spec, "logo")}`;
+    if (transparentOverlay) drawGlowText(ctx, display.logoText.slice(0, 20), position.x, position.y, 240);
     else {
       ctx.fillStyle = ink;
-      ctx.fillText(display.logoText.slice(0, 20), 48, 748, 240);
+      ctx.fillText(display.logoText.slice(0, 20), position.x, position.y, 240);
+    }
+  }
+
+  if (display.quote && spec.footer) {
+    const position = screenElementPosition(spec, "quote");
+    ctx.font = `700 18px ${screenElementFontFamily(spec, "quote")}`;
+    if (transparentOverlay) drawGlowText(ctx, spec.footer.slice(0, 30), position.x, position.y, 400);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(spec.footer.slice(0, 30), position.x, position.y, 400);
     }
   }
   ctx.restore();
@@ -687,76 +760,28 @@ function drawClockCopy(
   transparentOverlay = false,
 ) {
   const ink = "#151816";
-  const paper = "#f4f0dc";
   const display = displaySettings(spec);
   const family = clockFontFamily(spec);
-  const board = display.border && spec.clock?.board !== false;
   const timeValue = spec.timeText || spec.value;
   const valueSize = fitClockText(
     ctx,
     timeValue,
-    transparentOverlay ? 360 : board ? 380 : 438,
-    transparentOverlay ? 102 : board ? 112 : 126,
+    420,
+    transparentOverlay ? 108 : 126,
     family,
   );
+  const position = screenElementPosition(spec, "timeLarge");
 
   ctx.textAlign = "center";
-  if (transparentOverlay) {
-    if (display.time) {
-      if (board) drawGlowFrame(ctx, 64, 246, 400, 190);
-      ctx.font = `800 23px ${family}`;
-      drawGlowText(ctx, spec.title, 264, 292, 350);
+  if (display.timeLarge) {
+    if (transparentOverlay) {
       ctx.font = `900 ${valueSize}px ${family}`;
-      drawGlowText(ctx, timeValue, 264, 382, 360);
-      ctx.font = `700 20px ${family}`;
-      drawGlowText(ctx, spec.detail.slice(0, 28), 264, 416, 350);
+      drawGlowText(ctx, timeValue, position.x, position.y, 420);
+    } else {
+      ctx.font = `900 ${valueSize}px ${family}`;
+      ctx.fillStyle = ink;
+      ctx.fillText(timeValue, position.x, position.y, 420);
     }
-
-    if (display.quote && spec.footer) {
-      if (display.border) drawGlowFrame(ctx, 76, 650, 376, 52);
-      ctx.font = `700 18px ${family}`;
-      drawGlowText(ctx, spec.footer.slice(0, 26), 264, 683, 340);
-    }
-    ctx.textAlign = "left";
-    return;
-  }
-
-  if (display.time && board) {
-    ctx.fillStyle = paper;
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = 5;
-    ctx.fillRect(48, 226, 432, 282);
-    ctx.strokeRect(48, 226, 432, 282);
-    ctx.fillStyle = accent;
-    ctx.fillRect(72, 252, 76, 12);
-    ctx.fillStyle = ink;
-    ctx.font = `800 25px ${family}`;
-    ctx.fillText(spec.title, 264, 306);
-    ctx.font = `900 ${valueSize}px ${family}`;
-    ctx.fillText(timeValue, 264, 424);
-    ctx.font = `700 22px ${family}`;
-    ctx.fillText(spec.detail.slice(0, 28), 264, 474);
-  } else if (display.time) {
-    ctx.font = `900 ${valueSize}px ${family}`;
-    ctx.fillStyle = ink;
-    ctx.fillText(timeValue, 264, 398);
-    ctx.font = `700 23px ${family}`;
-    ctx.fillText(spec.detail.slice(0, 28), 264, 448);
-  }
-
-  if (display.quote && spec.footer) {
-    if (display.border) {
-      ctx.fillStyle = paper;
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = 2;
-      ctx.fillRect(48, 628, 432, 72);
-      ctx.strokeRect(48, 628, 432, 72);
-    }
-    ctx.fillStyle = accent;
-    ctx.fillRect(70, 650, 10, 24);
-    ctx.fillStyle = ink;
-    ctx.font = `700 20px ${family}`;
-    ctx.fillText(spec.footer.slice(0, 26), 286, 671);
   }
   ctx.textAlign = "left";
 }
@@ -777,7 +802,7 @@ function drawArtworkCopy(
   drawDisplayMeta(ctx, spec, accent, transparentOverlay);
 
   if (spec.clock?.enabled) {
-    drawClockCopy(ctx, spec, accent, transparentOverlay);
+    if (display.timeLarge) drawClockCopy(ctx, spec, accent, transparentOverlay);
     return;
   }
 
@@ -789,7 +814,7 @@ function drawArtworkCopy(
     ctx.font = `900 ${valueSize}px ${family}`;
     drawGlowText(ctx, valueWithUnit, 48, 336, 420);
   } else if (backgroundLayout) {
-    drawEditorialPlate(ctx, 48, 216, 432, 226, accent, display.border);
+    drawEditorialPlate(ctx, 48, 216, 432, 226, accent, false);
     ctx.fillStyle = ink;
     ctx.font = `800 ${fitText(ctx, spec.title, 368, 34, family)}px ${family}`;
     ctx.fillText(spec.title, 82, 274, 368);
@@ -799,10 +824,6 @@ function drawArtworkCopy(
   } else {
     ctx.fillStyle = paper;
     ctx.fillRect(38, 468, 452, 184);
-    if (display.border) {
-      ctx.strokeStyle = ink;
-      ctx.strokeRect(38, 468, 452, 184);
-    }
     ctx.fillStyle = ink;
     ctx.font = `800 ${fitText(ctx, spec.title, 402, 34, family)}px ${family}`;
     ctx.fillText(spec.title, 60, 516);
@@ -816,41 +837,31 @@ function drawArtworkCopy(
   }
 
   if (transparentOverlay) {
-    if (display.border) {
-      ctx.strokeStyle = paper;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(48, 634);
-      ctx.lineTo(480, 634);
-      ctx.stroke();
-    }
     ctx.font = `700 18px ${family}`;
     drawGlowText(ctx, spec.detail.slice(0, 30), 48, 672, 432);
-    if (display.quote && spec.footer) {
-      ctx.font = `700 17px ${family}`;
-      drawGlowText(ctx, spec.footer.slice(0, 26), 48, 705, 432);
-    }
   } else if (backgroundLayout) {
-    drawEditorialPlate(ctx, 48, 614, 432, display.quote && spec.footer ? 102 : 64, accent, display.border);
+    drawEditorialPlate(ctx, 48, 614, 432, 64, accent, false);
     ctx.fillStyle = ink;
     ctx.font = `700 18px ${family}`;
     ctx.fillText(spec.detail.slice(0, 30), 82, 655, 366);
-    if (display.quote && spec.footer) {
-      ctx.font = `700 17px ${family}`;
-      ctx.fillText(spec.footer.slice(0, 26), 82, 690, 366);
-    }
   } else {
     ctx.fillStyle = paper;
     ctx.fillRect(38, 666, 452, 46);
-    if (display.border) {
-      ctx.strokeStyle = ink;
-      ctx.strokeRect(38, 666, 452, 46);
-    }
     ctx.fillStyle = ink;
     ctx.font = `700 19px ${family}`;
     ctx.fillText(spec.detail.slice(0, 30), 58, 696);
   }
 
+  if (display.timeLarge) drawClockCopy(ctx, spec, accent, transparentOverlay);
+
+}
+
+function drawOuterScreenBorder(ctx: CanvasRenderingContext2D) {
+  ctx.save();
+  ctx.strokeStyle = "#151816";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(22, 22, 484, 748);
+  ctx.restore();
 }
 
 async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
@@ -881,6 +892,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       && !display.logo
       && !display.date
       && !display.time
+      && !display.timeLarge
       && !display.weather
       && !display.border;
     const area = imageOnly || artwork.layout === "fullscreen" || artwork.layout === "background"
@@ -896,13 +908,13 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
-      if (imageOnly || artwork.layout === "fullscreen") return true;
-      drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
-      if (artwork.layout === "hero" && display.border) {
-        ctx.strokeStyle = ink;
-        ctx.lineWidth = 3;
-        ctx.strokeRect(22, 22, width - 44, height - 44);
+      if (imageOnly) return true;
+      if (artwork.layout === "fullscreen") {
+        if (display.border) drawOuterScreenBorder(ctx);
+        return true;
       }
+      drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
+      if (display.border) drawOuterScreenBorder(ctx);
       return true;
     } catch {
       ctx.clearRect(0, 0, width, height);
@@ -912,15 +924,11 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     }
   }
 
-  if (display.border) {
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(22, 22, width - 44, height - 44);
-  }
+  if (display.border) drawOuterScreenBorder(ctx);
   drawDisplayMeta(ctx, spec, accent, false);
 
   if (spec.clock?.enabled) {
-    drawClockCopy(ctx, spec, accent, false);
+    if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
     return false;
   }
 
@@ -971,13 +979,10 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     ctx.fillText(spec.value, 40, 370);
     ctx.font = `800 62px ${family}`;
     ctx.fillText(spec.unit, 330, 350);
-    if (display.border) {
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = 5;
-      ctx.strokeRect(48, 432, 432, 46);
-    }
+    ctx.fillStyle = "#dedbcf";
+    ctx.fillRect(48, 432, 432, 18);
     ctx.fillStyle = accent;
-    ctx.fillRect(display.border ? 57 : 48, display.border ? 441 : 432, 316, display.border ? 28 : 18);
+    ctx.fillRect(48, 432, 316, 18);
   } else {
     ctx.fillStyle = ink;
     ctx.font = `700 34px ${family}`;
@@ -993,17 +998,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.fillStyle = ink;
   ctx.font = `700 24px ${family}`;
   ctx.fillText(spec.detail, 48, 552);
-  if (display.border) ctx.fillRect(48, 590, 432, 3);
-  if (display.quote && spec.footer) {
-    ctx.fillStyle = accent;
-    ctx.beginPath();
-    ctx.arc(68, 646, 12, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = ink;
-    ctx.font = `700 27px ${family}`;
-    const footer = spec.footer.length > 24 ? `${spec.footer.slice(0, 24)}…` : spec.footer;
-    ctx.fillText(footer, 100, 655);
-  }
+  if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
 
   return false;
 }
@@ -1098,6 +1093,7 @@ export default function InkStudio() {
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [secondTick, setSecondTick] = useState(() => Date.now());
   const [bluetoothSupported, setBluetoothSupported] = useState(false);
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewVersionRef = useRef(0);
@@ -1107,6 +1103,11 @@ export default function InkStudio() {
   const deviceTasksRef = useRef<DeviceTask[]>([]);
   const taskTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const transferLocksRef = useRef(new Set<string>());
+  const elementDragRef = useRef<{
+    element: ScreenElementKey;
+    pointerId: number;
+    bounds: DOMRect;
+  } | null>(null);
 
   const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     setToast({ message, tone });
@@ -1329,15 +1330,20 @@ export default function InkStudio() {
 
   const updateDisplay = (patch: Partial<ScreenDisplay>) => {
     setApp((current) => {
-      const nextDisplay = { ...displaySettings(current.spec), ...patch };
-      const enablesOverlay = Object.entries(patch).some(([key, value]) => key !== "font" && key !== "logoText" && value === true);
-      const artwork = enablesOverlay && current.spec.artwork?.layout === "fullscreen"
+      const currentDisplay = displaySettings(current.spec);
+      const nextDisplay = {
+        ...currentDisplay,
+        ...patch,
+        positions: { ...currentDisplay.positions, ...patch.positions },
+        elementFonts: { ...currentDisplay.elementFonts, ...patch.elementFonts },
+      };
+      const enablesContentOverlay = screenElementOptions.some(({ key }) => patch[key] === true);
+      const artwork = enablesContentOverlay && current.spec.artwork?.layout === "fullscreen"
         ? { ...current.spec.artwork, layout: "background" as const }
         : current.spec.artwork;
       const clock = current.spec.clock
         ? {
             ...current.spec.clock,
-            board: patch.border === undefined ? current.spec.clock.board : nextDisplay.border,
             font: patch.font ?? current.spec.clock.font,
           }
         : undefined;
@@ -1353,6 +1359,77 @@ export default function InkStudio() {
         },
       };
     });
+  };
+
+  const updateElementPosition = (element: ScreenElementKey, x: number, y: number) => {
+    updateDisplay({
+      positions: {
+        ...displaySettings(currentAppRef.current.spec).positions,
+        [element]: {
+          x: Math.round(Math.min(504, Math.max(24, x))),
+          y: Math.round(Math.min(768, Math.max(24, y))),
+        },
+      },
+    });
+  };
+
+  const resetElementPosition = (element: ScreenElementKey) => {
+    const position = DEFAULT_ELEMENT_POSITIONS[element];
+    updateElementPosition(element, position.x, position.y);
+    showToast(`${screenElementOptions.find((item) => item.key === element)?.label ?? "元素"}已复位`, "info");
+  };
+
+  const randomizeQuote = () => {
+    setApp((current) => {
+      const available = quoteOptions.filter((quote) => quote !== current.spec.footer);
+      const footer = available[Math.floor(Math.random() * available.length)] ?? quoteOptions[0];
+      return { ...current, spec: { ...current.spec, footer } };
+    });
+  };
+
+  const handleElementPointerDown = (element: ScreenElementKey, event: ReactPointerEvent<HTMLButtonElement>) => {
+    const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!bounds) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    elementDragRef.current = { element, pointerId: event.pointerId, bounds };
+    const current = screenElementPosition(app.spec, element);
+    setDragPreview({ element, ...current });
+  };
+
+  const handleElementPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = elementDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const x = ((event.clientX - drag.bounds.left) / drag.bounds.width) * 528;
+    const y = ((event.clientY - drag.bounds.top) / drag.bounds.height) * 792;
+    setDragPreview({
+      element: drag.element,
+      x: Math.min(504, Math.max(24, x)),
+      y: Math.min(768, Math.max(24, y)),
+    });
+  };
+
+  const finishElementDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = elementDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const x = ((event.clientX - drag.bounds.left) / drag.bounds.width) * 528;
+    const y = ((event.clientY - drag.bounds.top) / drag.bounds.height) * 792;
+    elementDragRef.current = null;
+    setDragPreview(null);
+    updateElementPosition(drag.element, x, y);
+  };
+
+  const handleElementKeyDown = (element: ScreenElementKey, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const offsets: Partial<Record<string, [number, number]>> = {
+      ArrowLeft: [-4, 0],
+      ArrowRight: [4, 0],
+      ArrowUp: [0, -4],
+      ArrowDown: [0, 4],
+    };
+    const offset = offsets[event.key];
+    if (!offset) return;
+    event.preventDefault();
+    const position = screenElementPosition(app.spec, element);
+    updateElementPosition(element, position.x + offset[0], position.y + offset[1]);
   };
 
   const regeneratePreviewArtwork = () => {
@@ -1448,48 +1525,51 @@ export default function InkStudio() {
     if (notify) showToast("定时任务已停止", "info");
   }, [commitDeviceTasks, deviceName, showToast]);
 
-  const runTransfer = useCallback(async (targetApp: InkApp, deviceId: string, taskId?: string) => {
+  const runTransfer = useCallback(async (
+    targetApp: InkApp,
+    deviceId: string,
+    taskId?: string,
+    options: { reusePreview?: boolean } = {},
+  ) => {
     const driver = deviceDriversRef.current.get(deviceId)
       ?? (driverRef.current?.selectedDevice?.id === deviceId ? driverRef.current : null);
     const canvas = canvasRef.current;
+    const markTaskFailure = (reason: string, lastCanvas?: string) => {
+      if (!taskId) return;
+      commitDeviceTasks((current) => current.map((task) => task.id === taskId
+        ? {
+            ...task,
+            status: "error",
+            failureCount: task.failureCount + 1,
+            consecutiveFailures: task.consecutiveFailures + 1,
+            lastError: reason,
+            lastCanvas: lastCanvas || task.lastCanvas,
+          }
+        : task));
+    };
     if (!driver) {
       const reason = "找不到这台设备的授权，请重新选择设备";
-      if (taskId) {
-        commitDeviceTasks((current) => current.map((task) => task.id === taskId
-          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
-          : task));
-      }
+      markTaskFailure(reason);
       return false;
     }
     const editingThisApp = targetApp.id === currentAppRef.current.id;
-    const renderInPreview = editingThisApp && !taskId && Boolean(canvas);
-    if (renderInPreview && previewStatus === "loading") {
+    const reuseCurrentPreview = Boolean(options.reusePreview && editingThisApp && canvas);
+    const renderInPreview = editingThisApp && !taskId && Boolean(canvas) && !reuseCurrentPreview;
+    if (reuseCurrentPreview && previewStatus === "loading") {
       const reason = "图片素材仍在加载，请稍候重试";
-      if (taskId) {
-        commitDeviceTasks((current) => current.map((task) => task.id === taskId
-          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
-          : task));
-      }
+      markTaskFailure(reason);
       showToast(reason, "info");
       return false;
     }
     if (transferLocksRef.current.has(deviceId)) {
       const reason = "这台设备正在执行另一个写入任务，将在下一轮重试";
-      if (taskId) {
-        commitDeviceTasks((current) => current.map((task) => task.id === taskId
-          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
-          : task));
-      }
+      markTaskFailure(reason);
       showToast(reason, "info");
       return false;
     }
     if (document.visibilityState !== "visible") {
       const reason = "页面在后台，等待重新打开后重试";
-      if (taskId) {
-        commitDeviceTasks((current) => current.map((task) => task.id === taskId
-          ? { ...task, status: "error", failureCount: task.failureCount + 1, lastError: reason }
-          : task));
-      }
+      markTaskFailure(reason);
       showToast(reason, "info");
       return false;
     }
@@ -1502,7 +1582,7 @@ export default function InkStudio() {
     }
     let lastCanvas: string | undefined;
     try {
-      const nextSeed = targetApp.spec.artwork ? randomArtworkSeed() : null;
+      const nextSeed = !reuseCurrentPreview && targetApp.spec.artwork ? randomArtworkSeed() : null;
       const transferApp = nextSeed === null
         ? targetApp
         : {
@@ -1514,25 +1594,25 @@ export default function InkStudio() {
                 : undefined,
             },
           };
-      const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date());
-      const hasArtwork = Boolean(runtimeSpec.artwork || transferApp.localImage);
-      const outputCanvas = renderInPreview && canvas ? canvas : document.createElement("canvas");
-      outputCanvas.width = 528;
-      outputCanvas.height = 792;
-      if (renderInPreview) setPreviewStatus(hasArtwork ? "loading" : "ready");
-      const usedArtwork = await renderScreenToCanvas(outputCanvas, runtimeSpec, transferApp.localImage);
-      if (renderInPreview) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
+      const outputCanvas = reuseCurrentPreview && canvas
+        ? canvas
+        : renderInPreview && canvas
+          ? canvas
+          : document.createElement("canvas");
+      if (!reuseCurrentPreview) {
+        outputCanvas.width = 528;
+        outputCanvas.height = 792;
+        const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date());
+        const hasArtwork = Boolean(runtimeSpec.artwork || transferApp.localImage);
+        if (renderInPreview) setPreviewStatus(hasArtwork ? "loading" : "ready");
+        const usedArtwork = await renderScreenToCanvas(outputCanvas, runtimeSpec, transferApp.localImage);
+        if (renderInPreview) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
+      }
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
       await driver.writeCanvas(outputCanvas, true);
-      if (nextSeed !== null) {
-        if (editingThisApp) setApp((current) => current.spec.artwork
-          ? {
-              ...current,
-              spec: {
-                ...current.spec,
-                artwork: { ...current.spec.artwork, seed: nextSeed },
-              },
-            }
+      if (nextSeed !== null && renderInPreview) {
+        setApp((current) => current.spec.artwork
+          ? { ...current, spec: { ...current.spec, artwork: { ...current.spec.artwork, seed: nextSeed } } }
           : current);
       }
       if (taskId) {
@@ -1542,6 +1622,7 @@ export default function InkStudio() {
               app: transferApp,
               status: "scheduled",
               successCount: task.successCount + 1,
+              consecutiveFailures: 0,
               lastError: null,
               lastCanvas,
             }
@@ -1552,17 +1633,8 @@ export default function InkStudio() {
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "写入失败";
-      if (taskId) {
-        commitDeviceTasks((current) => current.map((task) => task.id === taskId
-          ? {
-              ...task,
-              status: "error",
-              failureCount: task.failureCount + 1,
-              lastError: message,
-              lastCanvas: lastCanvas || task.lastCanvas,
-            }
-          : task));
-      }
+      driver.disconnect();
+      markTaskFailure(message, lastCanvas);
       setDeviceStatus("error");
       showToast(message, "error");
       return false;
@@ -1589,9 +1661,36 @@ export default function InkStudio() {
       if (!latest) return;
       const wrote = await runTransfer(latest.app, latest.deviceId, taskId);
       if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
-      scheduleDeviceTask(taskId, !wrote && document.visibilityState !== "visible" ? 60_000 : undefined);
+      const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
+      const retryDelay = !wrote
+        ? document.visibilityState !== "visible"
+          ? 60_000
+          : retryDelayForFailures(afterRun?.consecutiveFailures ?? 1)
+        : undefined;
+      scheduleDeviceTask(taskId, retryDelay);
     }, delay);
     taskTimersRef.current.set(taskId, timer);
+  }
+
+  async function retryDeviceTask(taskId: string) {
+    const timer = taskTimersRef.current.get(taskId);
+    if (timer) clearTimeout(timer);
+    taskTimersRef.current.delete(taskId);
+    const task = deviceTasksRef.current.find((item) => item.id === taskId);
+    if (!task || task.status === "writing") return;
+    const driver = deviceDriversRef.current.get(task.deviceId);
+    driver?.disconnect();
+    commitDeviceTasks((current) => current.map((item) => item.id === taskId
+      ? { ...item, status: "writing", nextRunAt: null, lastError: null }
+      : item));
+    showToast("正在重新连接设备并重试", "info");
+    const wrote = await runTransfer(task.app, task.deviceId, taskId);
+    if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
+    const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
+    scheduleDeviceTask(
+      taskId,
+      wrote ? undefined : retryDelayForFailures(afterRun?.consecutiveFailures ?? 1),
+    );
   }
 
   const stopSchedule = useCallback(() => {
@@ -1640,18 +1739,22 @@ export default function InkStudio() {
       if (existingForApp) {
         if (app.scheduleMode === "once") {
           stopDeviceTask(existingForApp.id, false);
-          await runTransfer(app, resolvedDeviceId);
+          await runTransfer(app, resolvedDeviceId, undefined, { reusePreview: true });
           return;
         }
         commitDeviceTasks((current) => current.map((task) => task.id === existingForApp.id
           ? { ...task, app, deviceId: resolvedDeviceId, deviceName: resolvedDeviceName }
           : task));
-        await runTransfer(app, resolvedDeviceId, existingForApp.id);
-        scheduleDeviceTask(existingForApp.id);
+        const wrote = await runTransfer(app, resolvedDeviceId, existingForApp.id, { reusePreview: true });
+        const afterRun = deviceTasksRef.current.find((item) => item.id === existingForApp.id);
+        scheduleDeviceTask(
+          existingForApp.id,
+          wrote ? undefined : retryDelayForFailures(afterRun?.consecutiveFailures ?? 1),
+        );
         return;
       }
       if (app.scheduleMode === "once") {
-        await runTransfer(app, resolvedDeviceId);
+        await runTransfer(app, resolvedDeviceId, undefined, { reusePreview: true });
         return;
       }
       const taskId = `task-${crypto.randomUUID()}`;
@@ -1665,11 +1768,13 @@ export default function InkStudio() {
         lastRunAt: null,
         successCount: 0,
         failureCount: 0,
+        consecutiveFailures: 0,
         lastError: null,
       };
       commitDeviceTasks((current) => [task, ...current]);
-      await runTransfer(app, resolvedDeviceId, taskId);
-      scheduleDeviceTask(taskId);
+      const wrote = await runTransfer(app, resolvedDeviceId, taskId, { reusePreview: true });
+      const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
+      scheduleDeviceTask(taskId, wrote ? undefined : retryDelayForFailures(afterRun?.consecutiveFailures ?? 1));
       setTaskPanelDeviceId(resolvedDeviceId);
       setTaskPanelOpen(true);
     } catch (error) {
@@ -1793,7 +1898,12 @@ export default function InkStudio() {
                     <div><dt>失败</dt><dd>{task.failureCount}</dd></div>
                     <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : "尚未执行"}</dd></div>
                   </dl>
-                  {task.lastError && <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>}
+                  {task.lastError && (
+                    <div className="task-error-actions">
+                      <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
+                      <button type="button" onClick={() => void retryDeviceTask(task.id)}>立即重试</button>
+                    </div>
+                  )}
                   {task.lastCanvas ? (
                     <figure className="task-canvas">
                       <img src={task.lastCanvas} alt={`${task.app.title} 最近一次刷新的画面`} />
@@ -1812,7 +1922,7 @@ export default function InkStudio() {
               <p>选择非“单次写入”的刷新计划，再点击开始写入。</p>
             </div>
           )}
-          <footer>页面保持打开且电脑不休眠时，任务会自动重连设备。</footer>
+          <footer>断联后会清理旧连接，并按 15 秒、30 秒、60 秒逐步重试；设备回到范围内后也可点“立即重试”。</footer>
         </section>
       )}
 
@@ -1949,7 +2059,36 @@ export default function InkStudio() {
                   <div className="device-shadow" />
                   <div className="device-frame">
                     <div className="device-label">TODOO</div>
-                    <canvas ref={canvasRef} width={528} height={792} aria-label="电子墨水屏预览" />
+                    <div className="screen-canvas-wrap">
+                      <canvas ref={canvasRef} width={528} height={792} aria-label="电子墨水屏预览" />
+                      <div className="screen-drag-layer" aria-label="拖拽画面元素调整位置">
+                        {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
+                          const savedPosition = screenDisplay.positions[element.key];
+                          const position = dragPreview?.element === element.key ? dragPreview : savedPosition;
+                          return (
+                            <button
+                              type="button"
+                              className={`canvas-drag-handle canvas-drag-${element.key}${dragPreview?.element === element.key ? " dragging" : ""}`}
+                              key={element.key}
+                              style={{
+                                left: `${(position.x / 528) * 100}%`,
+                                top: `${(position.y / 792) * 100}%`,
+                                width: `${(element.width / 528) * 100}%`,
+                                height: `${(element.height / 792) * 100}%`,
+                              }}
+                              aria-label={`拖拽调整${element.label}位置，方向键可微调`}
+                              onPointerDown={(event) => handleElementPointerDown(element.key, event)}
+                              onPointerMove={handleElementPointerMove}
+                              onPointerUp={finishElementDrag}
+                              onPointerCancel={finishElementDrag}
+                              onKeyDown={(event) => handleElementKeyDown(element.key, event)}
+                            >
+                              <span>{element.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                     <div className="device-port" />
                   </div>
                 </div>
@@ -1978,53 +2117,84 @@ export default function InkStudio() {
                 <div className="display-editor">
                   <div className="settings-subhead">
                     <strong>画面元素</strong>
-                    <small>默认无边框</small>
+                    <small>勾选后可在预览中拖拽</small>
                   </div>
-                  <div className="component-checks">
-                    {([
-                      ["quote", "今日名言"],
-                      ["logo", "LOGO"],
-                      ["date", "日期"],
-                      ["time", "时间"],
-                      ["weather", "天气"],
-                      ["border", "边框"],
-                    ] as const).map(([key, label]) => (
-                      <label className="component-check" key={key}>
+                  <div className="component-list">
+                    {screenElementOptions.map(({ key, label }) => (
+                      <div className={`component-row${screenDisplay[key] ? " enabled" : ""}`} key={key}>
+                        <label className="component-toggle">
+                          <input
+                            type="checkbox"
+                            checked={screenDisplay[key]}
+                            onChange={(event) => updateDisplay({ [key]: event.target.checked })}
+                          />
+                          <span>{label}</span>
+                        </label>
+                        <select
+                          value={screenDisplay.elementFonts[key] ?? ""}
+                          onChange={(event) => updateDisplay({
+                            elementFonts: {
+                              ...screenDisplay.elementFonts,
+                              [key]: event.target.value || undefined,
+                            } as ScreenDisplay["elementFonts"],
+                          })}
+                          aria-label={`${label}字体`}
+                          disabled={!screenDisplay[key]}
+                        >
+                          <option value="">默认字体</option>
+                          {screenFontOptions.map((font) => (
+                            <option value={font.value} key={font.value}>{font.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => resetElementPosition(key)}
+                          disabled={!screenDisplay[key]}
+                          aria-label={`复位${label}位置`}
+                        >
+                          复位
+                        </button>
+                      </div>
+                    ))}
+                    <div className={`component-row border-control${screenDisplay.border ? " enabled" : ""}`}>
+                      <label className="component-toggle">
                         <input
                           type="checkbox"
-                          checked={screenDisplay[key]}
-                          onChange={(event) => updateDisplay({ [key]: event.target.checked })}
+                          checked={screenDisplay.border}
+                          onChange={(event) => updateDisplay({ border: event.target.checked })}
                         />
-                        <span>{label}</span>
+                        <span>屏幕外框</span>
                       </label>
-                    ))}
+                      <small>只绘制最外侧细框</small>
+                    </div>
                   </div>
                   <div className="display-fields">
                     <label className="display-field">
-                      <span>画面字体</span>
+                      <span>默认字体</span>
                       <select
                         value={screenDisplay.font}
                         onChange={(event) => updateDisplay({ font: event.target.value as ScreenFont })}
                       >
-                        <option value="sans">现代黑体</option>
-                        <option value="serif">优雅宋体</option>
-                        <option value="rounded">圆润标题</option>
-                        <option value="mono">等宽数字</option>
-                        <option value="handwritten">手写风格</option>
+                        {screenFontOptions.map((font) => (
+                          <option value={font.value} key={font.value}>{font.label}</option>
+                        ))}
                       </select>
                     </label>
                     {screenDisplay.quote && (
                       <label className="display-field">
                         <span>今日名言</span>
-                        <input
-                          value={app.spec.footer}
-                          maxLength={40}
-                          onChange={(event) => setApp((current) => ({
-                            ...current,
-                            spec: { ...current.spec, footer: event.target.value },
-                          }))}
-                          placeholder="输入一句话"
-                        />
+                        <div className="quote-input-row">
+                          <input
+                            value={app.spec.footer}
+                            maxLength={40}
+                            onChange={(event) => setApp((current) => ({
+                              ...current,
+                              spec: { ...current.spec, footer: event.target.value },
+                            }))}
+                            placeholder="输入一句话"
+                          />
+                          <button type="button" onClick={randomizeQuote}>随机</button>
+                        </div>
                       </label>
                     )}
                     {screenDisplay.logo && (
