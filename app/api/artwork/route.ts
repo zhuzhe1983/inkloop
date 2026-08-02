@@ -1,7 +1,7 @@
 const OUTPUT_WIDTH = 528;
 const OUTPUT_HEIGHT = 792;
-const REQUEST_WIDTH = OUTPUT_WIDTH * 2;
-const REQUEST_HEIGHT = OUTPUT_HEIGHT * 2;
+const REQUEST_WIDTH = OUTPUT_WIDTH;
+const REQUEST_HEIGHT = OUTPUT_HEIGHT;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 type CommonsResponse = {
@@ -58,7 +58,7 @@ async function fetchImage(url: string) {
   if (declaredSize > MAX_IMAGE_BYTES) return null;
   const body = await response.arrayBuffer();
   if (!body.byteLength || body.byteLength > MAX_IMAGE_BYTES) return null;
-  return { body, contentType };
+  return { body, contentType, sourceUrl: response.url };
 }
 
 async function fetchCommonsImage(query: string, seed: number) {
@@ -158,6 +158,7 @@ export async function GET(request: Request) {
           "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
           "X-Content-Type-Options": "nosniff",
           "X-Inkloop-Image-Source": "loremflickr",
+          "X-Inkloop-Image-Url": image.sourceUrl,
         },
       });
     }
@@ -175,6 +176,7 @@ export async function GET(request: Request) {
           "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
           "X-Content-Type-Options": "nosniff",
           "X-Inkloop-Image-Source": "wikimedia-commons",
+          "X-Inkloop-Image-Url": image.sourceUrl,
         },
       });
     }
@@ -201,6 +203,7 @@ export async function GET(request: Request) {
           "Cache-Control": "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
           "X-Content-Type-Options": "nosniff",
           "X-Inkloop-Image-Source": name,
+          "X-Inkloop-Image-Url": image.sourceUrl,
         },
       });
     } catch (error) {

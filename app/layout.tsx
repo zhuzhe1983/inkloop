@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
+import "@fontsource/noto-sans-sc/chinese-simplified-700.css";
+import "@fontsource/noto-serif-sc/chinese-simplified-700.css";
+import "@fontsource/m-plus-rounded-1c/japanese-700.css";
+import "@fontsource/ma-shan-zheng/chinese-simplified.css";
 import "./globals.css";
 
 const geistSans = Geist({

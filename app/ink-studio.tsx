@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   DEFAULT_ELEMENT_POSITIONS,
+  DEFAULT_ELEMENT_SIZES,
   displaySettings,
   featuredApps,
   generateInkApp,
@@ -36,6 +37,7 @@ type ToastTone = NonNullable<Toast>["tone"];
 type GeneratorStatus = "checking" | "online" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
 type DeviceTaskStatus = "scheduled" | "writing" | "error";
+type ArtworkCredit = { provider: string; url: string };
 
 type DeviceProfile = {
   id: string;
@@ -69,7 +71,9 @@ type DragPreview = {
 };
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
+const WEATHER_CITY_KEY = "inkloop-weather-city-v1";
 const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
+const EPAPER_WHITE = "#fafaf8";
 
 const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
   { id: "studio", label: "创作台", glyph: "✦" },
@@ -108,12 +112,31 @@ const screenElementOptions: Array<{ key: ScreenElementKey; label: string; width:
 ];
 
 const screenFontOptions: Array<{ value: ScreenFont; label: string }> = [
-  { value: "sans", label: "现代黑体" },
-  { value: "serif", label: "优雅宋体" },
-  { value: "rounded", label: "圆润标题" },
-  { value: "mono", label: "等宽数字" },
-  { value: "handwritten", label: "手写风格" },
+  { value: "sans", label: "思源黑体 · 清晰" },
+  { value: "serif", label: "思源宋体 · 优雅" },
+  { value: "rounded", label: "M PLUS 圆体 · 亲和" },
+  { value: "mono", label: "等宽数字 · 精准" },
+  { value: "handwritten", label: "马善政手写 · 醒目" },
 ];
+
+const knownWeatherCities = [
+  "上海", "北京", "深圳", "广州", "杭州", "成都", "重庆", "南京", "苏州", "武汉",
+  "西安", "天津", "青岛", "厦门", "长沙", "郑州", "昆明", "大连", "宁波", "香港",
+  "澳门", "台北", "东京", "大阪", "首尔", "新加坡", "伦敦", "巴黎", "纽约", "洛杉矶",
+];
+
+function applyPreferredCityToGeneratedApp(generated: InkApp, sourcePrompt: string, preferredCity: string) {
+  const display = displaySettings(generated.spec);
+  if (!display.weather && generated.spec.kind !== "weather") return generated;
+  const explicitCity = knownWeatherCities.find((city) => sourcePrompt.includes(city));
+  return {
+    ...generated,
+    spec: {
+      ...generated.spec,
+      city: explicitCity || preferredCity || generated.spec.city || "上海",
+    },
+  };
+}
 
 const guideExamples = [
   {
@@ -363,11 +386,11 @@ async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promi
 }
 
 const screenFonts = {
-  sans: 'Arial, "PingFang SC", sans-serif',
-  serif: 'Georgia, "Songti SC", serif',
-  rounded: '"Arial Rounded MT Bold", "PingFang SC", sans-serif',
-  mono: '"Courier New", "SFMono-Regular", monospace',
-  handwritten: '"Comic Sans MS", "Kaiti SC", cursive',
+  sans: '"Noto Sans SC", "PingFang SC", sans-serif',
+  serif: '"Noto Serif SC", "Songti SC", serif',
+  rounded: '"M PLUS Rounded 1c", "Noto Sans SC", sans-serif',
+  mono: '"Geist Mono", "SFMono-Regular", "Noto Sans SC", monospace',
+  handwritten: '"Ma Shan Zheng", "Noto Sans SC", cursive',
 } as const;
 
 function screenFontFamily(spec: ScreenSpec) {
@@ -381,6 +404,11 @@ function screenElementFontFamily(spec: ScreenSpec, element: ScreenElementKey) {
 
 function screenElementPosition(spec: ScreenSpec, element: ScreenElementKey) {
   return displaySettings(spec).positions[element] ?? DEFAULT_ELEMENT_POSITIONS[element];
+}
+
+function screenElementFontSize(spec: ScreenSpec, element: ScreenElementKey) {
+  const value = displaySettings(spec).elementSizes[element] ?? DEFAULT_ELEMENT_SIZES[element];
+  return Math.round(Math.min(element === "timeLarge" ? 180 : 72, Math.max(10, value)));
 }
 
 function clockFontFamily(spec: ScreenSpec) {
@@ -411,7 +439,7 @@ function fitClockText(
 
 const ePaperPalette = [
   [21, 24, 22],
-  [244, 240, 220],
+  [250, 250, 248],
   [229, 201, 0],
   [220, 63, 47],
   [39, 86, 199],
@@ -420,7 +448,7 @@ const ePaperPalette = [
 
 function artworkUrl(artwork: ArtworkSpec) {
   const params = new URLSearchParams({
-    v: "6",
+    v: "7",
     query: artwork.query,
     style: artwork.style || "editorial high contrast composition",
     seed: String(artwork.seed),
@@ -428,7 +456,9 @@ function artworkUrl(artwork: ArtworkSpec) {
   return `/api/artwork?${params.toString()}`;
 }
 
-function loadArtwork(url: string) {
+const artworkCreditCache = new Map<string, ArtworkCredit>();
+
+function decodeArtwork(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     const timeout = window.setTimeout(() => reject(new Error("图片素材加载超时")), 15_000);
@@ -443,6 +473,21 @@ function loadArtwork(url: string) {
     };
     image.src = url;
   });
+}
+
+async function loadArtwork(url: string) {
+  if (url.startsWith("data:") || url.startsWith("blob:")) return decodeArtwork(url);
+  const response = await fetch(url, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error("图片素材加载失败");
+  const provider = response.headers.get("X-Inkloop-Image-Source");
+  const sourceUrl = response.headers.get("X-Inkloop-Image-Url");
+  if (provider && sourceUrl) artworkCreditCache.set(url, { provider, url: sourceUrl });
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    return await decodeArtwork(objectUrl);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function prepareLocalImage(file: File) {
@@ -460,7 +505,7 @@ async function prepareLocalImage(file: File) {
   canvas.height = 792;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("浏览器无法处理这张图片");
-  context.fillStyle = "#f4f0dc";
+  context.fillStyle = EPAPER_WHITE;
   context.fillRect(0, 0, canvas.width, canvas.height);
   const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
   const width = image.naturalWidth * scale;
@@ -483,7 +528,7 @@ function drawImageCover(
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.filter = "saturate(0.86) contrast(1.04)";
+  ctx.filter = "saturate(0.96) contrast(0.96) brightness(1.02)";
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
   ctx.restore();
 }
@@ -496,29 +541,67 @@ function quantizeRegion(
   height: number,
 ) {
   const image = ctx.getImageData(x, y, width, height);
-  for (let pixel = 0; pixel < image.data.length; pixel += 4) {
-    const red = image.data[pixel];
-    const green = image.data[pixel + 1];
-    const blue = image.data[pixel + 2];
-    let best: readonly [number, number, number] = ePaperPalette[0];
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (const color of ePaperPalette) {
-      const dr = red - color[0];
-      const dg = green - color[1];
-      const db = blue - color[2];
-      const redMean = (red + color[0]) / 2;
-      const distance = (2 + redMean / 256) * dr * dr
-        + 4 * dg * dg
-        + (2 + (255 - redMean) / 256) * db * db;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = color;
+  const bayer4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+  let currentRed = new Float32Array(width);
+  let currentGreen = new Float32Array(width);
+  let currentBlue = new Float32Array(width);
+  let nextRed = new Float32Array(width);
+  let nextGreen = new Float32Array(width);
+  let nextBlue = new Float32Array(width);
+  const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
+
+  for (let pixelY = 0; pixelY < height; pixelY += 1) {
+    for (let pixelX = 0; pixelX < width; pixelX += 1) {
+      const pixel = (pixelY * width + pixelX) * 4;
+      const orderedBias = (bayer4[(pixelY % 4) * 4 + (pixelX % 4)] - 7.5) * 0.35;
+      const red = clamp(image.data[pixel] + currentRed[pixelX] + orderedBias, 0, 255);
+      const green = clamp(image.data[pixel + 1] + currentGreen[pixelX] + orderedBias, 0, 255);
+      const blue = clamp(image.data[pixel + 2] + currentBlue[pixelX] + orderedBias, 0, 255);
+      let best: readonly [number, number, number] = ePaperPalette[0];
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const color of ePaperPalette) {
+        const dr = red - color[0];
+        const dg = green - color[1];
+        const db = blue - color[2];
+        const redMean = (red + color[0]) / 2;
+        const distance = (2 + redMean / 256) * dr * dr
+          + 4 * dg * dg
+          + (2 + (255 - redMean) / 256) * db * db;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = color;
+        }
       }
+      image.data[pixel] = best[0];
+      image.data[pixel + 1] = best[1];
+      image.data[pixel + 2] = best[2];
+      image.data[pixel + 3] = 255;
+
+      const errors = [
+        clamp((red - best[0]) * 0.26, -18, 18),
+        clamp((green - best[1]) * 0.26, -18, 18),
+        clamp((blue - best[2]) * 0.26, -18, 18),
+      ];
+      if (pixelX + 1 < width) {
+        currentRed[pixelX + 1] += errors[0] * 0.5;
+        currentGreen[pixelX + 1] += errors[1] * 0.5;
+        currentBlue[pixelX + 1] += errors[2] * 0.5;
+      }
+      if (pixelX > 0) {
+        nextRed[pixelX - 1] += errors[0] * 0.2;
+        nextGreen[pixelX - 1] += errors[1] * 0.2;
+        nextBlue[pixelX - 1] += errors[2] * 0.2;
+      }
+      nextRed[pixelX] += errors[0] * 0.3;
+      nextGreen[pixelX] += errors[1] * 0.3;
+      nextBlue[pixelX] += errors[2] * 0.3;
     }
-    image.data[pixel] = best[0];
-    image.data[pixel + 1] = best[1];
-    image.data[pixel + 2] = best[2];
-    image.data[pixel + 3] = 255;
+    [currentRed, nextRed] = [nextRed, currentRed];
+    [currentGreen, nextGreen] = [nextGreen, currentGreen];
+    [currentBlue, nextBlue] = [nextBlue, currentBlue];
+    nextRed.fill(0);
+    nextGreen.fill(0);
+    nextBlue.fill(0);
   }
   ctx.putImageData(image, x, y);
 }
@@ -541,13 +624,13 @@ function drawGeneratedArtwork(
   ctx.beginPath();
   ctx.rect(x, y, width, height);
   ctx.clip();
-  ctx.fillStyle = "#f4f0dc";
+  ctx.fillStyle = EPAPER_WHITE;
   ctx.fillRect(x, y, width, height);
 
   if (artwork.motif === "rainbow") {
     ctx.fillStyle = "#e5c900";
     ctx.fillRect(x, y, width, height);
-    ctx.fillStyle = "#f4f0dc";
+    ctx.fillStyle = EPAPER_WHITE;
     for (let index = 0; index < 18; index += 1) {
       ctx.beginPath();
       ctx.arc(x + random() * width, y + random() * height, 4 + random() * 13, 0, Math.PI * 2);
@@ -563,7 +646,7 @@ function drawGeneratedArtwork(
       ctx.arc(centerX, centerY, baseRadius - index * ctx.lineWidth * 0.78, Math.PI, Math.PI * 2);
       ctx.stroke();
     });
-    ctx.fillStyle = "#f4f0dc";
+    ctx.fillStyle = EPAPER_WHITE;
     ctx.beginPath();
     ctx.arc(centerX, centerY, Math.max(34, baseRadius * 0.28), Math.PI, Math.PI * 2);
     ctx.fill();
@@ -586,7 +669,7 @@ function drawGeneratedArtwork(
     ctx.arc(centerX, centerY, Math.min(width, height) * 0.16, 0, Math.PI * 2);
     ctx.fill();
   } else if (artwork.motif === "waves") {
-    ctx.fillStyle = "#f4f0dc";
+    ctx.fillStyle = EPAPER_WHITE;
     ctx.fillRect(x, y, width, height);
     const phase = random() * Math.PI * 2;
     const waveColors = ["#2756c7", "#dc3f2f", "#e5c900", "#087c4e"];
@@ -636,9 +719,9 @@ function drawGlowFrame(
   ctx.strokeStyle = "#151816";
   ctx.lineWidth = 4;
   ctx.strokeRect(x, y, width, height);
-  ctx.strokeStyle = "#f4f0dc";
+  ctx.strokeStyle = EPAPER_WHITE;
   ctx.lineWidth = 2;
-  ctx.shadowColor = "#f4f0dc";
+  ctx.shadowColor = EPAPER_WHITE;
   ctx.shadowBlur = 5;
   ctx.strokeRect(x, y, width, height);
   ctx.restore();
@@ -655,11 +738,11 @@ function drawGlowText(
   ctx.lineJoin = "round";
   ctx.strokeStyle = "#151816";
   ctx.lineWidth = 4;
-  ctx.shadowColor = "#f4f0dc";
+  ctx.shadowColor = EPAPER_WHITE;
   ctx.shadowBlur = 5;
   if (maxWidth) ctx.strokeText(text, x, y, maxWidth);
   else ctx.strokeText(text, x, y);
-  ctx.fillStyle = "#f4f0dc";
+  ctx.fillStyle = EPAPER_WHITE;
   if (maxWidth) ctx.fillText(text, x, y, maxWidth);
   else ctx.fillText(text, x, y);
   ctx.restore();
@@ -679,7 +762,7 @@ function drawEditorialPlate(
     ctx.fillStyle = "#151816";
     ctx.fillRect(x + 7, y + 7, width, height);
   }
-  ctx.fillStyle = "#f4f0dc";
+  ctx.fillStyle = EPAPER_WHITE;
   ctx.fillRect(x, y, width, height);
   if (border) {
     ctx.strokeStyle = "#151816";
@@ -704,7 +787,7 @@ function drawDisplayMeta(
   ctx.textAlign = "center";
   if (leftLabel) {
     const position = screenElementPosition(spec, "date");
-    ctx.font = `700 18px ${screenElementFontFamily(spec, "date")}`;
+    ctx.font = `700 ${screenElementFontSize(spec, "date")}px ${screenElementFontFamily(spec, "date")}`;
     if (transparentOverlay) drawGlowText(ctx, leftLabel.slice(0, 32), position.x, position.y, 300);
     else {
       ctx.fillStyle = ink;
@@ -714,7 +797,7 @@ function drawDisplayMeta(
 
   if (display.time && spec.timeText) {
     const position = screenElementPosition(spec, "time");
-    ctx.font = `800 22px ${screenElementFontFamily(spec, "time")}`;
+    ctx.font = `800 ${screenElementFontSize(spec, "time")}px ${screenElementFontFamily(spec, "time")}`;
     if (transparentOverlay) drawGlowText(ctx, spec.timeText, position.x, position.y, 140);
     else {
       ctx.fillStyle = ink;
@@ -723,7 +806,7 @@ function drawDisplayMeta(
   }
   if (display.weather && spec.weatherText) {
     const position = screenElementPosition(spec, "weather");
-    ctx.font = `700 16px ${screenElementFontFamily(spec, "weather")}`;
+    ctx.font = `700 ${screenElementFontSize(spec, "weather")}px ${screenElementFontFamily(spec, "weather")}`;
     if (transparentOverlay) drawGlowText(ctx, spec.weatherText.slice(0, 24), position.x, position.y, 280);
     else {
       ctx.fillStyle = ink;
@@ -733,7 +816,7 @@ function drawDisplayMeta(
 
   if (display.logo && display.logoText) {
     const position = screenElementPosition(spec, "logo");
-    ctx.font = `800 15px ${screenElementFontFamily(spec, "logo")}`;
+    ctx.font = `800 ${screenElementFontSize(spec, "logo")}px ${screenElementFontFamily(spec, "logo")}`;
     if (transparentOverlay) drawGlowText(ctx, display.logoText.slice(0, 20), position.x, position.y, 240);
     else {
       ctx.fillStyle = ink;
@@ -743,7 +826,7 @@ function drawDisplayMeta(
 
   if (display.quote && spec.footer) {
     const position = screenElementPosition(spec, "quote");
-    ctx.font = `700 18px ${screenElementFontFamily(spec, "quote")}`;
+    ctx.font = `700 ${screenElementFontSize(spec, "quote")}px ${screenElementFontFamily(spec, "quote")}`;
     if (transparentOverlay) drawGlowText(ctx, spec.footer.slice(0, 30), position.x, position.y, 400);
     else {
       ctx.fillStyle = ink;
@@ -767,7 +850,7 @@ function drawClockCopy(
     ctx,
     timeValue,
     420,
-    transparentOverlay ? 108 : 126,
+    screenElementFontSize(spec, "timeLarge"),
     family,
   );
   const position = screenElementPosition(spec, "timeLarge");
@@ -794,7 +877,7 @@ function drawArtworkCopy(
   imageBackdrop: boolean,
 ) {
   const ink = "#151816";
-  const paper = "#f4f0dc";
+  const paper = EPAPER_WHITE;
   const display = displaySettings(spec);
   const family = screenFontFamily(spec);
   const backgroundLayout = layout === "background";
@@ -870,7 +953,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   const width = 528;
   const height = 792;
   const ink = "#151816";
-  const paper = "#f4f0dc";
+  const paper = EPAPER_WHITE;
   const accent = accentColors[spec.accent];
   const display = displaySettings(spec);
   const family = screenFontFamily(spec);
@@ -1020,9 +1103,9 @@ function MiniScreen({ app }: { app: InkApp }) {
   const artwork = spec.artwork;
   const generatedBackgrounds: Record<ArtworkSpec["motif"], string> = {
     rainbow: "linear-gradient(135deg, #dc3f2f 0 22%, #e5c900 22% 46%, #087c4e 46% 70%, #2756c7 70%)",
-    sunburst: "conic-gradient(from 12deg, #e5c900, #dc3f2f, #f4f0dc, #2756c7, #e5c900)",
-    confetti: "repeating-linear-gradient(115deg, #f4f0dc 0 14px, #dc3f2f 14px 20px, #e5c900 20px 34px, #2756c7 34px 40px)",
-    waves: "repeating-linear-gradient(0deg, #2756c7 0 18px, #f4f0dc 18px 32px, #087c4e 32px 48px)",
+    sunburst: "conic-gradient(from 12deg, #e5c900, #dc3f2f, #fafaf8, #2756c7, #e5c900)",
+    confetti: "repeating-linear-gradient(115deg, #fafaf8 0 14px, #dc3f2f 14px 20px, #e5c900 20px 34px, #2756c7 34px 40px)",
+    waves: "repeating-linear-gradient(0deg, #2756c7 0 18px, #fafaf8 18px 32px, #087c4e 32px 48px)",
     grid: "conic-gradient(#dc3f2f 25%, #e5c900 0 50%, #087c4e 0 75%, #2756c7 0) 0 0 / 40px 40px",
   };
   const style: CSSProperties | undefined = artwork
@@ -1079,6 +1162,9 @@ export default function InkStudio() {
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
+  const [artworkCredit, setArtworkCredit] = useState<ArtworkCredit | null>(null);
+  const [preferredWeatherCity, setPreferredWeatherCity] = useState("上海");
+  const [fontTick, setFontTick] = useState(0);
   const [clockTick, setClockTick] = useState(0);
   const [codeOpen, setCodeOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -1148,9 +1234,18 @@ export default function InkStudio() {
     try {
       const stored = JSON.parse(localStorage.getItem(LOCAL_APPS_KEY) ?? "[]") as InkApp[];
       if (Array.isArray(stored)) setLocalApps(stored.map(upgradeLegacyApp));
+      const storedCity = localStorage.getItem(WEATHER_CITY_KEY)?.trim();
+      if (storedCity) setPreferredWeatherCity(storedCity);
     } catch {
       localStorage.removeItem(LOCAL_APPS_KEY);
     }
+  }, []);
+
+  useEffect(() => {
+    const sample = "今日天气 12:34 专注当下 圆润手写";
+    Promise.all(Object.values(screenFonts).map((family) => document.fonts.load(`700 32px ${family}`, sample)))
+      .then(() => setFontTick((value) => value + 1))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -1253,6 +1348,8 @@ export default function InkStudio() {
     staging.height = 792;
     const hasArtwork = Boolean(app.spec.artwork || app.localImage);
     setPreviewStatus(hasArtwork ? "loading" : "ready");
+    const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork) : null;
+    setArtworkCredit(null);
     resolveRuntimeScreen(app, new Date()).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage)).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
       const context = canvas.getContext("2d");
@@ -1260,8 +1357,9 @@ export default function InkStudio() {
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.drawImage(staging, 0, 0);
       setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
+      setArtworkCredit(usedArtwork && creditKey ? artworkCreditCache.get(creditKey) ?? null : null);
     });
-  }, [app.spec, app.localImage, app.prompt, clockTick]);
+  }, [app.spec, app.localImage, app.prompt, clockTick, fontTick]);
 
   const attachLocalImage = async (file?: File) => {
     if (!file) return;
@@ -1306,7 +1404,7 @@ export default function InkStudio() {
         warning?: string;
       };
       if (!result.app) throw new Error("生成结果不完整");
-      setApp({ ...result.app, localImage: app.localImage });
+      setApp({ ...applyPreferredCityToGeneratedApp(result.app, prompt, preferredWeatherCity), localImage: app.localImage });
       if (result.mode === "llm") {
         setGeneratorStatus("online");
         setGeneratorModel(result.model || "auto");
@@ -1316,7 +1414,7 @@ export default function InkStudio() {
         showToast(result.warning || "已使用本地模板生成", "info");
       }
     } catch (error) {
-      setApp({ ...generateInkApp(prompt), localImage: app.localImage });
+      setApp({ ...applyPreferredCityToGeneratedApp(generateInkApp(prompt), prompt, preferredWeatherCity), localImage: app.localImage });
       setGeneratorStatus("local");
       showToast(error instanceof Error ? `${error.message}，已使用本地模板` : "已使用本地模板", "info");
     } finally {
@@ -1336,6 +1434,7 @@ export default function InkStudio() {
         ...patch,
         positions: { ...currentDisplay.positions, ...patch.positions },
         elementFonts: { ...currentDisplay.elementFonts, ...patch.elementFonts },
+        elementSizes: { ...currentDisplay.elementSizes, ...patch.elementSizes },
       };
       const enablesContentOverlay = screenElementOptions.some(({ key }) => patch[key] === true);
       const artwork = enablesContentOverlay && current.spec.artwork?.layout === "fullscreen"
@@ -1353,7 +1452,9 @@ export default function InkStudio() {
           ...current.spec,
           artwork,
           clock,
-          city: nextDisplay.weather ? current.spec.city || inferWeatherCity(current.prompt) : current.spec.city,
+          city: nextDisplay.weather
+            ? current.spec.city || preferredWeatherCity || inferWeatherCity(current.prompt)
+            : current.spec.city,
           footer: nextDisplay.quote && !current.spec.footer ? "今天也要保持好心情" : current.spec.footer,
           display: nextDisplay,
         },
@@ -1886,7 +1987,17 @@ export default function InkStudio() {
                       <h3>{task.app.title}</h3>
                       <p>{scheduleLabel(task.app)}</p>
                     </div>
-                    <button type="button" onClick={() => stopDeviceTask(task.id)}>停止</button>
+                    <div className="device-task-heading-actions">
+                      <button
+                        type="button"
+                        className="retry-task-button"
+                        onClick={() => void retryDeviceTask(task.id)}
+                        disabled={task.status === "writing"}
+                      >
+                        立即重试
+                      </button>
+                      <button type="button" onClick={() => stopDeviceTask(task.id)}>停止</button>
+                    </div>
                   </div>
                   <div className="task-countdown">
                     <span>距离下次刷新</span>
@@ -1899,10 +2010,7 @@ export default function InkStudio() {
                     <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : "尚未执行"}</dd></div>
                   </dl>
                   {task.lastError && (
-                    <div className="task-error-actions">
-                      <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
-                      <button type="button" onClick={() => void retryDeviceTask(task.id)}>立即重试</button>
-                    </div>
+                    <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
                   )}
                   {task.lastCanvas ? (
                     <figure className="task-canvas">
@@ -2095,7 +2203,7 @@ export default function InkStudio() {
                 <div className="palette-strip" aria-label="屏幕支持六种颜色">
                   {[
                     ["黑", "#111"],
-                    ["白", "#f6f2df"],
+                    ["白", EPAPER_WHITE],
                     ["黄", "#e5c900"],
                     ["红", "#dc3f2f"],
                     ["蓝", "#2756c7"],
@@ -2104,6 +2212,29 @@ export default function InkStudio() {
                     <span key={label}><i style={{ background: color }} />{label}</span>
                   ))}
                 </div>
+                {(app.spec.artwork || app.localImage) && (
+                  <div className="preview-source-note">
+                    {app.spec.artwork?.mode === "web" && (
+                      <p>猫雕塑是图片网站返回的默认内容，请点击“重新生成”。</p>
+                    )}
+                    {app.localImage ? (
+                      <p><strong>图片来源</strong> 本机上传（无外部地址）</p>
+                    ) : artworkCredit ? (
+                      <p>
+                        <strong>图片来源</strong> {artworkCredit.provider === "loremflickr"
+                          ? "LoremFlickr"
+                          : artworkCredit.provider === "wikimedia-commons"
+                            ? "Wikimedia Commons"
+                            : artworkCredit.provider === "picsum"
+                              ? "Picsum"
+                              : artworkCredit.provider}
+                        <a href={artworkCredit.url} target="_blank" rel="noreferrer">查看真实图片地址 ↗</a>
+                      </p>
+                    ) : app.spec.artwork?.mode === "generated" ? (
+                      <p><strong>图片来源</strong> Inkloop 生成图形</p>
+                    ) : null}
+                  </div>
+                )}
               </section>
 
               <section className="settings-panel panel">
@@ -2122,38 +2253,63 @@ export default function InkStudio() {
                   <div className="component-list">
                     {screenElementOptions.map(({ key, label }) => (
                       <div className={`component-row${screenDisplay[key] ? " enabled" : ""}`} key={key}>
-                        <label className="component-toggle">
-                          <input
-                            type="checkbox"
-                            checked={screenDisplay[key]}
-                            onChange={(event) => updateDisplay({ [key]: event.target.checked })}
-                          />
-                          <span>{label}</span>
-                        </label>
-                        <select
-                          value={screenDisplay.elementFonts[key] ?? ""}
-                          onChange={(event) => updateDisplay({
-                            elementFonts: {
-                              ...screenDisplay.elementFonts,
-                              [key]: event.target.value || undefined,
-                            } as ScreenDisplay["elementFonts"],
-                          })}
-                          aria-label={`${label}字体`}
-                          disabled={!screenDisplay[key]}
-                        >
-                          <option value="">默认字体</option>
-                          {screenFontOptions.map((font) => (
-                            <option value={font.value} key={font.value}>{font.label}</option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => resetElementPosition(key)}
-                          disabled={!screenDisplay[key]}
-                          aria-label={`复位${label}位置`}
-                        >
-                          复位
-                        </button>
+                        <div className="component-row-head">
+                          <label className="component-toggle">
+                            <input
+                              type="checkbox"
+                              checked={screenDisplay[key]}
+                              onChange={(event) => updateDisplay({ [key]: event.target.checked })}
+                            />
+                            <span>{label}</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => resetElementPosition(key)}
+                            disabled={!screenDisplay[key]}
+                            aria-label={`复位${label}位置`}
+                          >
+                            位置复位
+                          </button>
+                        </div>
+                        <div className="component-type-controls">
+                          <label>
+                            <span>字体</span>
+                            <select
+                              value={screenDisplay.elementFonts[key] ?? ""}
+                              onChange={(event) => updateDisplay({
+                                elementFonts: {
+                                  ...screenDisplay.elementFonts,
+                                  [key]: event.target.value || undefined,
+                                } as ScreenDisplay["elementFonts"],
+                              })}
+                              aria-label={`${label}字体`}
+                              disabled={!screenDisplay[key]}
+                            >
+                              <option value="">跟随默认字体</option>
+                              {screenFontOptions.map((font) => (
+                                <option value={font.value} key={font.value}>{font.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="component-size-control">
+                            <span>字号</span>
+                            <input
+                              type="number"
+                              min={10}
+                              max={key === "timeLarge" ? 180 : 72}
+                              step={1}
+                              value={screenDisplay.elementSizes[key] ?? DEFAULT_ELEMENT_SIZES[key]}
+                              onChange={(event) => updateDisplay({
+                                elementSizes: {
+                                  ...screenDisplay.elementSizes,
+                                  [key]: Number.parseInt(event.target.value, 10) || DEFAULT_ELEMENT_SIZES[key],
+                                } as ScreenDisplay["elementSizes"],
+                              })}
+                              aria-label={`${label}字号`}
+                              disabled={!screenDisplay[key]}
+                            />
+                          </label>
+                        </div>
                       </div>
                     ))}
                     <div className={`component-row border-control${screenDisplay.border ? " enabled" : ""}`}>
@@ -2170,7 +2326,7 @@ export default function InkStudio() {
                   </div>
                   <div className="display-fields">
                     <label className="display-field">
-                      <span>默认字体</span>
+                      <span>画面默认字体</span>
                       <select
                         value={screenDisplay.font}
                         onChange={(event) => updateDisplay({ font: event.target.value as ScreenFont })}
@@ -2179,6 +2335,13 @@ export default function InkStudio() {
                           <option value={font.value} key={font.value}>{font.label}</option>
                         ))}
                       </select>
+                      <span
+                        className="font-preview"
+                        style={{ fontFamily: screenFonts[screenDisplay.font] }}
+                        aria-hidden="true"
+                      >
+                        今日天气 · 12:34 · 专注当下
+                      </span>
                     </label>
                     {screenDisplay.quote && (
                       <label className="display-field">
@@ -2218,6 +2381,12 @@ export default function InkStudio() {
                             ...current,
                             spec: { ...current.spec, city: event.target.value },
                           }))}
+                          onBlur={(event) => {
+                            const city = event.target.value.trim();
+                            if (!city) return;
+                            setPreferredWeatherCity(city);
+                            localStorage.setItem(WEATHER_CITY_KEY, city);
+                          }}
                           placeholder="例如 上海"
                         />
                       </label>

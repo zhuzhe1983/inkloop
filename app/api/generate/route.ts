@@ -304,6 +304,7 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
     logoText: trimText(candidate.logoText, defaults.logoText, 20),
     positions: defaults.positions,
     elementFonts: defaults.elementFonts,
+    elementSizes: defaults.elementSizes,
   };
 }
 

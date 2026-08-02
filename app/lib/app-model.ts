@@ -36,6 +36,15 @@ export const DEFAULT_ELEMENT_POSITIONS: Record<ScreenElementKey, ScreenElementPo
   weather: { x: 374, y: 110 },
 };
 
+export const DEFAULT_ELEMENT_SIZES: Record<ScreenElementKey, number> = {
+  quote: 18,
+  logo: 15,
+  date: 18,
+  time: 22,
+  timeLarge: 112,
+  weather: 16,
+};
+
 export type ScreenDisplay = {
   quote: boolean;
   logo: boolean;
@@ -48,6 +57,7 @@ export type ScreenDisplay = {
   logoText: string;
   positions: Record<ScreenElementKey, ScreenElementPosition>;
   elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
+  elementSizes: Partial<Record<ScreenElementKey, number>>;
 };
 
 export type ScreenSpec = {
@@ -143,6 +153,9 @@ export function displaySettings(spec: ScreenSpec): ScreenDisplay {
     },
     elementFonts: {
       ...saved?.elementFonts,
+    },
+    elementSizes: {
+      ...saved?.elementSizes,
     },
   };
 }

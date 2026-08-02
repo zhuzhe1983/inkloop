@@ -379,6 +379,29 @@ input:focus-visible {
   cursor: pointer;
 }
 
+.device-task-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.device-task-heading-actions .retry-task-button {
+  min-width: 82px;
+  background: var(--ink);
+  color: white;
+}
+
+.device-task-heading-actions .retry-task-button:hover:not(:disabled) {
+  background: var(--green);
+  color: white;
+}
+
+.device-task-heading-actions button:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
 .device-task-heading button:hover {
   background: #f4d9d4;
   color: var(--red);
@@ -444,7 +467,7 @@ input:focus-visible {
 }
 
 .task-error {
-  margin: 0;
+  margin: 10px 0 0;
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -1106,7 +1129,7 @@ input:focus-visible {
   height: 396px;
   display: block;
   border: 1px solid #666b66;
-  background: #f4f0dc;
+  background: #fafaf8;
   image-rendering: auto;
 }
 
@@ -1197,6 +1220,33 @@ input:focus-visible {
   border-radius: 2px;
 }
 
+.preview-source-note {
+  width: min(100%, 430px);
+  margin: 12px auto 0;
+  display: grid;
+  gap: 4px;
+  color: #6b736c;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.preview-source-note p {
+  margin: 0;
+}
+
+.preview-source-note strong {
+  margin-right: 6px;
+  color: #434b45;
+}
+
+.preview-source-note a {
+  margin-left: 8px;
+  color: var(--blue);
+  font-weight: 800;
+  text-underline-offset: 2px;
+}
+
 .display-editor {
   margin-bottom: 18px;
   padding-bottom: 18px;
@@ -1228,18 +1278,31 @@ input:focus-visible {
 }
 
 .component-row {
-  min-height: 48px;
-  padding: 6px;
+  min-height: 58px;
+  padding: 8px;
   border-radius: 8px;
   background: #f0f1ec;
   display: grid;
-  grid-template-columns: minmax(104px, 1fr) minmax(104px, 1fr) 50px;
+  grid-template-columns: minmax(86px, 0.72fr) minmax(154px, 1.65fr) minmax(76px, 0.62fr) 72px;
   align-items: center;
   gap: 6px;
   color: #555d57;
   font-size: 11px;
   font-weight: 800;
   transition: background 140ms ease, color 140ms ease;
+}
+
+.component-row-head {
+  display: contents;
+}
+
+.component-row-head .component-toggle {
+  grid-column: 1;
+}
+
+.component-row-head > button {
+  grid-column: 4;
+  grid-row: 1;
 }
 
 .component-row.enabled {
@@ -1262,14 +1325,42 @@ input:focus-visible {
   accent-color: var(--blue);
 }
 
+.component-type-controls {
+  display: contents;
+}
+
+.component-type-controls label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.component-type-controls > label:first-child {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.component-type-controls .component-size-control {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.component-type-controls label > span {
+  color: #747c76;
+  font-size: 10px;
+}
+
 .component-row:focus-within {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
 }
 
 .component-row select,
+.component-row input[type="number"],
 .component-row button {
-  height: 36px;
+  height: 40px;
   border: 0;
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.82);
@@ -1283,18 +1374,29 @@ input:focus-visible {
   padding: 0 7px;
 }
 
+.component-row input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0 6px;
+  text-align: center;
+}
+
 .component-row button {
   cursor: pointer;
 }
 
 .component-row select:disabled,
+.component-row input[type="number"]:disabled,
 .component-row button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
 .component-row.border-control {
+  min-height: 52px;
+  display: grid;
   grid-template-columns: minmax(104px, 1fr) minmax(0, 1.45fr);
+  align-items: center;
 }
 
 .component-row.border-control small {
@@ -1318,6 +1420,17 @@ input:focus-visible {
   color: #707871;
   font-size: 11px;
   font-weight: 800;
+}
+
+.display-field .font-preview {
+  min-height: 46px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: #f8f8f4;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .display-field input,
@@ -2716,6 +2829,37 @@ input:focus-visible {
     left: 16px;
     right: 16px;
     bottom: 82px;
+  }
+}
+
+@media (max-width: 560px) {
+  .component-row:not(.border-control) {
+    min-height: 102px;
+    grid-template-columns: minmax(0, 1fr) 78px;
+  }
+
+  .component-row-head .component-toggle {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .component-row-head > button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .component-type-controls {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 84px;
+    gap: 7px;
+  }
+
+  .component-type-controls > label:first-child,
+  .component-type-controls .component-size-control {
+    grid-column: auto;
+    grid-row: auto;
   }
 }
 
