@@ -21,6 +21,7 @@ import {
   starterApp,
   starterPrompt,
   type ArtworkSpec,
+  type CalendarEvent,
   type InkApp,
   type ScheduleMode,
   type ScreenDisplay,
@@ -38,6 +39,15 @@ type GeneratorStatus = "checking" | "online" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
 type DeviceTaskStatus = "scheduled" | "writing" | "error";
 type ArtworkCredit = { provider: string; url: string };
+type CalendarPreferences = {
+  customUrl: string;
+  chinaHolidays: boolean;
+  lunar: boolean;
+};
+type CalendarFeedPayload = {
+  events?: CalendarEvent[];
+  warnings?: string[];
+};
 
 type DeviceProfile = {
   id: string;
@@ -72,6 +82,12 @@ type DragPreview = {
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
 const WEATHER_CITY_KEY = "inkloop-weather-city-v1";
+const CALENDAR_PREFERENCES_KEY = "inkloop-calendar-sources-v1";
+const DEFAULT_CALENDAR_PREFERENCES: CalendarPreferences = {
+  customUrl: "",
+  chinaHolidays: false,
+  lunar: false,
+};
 const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
 const EPAPER_WHITE = "#fafaf8";
 
@@ -324,8 +340,56 @@ type WeatherPayload = {
   condition?: string;
 };
 
-async function resolveRuntimeScreen(currentApp: InkApp, now = new Date()): Promise<ScreenSpec> {
+async function resolveRuntimeScreen(
+  currentApp: InkApp,
+  now = new Date(),
+  calendarPreferences?: CalendarPreferences,
+  onCalendarNotice?: (message: string | null) => void,
+): Promise<ScreenSpec> {
   const resolved = resolveTimeVariables(currentApp.spec, now);
+  if (resolved.table?.type === "calendar") {
+    const preferences = calendarPreferences ?? DEFAULT_CALENDAR_PREFERENCES;
+    let remoteEvents: CalendarEvent[] = [];
+    if (preferences.customUrl || preferences.chinaHolidays) {
+      try {
+        const response = await fetch("/api/calendar", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            year: resolved.table.year,
+            month: resolved.table.month,
+            customUrl: preferences.customUrl || undefined,
+            presets: preferences.chinaHolidays ? ["china-holidays"] : [],
+          }),
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const payload = await response.json() as CalendarFeedPayload;
+          remoteEvents = Array.isArray(payload.events) ? payload.events : [];
+          onCalendarNotice?.(payload.warnings?.length ? payload.warnings.join("；") : null);
+        } else {
+          onCalendarNotice?.("在线日历暂时无法读取");
+        }
+      } catch {
+        remoteEvents = [];
+        onCalendarNotice?.("在线日历暂时无法读取");
+      }
+    } else {
+      onCalendarNotice?.(null);
+    }
+    const events = [...resolved.table.events, ...remoteEvents]
+      .filter((event, index, values) => values.findIndex((item) => item.day === event.day && item.text === event.text) === index)
+      .sort((left, right) => left.day - right.day)
+      .slice(0, 24);
+    return {
+      ...resolved,
+      table: {
+        ...resolved.table,
+        events,
+        lunar: Boolean(resolved.table.lunar || preferences.lunar),
+      },
+    };
+  }
   const weatherRequested = /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(currentApp.prompt);
   const display = displaySettings(resolved);
   if (
@@ -1142,9 +1206,30 @@ function drawOuterScreenBorder(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
+const lunarDayLabels = [
+  "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+  "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+  "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十",
+];
+
+function lunarDateLabel(year: number, month: number, day: number) {
+  try {
+    const parts = new Intl.DateTimeFormat("zh-CN-u-ca-chinese", {
+      month: "short",
+      day: "numeric",
+    }).formatToParts(new Date(year, month - 1, day, 12));
+    const lunarMonth = parts.find((part) => part.type === "month")?.value || "";
+    const lunarDay = Number(parts.find((part) => part.type === "day")?.value || 0);
+    if (lunarDay === 1) return lunarMonth;
+    return lunarDayLabels[lunarDay - 1] || "";
+  } catch {
+    return "";
+  }
+}
+
 function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   if (spec.table?.type !== "calendar") return;
-  const { year, month, weekStartsOn, events } = spec.table;
+  const { year, month, weekStartsOn, events, lunar } = spec.table;
   const family = screenFontFamily(spec);
   const ink = "#151816";
   const accent = accentColors[spec.accent];
@@ -1155,7 +1240,11 @@ function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const offset = weekStartsOn === "sunday" ? firstWeekday : (firstWeekday + 6) % 7;
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const today = new Date();
-  const eventMap = new Map(events.map((event) => [event.day, event.text]));
+  const eventMap = new Map<number, string[]>();
+  events.forEach((event) => {
+    const current = eventMap.get(event.day) ?? [];
+    if (!current.includes(event.text)) eventMap.set(event.day, [...current, event.text]);
+  });
   const left = 24;
   const top = 118;
   const width = 480;
@@ -1202,18 +1291,24 @@ function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     ctx.fillStyle = ink;
     ctx.font = `900 23px ${family}`;
     ctx.fillText(String(day), x + columnWidth / 2, y + 30);
-    const event = eventMap.get(day);
+    const event = eventMap.get(day)?.join(" · ");
+    const lunarLabel = lunar ? lunarDateLabel(year, month, day) : "";
     if (event) {
       ctx.fillStyle = accent;
       ctx.beginPath();
       ctx.arc(x + columnWidth / 2, y + 44, 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = ink;
-      ctx.font = `700 13px ${family}`;
-      const firstLine = event.slice(0, 4);
-      const secondLine = event.slice(4, 8);
-      ctx.fillText(firstLine, x + columnWidth / 2, y + 64, columnWidth - 7);
-      if (secondLine) ctx.fillText(secondLine, x + columnWidth / 2, y + 82, columnWidth - 7);
+      ctx.font = `700 12px ${family}`;
+      ctx.fillText(event.slice(0, 6), x + columnWidth / 2, y + 64, columnWidth - 7);
+      if (!lunarLabel && event.length > 6) {
+        ctx.fillText(event.slice(6, 12), x + columnWidth / 2, y + 81, columnWidth - 7);
+      }
+    }
+    if (lunarLabel) {
+      ctx.fillStyle = event ? accent : "#087c4e";
+      ctx.font = `700 11px ${family}`;
+      ctx.fillText(lunarLabel, x + columnWidth / 2, y + (event ? 82 : 62), columnWidth - 7);
     }
   }
   ctx.restore();
@@ -1494,6 +1589,9 @@ export default function InkStudio() {
   const [previewScale, setPreviewScale] = useState<35 | 50 | 75 | 100>(50);
   const [artworkCredit, setArtworkCredit] = useState<ArtworkCredit | null>(null);
   const [preferredWeatherCity, setPreferredWeatherCity] = useState("上海");
+  const [calendarPreferences, setCalendarPreferences] = useState<CalendarPreferences>(DEFAULT_CALENDAR_PREFERENCES);
+  const [calendarUrlDraft, setCalendarUrlDraft] = useState("");
+  const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
   const [fontTick, setFontTick] = useState(0);
   const [clockTick, setClockTick] = useState(0);
   const [codeOpen, setCodeOpen] = useState(false);
@@ -1514,6 +1612,7 @@ export default function InkStudio() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewVersionRef = useRef(0);
   const currentAppRef = useRef(app);
+  const calendarPreferencesRef = useRef(calendarPreferences);
   const driverRef = useRef<TodooCard | null>(null);
   const deviceDriversRef = useRef(new Map<string, TodooCard>());
   const deviceTasksRef = useRef<DeviceTask[]>([]);
@@ -1528,6 +1627,14 @@ export default function InkStudio() {
   const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     setToast({ message, tone });
     setTimeout(() => setToast(null), 3400);
+  }, []);
+
+  const updateCalendarPreferences = useCallback((patch: Partial<CalendarPreferences>) => {
+    setCalendarPreferences((current) => {
+      const next = { ...current, ...patch };
+      localStorage.setItem(CALENDAR_PREFERENCES_KEY, JSON.stringify(next));
+      return next;
+    });
   }, []);
 
   const commitDeviceTasks = useCallback((updater: (current: DeviceTask[]) => DeviceTask[]) => {
@@ -1561,11 +1668,25 @@ export default function InkStudio() {
   }, [app]);
 
   useEffect(() => {
+    calendarPreferencesRef.current = calendarPreferences;
+  }, [calendarPreferences]);
+
+  useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(LOCAL_APPS_KEY) ?? "[]") as InkApp[];
       if (Array.isArray(stored)) setLocalApps(stored.map(upgradeLegacyApp));
       const storedCity = localStorage.getItem(WEATHER_CITY_KEY)?.trim();
       if (storedCity) setPreferredWeatherCity(storedCity);
+      const storedCalendar = JSON.parse(localStorage.getItem(CALENDAR_PREFERENCES_KEY) ?? "null") as Partial<CalendarPreferences> | null;
+      if (storedCalendar && typeof storedCalendar === "object") {
+        const preferences: CalendarPreferences = {
+          customUrl: typeof storedCalendar.customUrl === "string" ? storedCalendar.customUrl : "",
+          chinaHolidays: storedCalendar.chinaHolidays === true,
+          lunar: storedCalendar.lunar === true,
+        };
+        setCalendarPreferences(preferences);
+        setCalendarUrlDraft(preferences.customUrl);
+      }
     } catch {
       localStorage.removeItem(LOCAL_APPS_KEY);
     }
@@ -1680,7 +1801,7 @@ export default function InkStudio() {
     setPreviewStatus(hasArtwork ? "loading" : "ready");
     const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork) : null;
     setArtworkCredit(null);
-    resolveRuntimeScreen(app, new Date()).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage)).then((usedArtwork) => {
+    resolveRuntimeScreen(app, new Date(), calendarPreferences, setCalendarNotice).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage)).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
       const context = canvas.getContext("2d");
       if (!context) return;
@@ -1689,7 +1810,7 @@ export default function InkStudio() {
       setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       setArtworkCredit(usedArtwork && creditKey ? artworkCreditCache.get(creditKey) ?? null : null);
     });
-  }, [app.spec, app.localImage, app.prompt, clockTick, fontTick]);
+  }, [app.spec, app.localImage, app.prompt, clockTick, fontTick, calendarPreferences]);
 
   const attachLocalImage = async (file?: File) => {
     if (!file) return;
@@ -1754,6 +1875,18 @@ export default function InkStudio() {
 
   const updateSchedule = (scheduleMode: ScheduleMode) => {
     setApp((current) => ({ ...current, scheduleMode }));
+  };
+
+  const applyCalendarUrl = () => {
+    const customUrl = calendarUrlDraft.trim();
+    if (customUrl && !/^https:\/\//i.test(customUrl)) {
+      showToast("请填写 HTTPS 开头的 iCal 地址", "error");
+      return;
+    }
+    updateCalendarPreferences({ customUrl });
+    setCalendarUrlDraft(customUrl);
+    setCalendarNotice(null);
+    showToast(customUrl ? "iCal 地址已保存，正在读取本月日程" : "个人 iCal 已移除", "success");
   };
 
   const updateDisplay = (patch: Partial<ScreenDisplay>) => {
@@ -2033,7 +2166,7 @@ export default function InkStudio() {
       if (!reuseCurrentPreview) {
         outputCanvas.width = 528;
         outputCanvas.height = 792;
-        const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date());
+        const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date(), calendarPreferencesRef.current);
         const hasArtwork = Boolean(runtimeSpec.artwork || transferApp.localImage);
         if (renderInPreview) setPreviewStatus(hasArtwork ? "loading" : "ready");
         const usedArtwork = await renderScreenToCanvas(outputCanvas, runtimeSpec, transferApp.localImage);
@@ -2784,6 +2917,56 @@ export default function InkStudio() {
                     )}
                   </div>
                 </div>
+                {app.spec.table?.type === "calendar" && (
+                  <section className="calendar-source-editor" aria-label="在线日历数据">
+                    <div className="calendar-source-heading">
+                      <strong>在线日历数据</strong>
+                      <small>仅保存在当前浏览器</small>
+                    </div>
+                    <div className="calendar-source-options">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={calendarPreferences.lunar}
+                          onChange={(event) => updateCalendarPreferences({ lunar: event.target.checked })}
+                        />
+                        <span><strong>农历日期</strong><small>内置换算，无需联网</small></span>
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={calendarPreferences.chinaHolidays}
+                          onChange={(event) => updateCalendarPreferences({ chinaHolidays: event.target.checked })}
+                        />
+                        <span><strong>中国公众假期</strong><small>读取公开 iCal 日历</small></span>
+                      </label>
+                    </div>
+                    <label className="calendar-url-field" htmlFor="calendar-ical-url">
+                      <span>个人 iCal 地址</span>
+                      <div className="calendar-url-row">
+                        <input
+                          id="calendar-ical-url"
+                          type="url"
+                          value={calendarUrlDraft}
+                          onChange={(event) => setCalendarUrlDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              applyCalendarUrl();
+                            }
+                          }}
+                          placeholder="https://…/basic.ics"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                        <button type="button" onClick={applyCalendarUrl}>读取</button>
+                      </div>
+                    </label>
+                    <p className={calendarNotice ? "calendar-source-warning" : undefined}>
+                      {calendarNotice || "适用于 Google、Apple、Outlook 的只读 iCal。地址不会写入应用或公开发现页。"}
+                    </p>
+                  </section>
+                )}
                 <label>刷新计划</label>
                 <div className="schedule-options">
                   {[

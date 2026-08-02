@@ -98,6 +98,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "year": 2026,
       "month": 8,
       "weekStartsOn": "monday|sunday",
+      "lunar": false,
       "events": [{ "day": 8, "text": "项目发布" }],
       "columns": ["周一", "周二", "周三", "周四", "周五"],
       "rows": [{ "label": "08:00", "cells": ["语文", "数学", "英语", "体育", "美术"] }]
@@ -130,7 +131,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 18. 用户没有明确要求图片、背景、海报、插画或视觉主题时，artwork.mode 必须是 none；信息卡优先使用清晰的纯文字排版。
 19. 海报不添加品牌签名、产品型号、水印或“6-COLOR E-PAPER”等脚注。避免无理由使用满屏高饱和蓝色、重复粗线和厚重发光描边；优先留白、清晰层级和至多两种强调色。
 20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；weather 是角落的一行小天气摘要，weatherLarge 是把城市、天气、温度和高低温组合成一个整体的大天气组件。天气应用默认使用 weatherLarge，二者不要同时开启。时钟默认使用 timeLarge。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；其他组件只按用户需求开启。
-21. 用户要求月历、日历或月度计划时使用 kind=calendar，table.type=calendar，提供 year、month、weekStartsOn 和最多 12 个简短 events；不需要输出 42 个日期格，系统会按月份计算。
+21. 用户要求月历、日历或月度计划时使用 kind=calendar，table.type=calendar，提供 year、month、weekStartsOn 和最多 12 个简短 events；明确要求显示农历时 lunar=true。不需要输出 42 个日期格，系统会按月份计算。
 22. 用户要求课程表、课表或周时间表时使用 kind=timetable，table.type=timetable；columns 为 2—7 个列标题，rows 为 1—8 个时间段，每个 cells 长度与 columns 一致，每格最多 8 个汉字。表格数据只表达语义，不包含坐标、HTML、CSS 或绘图代码。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
@@ -354,6 +355,7 @@ function normalizeTable(value: unknown, fallback: ScreenTable | undefined, kind:
       month: Math.min(12, Math.max(1, month)),
       weekStartsOn: candidate.weekStartsOn === "sunday" ? "sunday" as const : "monday" as const,
       events,
+      lunar: candidate.lunar === true || fallbackCalendar?.lunar === true,
     };
   }
 

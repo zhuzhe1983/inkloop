@@ -83,6 +83,7 @@ export type ScreenTable =
       month: number;
       weekStartsOn: "monday" | "sunday";
       events: CalendarEvent[];
+      lunar?: boolean;
     }
   | {
       type: "timetable";
@@ -454,7 +455,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
         detail: events.length ? `${events.length} 个日程已标记` : "本月安排一览",
         footer: "",
         accent: "blue",
-        table: { type: "calendar", year, month, weekStartsOn: "monday", events },
+        table: { type: "calendar", year, month, weekStartsOn: "monday", events, lunar: source.includes("农历") },
         display: {
           ...displaySettings({
             kind: "calendar",

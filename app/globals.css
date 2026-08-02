@@ -1586,6 +1586,128 @@ input:focus-visible {
   background: #fffefa;
 }
 
+.calendar-source-editor {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f0f1ec;
+  display: grid;
+  gap: 10px;
+}
+
+.calendar-source-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.calendar-source-heading strong {
+  font-size: 12px;
+}
+
+.calendar-source-heading small,
+.calendar-source-editor > p {
+  color: #747c76;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.calendar-source-editor > p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.calendar-source-editor > p.calendar-source-warning {
+  color: #b23025;
+}
+
+.calendar-source-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.calendar-source-options > label {
+  min-width: 0;
+  min-height: 54px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.76);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.calendar-source-options input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  accent-color: var(--blue);
+}
+
+.calendar-source-options span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.calendar-source-options strong {
+  font-size: 11px;
+}
+
+.calendar-source-options small {
+  color: #7b837d;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.calendar-url-field {
+  display: grid;
+  gap: 5px;
+}
+
+.calendar-url-field > span {
+  color: #626a64;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.calendar-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  gap: 6px;
+}
+
+.calendar-url-row input,
+.calendar-url-row button {
+  min-width: 0;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.calendar-url-row input {
+  padding: 0 10px;
+  outline: 0;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+}
+
+.calendar-url-row input:focus {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+.calendar-url-row button {
+  background: var(--ink);
+  color: white;
+  cursor: pointer;
+}
+
 .schedule-options {
   display: grid;
   grid-template-columns: 1fr 1fr;
