@@ -1294,21 +1294,25 @@ function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     const event = eventMap.get(day)?.join(" · ");
     const lunarLabel = lunar ? lunarDateLabel(year, month, day) : "";
     if (event) {
+      const eventFontSize = lunarLabel
+        ? event.length <= 4 ? 15 : 14
+        : event.length <= 4 ? 18 : 16;
       ctx.fillStyle = accent;
       ctx.beginPath();
       ctx.arc(x + columnWidth / 2, y + 44, 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = ink;
-      ctx.font = `700 12px ${family}`;
-      ctx.fillText(event.slice(0, 6), x + columnWidth / 2, y + 64, columnWidth - 7);
+      ctx.font = `800 ${eventFontSize}px ${family}`;
+      ctx.fillText(event.slice(0, 6), x + columnWidth / 2, y + (lunarLabel ? 66 : 70), columnWidth - 7);
       if (!lunarLabel && event.length > 6) {
-        ctx.fillText(event.slice(6, 12), x + columnWidth / 2, y + 81, columnWidth - 7);
+        ctx.font = `800 ${Math.max(14, eventFontSize - 1)}px ${family}`;
+        ctx.fillText(event.slice(6, 12), x + columnWidth / 2, y + 90, columnWidth - 7);
       }
     }
     if (lunarLabel) {
       ctx.fillStyle = event ? accent : "#087c4e";
-      ctx.font = `700 11px ${family}`;
-      ctx.fillText(lunarLabel, x + columnWidth / 2, y + (event ? 82 : 62), columnWidth - 7);
+      ctx.font = `800 ${event ? 14 : 17}px ${family}`;
+      ctx.fillText(lunarLabel, x + columnWidth / 2, y + (event ? 87 : 70), columnWidth - 7);
     }
   }
   ctx.restore();
