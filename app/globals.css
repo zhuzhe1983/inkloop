@@ -1396,6 +1396,10 @@ input:focus-visible {
   grid-row: 1;
 }
 
+.component-type-controls .qr-size-control {
+  grid-column: 2 / 4;
+}
+
 .component-type-controls label > span {
   color: #747c76;
   font-size: 10px;
@@ -1549,9 +1553,9 @@ input:focus-visible {
 }
 
 .display-field input,
-.display-field select {
+.display-field select,
+.display-field textarea {
   width: 100%;
-  height: 38px;
   padding: 0 11px;
   border: 0;
   border-radius: 7px;
@@ -1560,6 +1564,26 @@ input:focus-visible {
   color: var(--ink);
   font-size: 12px;
   font-weight: 700;
+}
+
+.display-field input,
+.display-field select {
+  height: 38px;
+}
+
+.display-field textarea {
+  min-height: 76px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.qr-content-field small {
+  color: #747c76;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .quote-input-row {
@@ -1580,7 +1604,8 @@ input:focus-visible {
 }
 
 .display-field input:focus,
-.display-field select:focus {
+.display-field select:focus,
+.display-field textarea:focus {
   outline: 2px solid var(--blue);
   outline-offset: 1px;
   background: #fffefa;

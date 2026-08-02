@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { create as createQrCode } from "qrcode";
 import {
   DEFAULT_ELEMENT_POSITIONS,
   DEFAULT_ELEMENT_SIZES,
@@ -128,6 +129,7 @@ const screenElementOptions: Array<{ key: ScreenElementKey; label: string; width:
   { key: "timeLarge", label: "时间（大）", width: 430, height: 154 },
   { key: "weather", label: "天气（小）", width: 310, height: 64 },
   { key: "weatherLarge", label: "天气（大）", width: 430, height: 230 },
+  { key: "qr", label: "二维码", width: 176, height: 176 },
 ];
 
 const screenFontOptions: Array<{ value: ScreenFont; label: string }> = [
@@ -390,12 +392,10 @@ async function resolveRuntimeScreen(
       },
     };
   }
-  const weatherRequested = /天气|气温|温度|下雨|降雨|阵雨|通勤/.test(currentApp.prompt);
   const display = displaySettings(resolved);
   if (
     !display.weather
     && !display.weatherLarge
-    || (resolved.kind !== "weather" && !weatherRequested && !resolved.city)
     || resolved.artwork?.layout === "fullscreen"
   ) return resolved;
   const city = resolved.city || inferWeatherCity(currentApp.prompt);
@@ -404,9 +404,20 @@ async function resolveRuntimeScreen(
     if (!response.ok) throw new Error("weather unavailable");
     const weather = (await response.json()) as WeatherPayload;
     if (weather.available === false) {
+      const unavailableOverlay = {
+        city,
+        weatherText: `${city} · 天气暂不可用`,
+        weatherValue: "--",
+        weatherUnit: "°C",
+        weatherDetail: "天气服务暂时不可用",
+        weatherAccent: "yellow" as const,
+      };
+      if (resolved.kind !== "weather" || resolved.clock?.enabled) {
+        return { ...resolved, ...unavailableOverlay };
+      }
       return {
         ...resolved,
-        city,
+        ...unavailableOverlay,
         eyebrow: `${city} · 今日`,
         title: "今日天气",
         value: "--",
@@ -424,40 +435,59 @@ async function resolveRuntimeScreen(
     }
     const rainProbability = typeof weather.rainProbability === "number" ? weather.rainProbability : 0;
     const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now);
-    const weatherText = `${weather.city || city} · ${Math.round(weather.temperature)}° · ${weather.condition || "天气多变"}`;
-    if (resolved.clock?.enabled) {
+    const resolvedCity = weather.city || city;
+    const temperature = String(Math.round(weather.temperature));
+    const detail = `${weather.condition || "天气多变"} · ${Math.round(weather.low)}—${Math.round(weather.high)}°C`;
+    const weatherText = `${resolvedCity} · ${temperature}° · ${weather.condition || "天气多变"}`;
+    const weatherAccent = rainProbability >= 45 ? "red" as const : "yellow" as const;
+    const weatherOverlay = {
+      city: resolvedCity,
+      weatherText,
+      weatherValue: temperature,
+      weatherUnit: "°C",
+      weatherDetail: detail,
+      weatherAccent,
+    };
+    if (resolved.kind !== "weather" || resolved.clock?.enabled) {
       return {
         ...resolved,
-        city: weather.city || city,
-        weatherText,
-        accent: rainProbability >= 45 ? "red" : "yellow",
+        ...weatherOverlay,
       };
     }
     return {
       ...resolved,
-      city: weather.city || city,
-      eyebrow: `${weather.city || city} · ${weekday}`,
+      ...weatherOverlay,
+      eyebrow: `${resolvedCity} · ${weekday}`,
       title: "今日天气",
-      value: String(Math.round(weather.temperature)),
+      value: temperature,
       unit: "°C",
-      detail: `${weather.condition || "天气多变"} · ${Math.round(weather.low)}—${Math.round(weather.high)}°C`,
-      weatherText,
+      detail,
       footer: rainProbability >= 45
         ? `降雨${Math.round(rainProbability)}% · 带伞 · Open-Meteo`
         : "少雨 · 适合出门 · Open-Meteo",
-      accent: rainProbability >= 45 ? "red" : "yellow",
+      accent: weatherAccent,
     };
   } catch {
+    const unavailableOverlay = {
+      city,
+      weatherText: `${city} · 天气暂不可用`,
+      weatherValue: "--",
+      weatherUnit: "°C",
+      weatherDetail: "天气数据暂不可用",
+      weatherAccent: "yellow" as const,
+    };
+    if (resolved.kind !== "weather" || resolved.clock?.enabled) {
+      return { ...resolved, ...unavailableOverlay };
+    }
     return {
       ...resolved,
-      city,
+      ...unavailableOverlay,
       eyebrow: resolved.eyebrow === "—" ? `${city} · 今日` : resolved.eyebrow,
       title: resolved.title === "—" ? "今日天气" : resolved.title,
       value: resolved.value === "—" ? "--" : resolved.value,
       unit: "°C",
       detail: resolved.detail === "—" ? "天气数据暂不可用" : resolved.detail,
       footer: resolved.footer === "—" ? "稍后刷新重试" : resolved.footer,
-      weatherText: `${city} · 天气暂不可用`,
     };
   }
 }
@@ -487,6 +517,11 @@ function screenElementFontSize(spec: ScreenSpec, element: ScreenElementKey) {
   const value = displaySettings(spec).elementSizes[element] ?? DEFAULT_ELEMENT_SIZES[element];
   const maximum = element === "timeLarge" ? 180 : element === "weatherLarge" ? 132 : 72;
   return Math.round(Math.min(maximum, Math.max(10, value)));
+}
+
+function screenQrSize(spec: ScreenSpec) {
+  const value = displaySettings(spec).elementSizes.qr ?? DEFAULT_ELEMENT_SIZES.qr;
+  return Math.round(Math.min(260, Math.max(108, value)));
 }
 
 function clockFontFamily(spec: ScreenSpec) {
@@ -963,12 +998,14 @@ function drawWeatherGroup(
   const family = screenElementFontFamily(spec, element);
   const fontSize = screenElementFontSize(spec, element);
   const ink = "#151816";
-  const summary = spec.weatherText || `${spec.city || "天气"} · ${spec.value}${spec.unit}`;
-  const condition = spec.detail.split("·")[0]?.trim() || "天气多变";
+  const summary = spec.weatherText || `${spec.city || "天气"} · ${spec.weatherValue ?? spec.value}${spec.weatherUnit ?? spec.unit}`;
+  const weatherDetail = spec.weatherDetail || spec.detail;
+  const condition = weatherDetail.split("·")[0]?.trim() || "天气多变";
+  const weatherAccent = spec.weatherAccent ? accentColors[spec.weatherAccent] : accent;
 
   ctx.save();
   ctx.textAlign = "center";
-  ctx.fillStyle = accent;
+  ctx.fillStyle = weatherAccent;
 
   if (!large) {
     ctx.beginPath();
@@ -995,7 +1032,7 @@ function drawWeatherGroup(
     ctx.fillText(heading, position.x, position.y - 68, 390);
   }
 
-  const temperature = `${spec.value}${spec.unit}`;
+  const temperature = `${spec.weatherValue ?? spec.value}${spec.weatherUnit ?? spec.unit}`;
   ctx.font = `900 ${fitClockText(ctx, temperature, 390, fontSize, family)}px ${family}`;
   if (transparentOverlay) drawGlowText(ctx, temperature, position.x, position.y + 38, 390);
   else {
@@ -1004,10 +1041,10 @@ function drawWeatherGroup(
   }
 
   ctx.font = `700 ${Math.max(16, Math.round(fontSize * 0.24))}px ${family}`;
-  if (transparentOverlay) drawGlowText(ctx, spec.detail.slice(0, 34), position.x, position.y + 90, 400);
+  if (transparentOverlay) drawGlowText(ctx, weatherDetail.slice(0, 34), position.x, position.y + 90, 400);
   else {
     ctx.fillStyle = ink;
-    ctx.fillText(spec.detail.slice(0, 34), position.x, position.y + 90, 400);
+    ctx.fillText(weatherDetail.slice(0, 34), position.x, position.y + 90, 400);
   }
   ctx.restore();
 }
@@ -1204,6 +1241,44 @@ function drawOuterScreenBorder(ctx: CanvasRenderingContext2D) {
   ctx.lineWidth = 3;
   ctx.strokeRect(22, 22, 484, 748);
   ctx.restore();
+}
+
+function drawQrElement(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  const display = displaySettings(spec);
+  const content = display.qrText.trim();
+  if (!display.qr || !content) return;
+
+  try {
+    const qr = createQrCode(content, { errorCorrectionLevel: "M" });
+    const quietModules = 4;
+    const moduleCount = qr.modules.size;
+    const requestedSize = screenQrSize(spec);
+    const scale = Math.max(2, Math.floor(requestedSize / (moduleCount + quietModules * 2)));
+    const actualSize = scale * (moduleCount + quietModules * 2);
+    const position = screenElementPosition(spec, "qr");
+    const left = Math.round(position.x - actualSize / 2);
+    const top = Math.round(position.y - actualSize / 2);
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = EPAPER_WHITE;
+    ctx.fillRect(left, top, actualSize, actualSize);
+    ctx.fillStyle = "#151816";
+    for (let row = 0; row < moduleCount; row += 1) {
+      for (let column = 0; column < moduleCount; column += 1) {
+        if (!qr.modules.get(row, column)) continue;
+        ctx.fillRect(
+          left + (column + quietModules) * scale,
+          top + (row + quietModules) * scale,
+          scale,
+          scale,
+        );
+      }
+    }
+    ctx.restore();
+  } catch {
+    // Keep the rest of the poster usable if the entered content is too long.
+  }
 }
 
 const lunarDayLabels = [
@@ -1405,6 +1480,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     drawDisplayMeta(ctx, spec, accent, false);
     if (display.border) drawOuterScreenBorder(ctx);
     quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    drawQrElement(ctx, spec);
     return false;
   }
   const artwork = spec.artwork ?? (localImage
@@ -1424,6 +1500,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       && !display.timeLarge
       && !display.weather
       && !display.weatherLarge
+      && !display.qr
       && !display.border;
     const area = imageOnly || artwork.layout === "fullscreen" || artwork.layout === "background"
       ? { x: 0, y: 0, width, height }
@@ -1441,10 +1518,12 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       if (imageOnly) return true;
       if (artwork.layout === "fullscreen") {
         if (display.border) drawOuterScreenBorder(ctx);
+        drawQrElement(ctx, spec);
         return true;
       }
       drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
       if (display.border) drawOuterScreenBorder(ctx);
+      drawQrElement(ctx, spec);
       return true;
     } catch {
       ctx.clearRect(0, 0, width, height);
@@ -1460,11 +1539,13 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   if (spec.clock?.enabled) {
     if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
     quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    drawQrElement(ctx, spec);
     return false;
   }
 
   if (spec.kind === "weather" && (display.weather || display.weatherLarge)) {
     quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    drawQrElement(ctx, spec);
     return false;
   }
 
@@ -1516,6 +1597,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.fillText(spec.detail, 48, 552);
   if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
   quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+  drawQrElement(ctx, spec);
 
   return false;
 }
@@ -1936,12 +2018,13 @@ export default function InkStudio() {
   };
 
   const updateElementPosition = (element: ScreenElementKey, x: number, y: number) => {
+    const margin = element === "qr" ? screenQrSize(currentAppRef.current.spec) / 2 : 24;
     updateDisplay({
       positions: {
         ...displaySettings(currentAppRef.current.spec).positions,
         [element]: {
-          x: Math.round(Math.min(504, Math.max(24, x))),
-          y: Math.round(Math.min(768, Math.max(24, y))),
+          x: Math.round(Math.min(528 - margin, Math.max(margin, x))),
+          y: Math.round(Math.min(792 - margin, Math.max(margin, y))),
         },
       },
     });
@@ -1951,6 +2034,29 @@ export default function InkStudio() {
     const position = DEFAULT_ELEMENT_POSITIONS[element];
     updateElementPosition(element, position.x, position.y);
     showToast(`${screenElementOptions.find((item) => item.key === element)?.label ?? "元素"}已复位`, "info");
+  };
+
+  const updateElementSize = (element: ScreenElementKey, value: number) => {
+    const currentDisplay = displaySettings(currentAppRef.current.spec);
+    const nextSize = element === "qr"
+      ? Math.min(260, Math.max(108, value))
+      : value;
+    const positions = { ...currentDisplay.positions };
+    if (element === "qr") {
+      const current = positions.qr;
+      const margin = nextSize / 2;
+      positions.qr = {
+        x: Math.round(Math.min(528 - margin, Math.max(margin, current.x))),
+        y: Math.round(Math.min(792 - margin, Math.max(margin, current.y))),
+      };
+    }
+    updateDisplay({
+      positions,
+      elementSizes: {
+        ...currentDisplay.elementSizes,
+        [element]: nextSize,
+      },
+    });
   };
 
   const randomizeQuote = () => {
@@ -1975,10 +2081,11 @@ export default function InkStudio() {
     if (!drag || drag.pointerId !== event.pointerId) return;
     const x = ((event.clientX - drag.bounds.left) / drag.bounds.width) * 528;
     const y = ((event.clientY - drag.bounds.top) / drag.bounds.height) * 792;
+    const margin = drag.element === "qr" ? screenQrSize(currentAppRef.current.spec) / 2 : 24;
     setDragPreview({
       element: drag.element,
-      x: Math.min(504, Math.max(24, x)),
-      y: Math.min(768, Math.max(24, y)),
+      x: Math.min(528 - margin, Math.max(margin, x)),
+      y: Math.min(792 - margin, Math.max(margin, y)),
     });
   };
 
@@ -2674,6 +2781,8 @@ export default function InkStudio() {
                             {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
                               const savedPosition = screenDisplay.positions[element.key];
                               const position = dragPreview?.element === element.key ? dragPreview : savedPosition;
+                              const elementWidth = element.key === "qr" ? screenQrSize(app.spec) : element.width;
+                              const elementHeight = element.key === "qr" ? screenQrSize(app.spec) : element.height;
                               return (
                                 <button
                                   type="button"
@@ -2682,8 +2791,8 @@ export default function InkStudio() {
                                   style={{
                                     left: `${(position.x / 528) * 100}%`,
                                     top: `${(position.y / 792) * 100}%`,
-                                    width: `${(element.width / 528) * 100}%`,
-                                    height: `${(element.height / 792) * 100}%`,
+                                    width: `${(elementWidth / 528) * 100}%`,
+                                    height: `${(elementHeight / 792) * 100}%`,
                                   }}
                                   aria-label={`拖拽调整${element.label}位置，方向键可微调`}
                                   onPointerDown={(event) => handleElementPointerDown(element.key, event)}
@@ -2783,41 +2892,41 @@ export default function InkStudio() {
                             位置复位
                           </button>
                         </div>
-                        <div className="component-type-controls">
-                          <label>
-                            <span>字体</span>
-                            <select
-                              value={screenDisplay.elementFonts[key] ?? ""}
-                              onChange={(event) => updateDisplay({
-                                elementFonts: {
-                                  ...screenDisplay.elementFonts,
-                                  [key]: event.target.value || undefined,
-                                } as ScreenDisplay["elementFonts"],
-                              })}
-                              aria-label={`${label}字体`}
-                              disabled={!screenDisplay[key]}
-                            >
-                              <option value="">跟随默认字体</option>
-                              {screenFontOptions.map((font) => (
-                                <option value={font.value} key={font.value}>{font.label}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="component-size-control">
-                            <span>字号</span>
+                        <div className={`component-type-controls${key === "qr" ? " qr-component-controls" : ""}`}>
+                          {key !== "qr" && (
+                            <label>
+                              <span>字体</span>
+                              <select
+                                value={screenDisplay.elementFonts[key] ?? ""}
+                                onChange={(event) => updateDisplay({
+                                  elementFonts: {
+                                    ...screenDisplay.elementFonts,
+                                    [key]: event.target.value || undefined,
+                                  } as ScreenDisplay["elementFonts"],
+                                })}
+                                aria-label={`${label}字体`}
+                                disabled={!screenDisplay[key]}
+                              >
+                                <option value="">跟随默认字体</option>
+                                {screenFontOptions.map((font) => (
+                                  <option value={font.value} key={font.value}>{font.label}</option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                          <label className={`component-size-control${key === "qr" ? " qr-size-control" : ""}`}>
+                            <span>{key === "qr" ? "尺寸" : "字号"}</span>
                             <input
                               type="number"
-                              min={10}
-                              max={key === "timeLarge" ? 180 : key === "weatherLarge" ? 132 : 72}
+                              min={key === "qr" ? 108 : 10}
+                              max={key === "qr" ? 260 : key === "timeLarge" ? 180 : key === "weatherLarge" ? 132 : 72}
                               step={1}
                               value={screenDisplay.elementSizes[key] ?? DEFAULT_ELEMENT_SIZES[key]}
-                              onChange={(event) => updateDisplay({
-                                elementSizes: {
-                                  ...screenDisplay.elementSizes,
-                                  [key]: Number.parseInt(event.target.value, 10) || DEFAULT_ELEMENT_SIZES[key],
-                                } as ScreenDisplay["elementSizes"],
-                              })}
-                              aria-label={`${label}字号`}
+                              onChange={(event) => updateElementSize(
+                                key,
+                                Number.parseInt(event.target.value, 10) || DEFAULT_ELEMENT_SIZES[key],
+                              )}
+                              aria-label={`${label}${key === "qr" ? "尺寸" : "字号"}`}
                               disabled={!screenDisplay[key]}
                             />
                           </label>
@@ -2903,6 +3012,19 @@ export default function InkStudio() {
                           onChange={(event) => updateDisplay({ logoText: event.target.value })}
                           placeholder="例如 INKLOOP"
                         />
+                      </label>
+                    )}
+                    {screenDisplay.qr && (
+                      <label className="display-field qr-content-field">
+                        <span>二维码内容</span>
+                        <textarea
+                          value={screenDisplay.qrText}
+                          maxLength={512}
+                          rows={3}
+                          onChange={(event) => updateDisplay({ qrText: event.target.value })}
+                          placeholder="输入网址、文字、Wi-Fi 信息等"
+                        />
+                        <small>内容只在本机生成二维码，不会发送到二维码服务；白色留边是扫码所必需。</small>
                       </label>
                     )}
                     {(screenDisplay.weather || screenDisplay.weatherLarge) && (

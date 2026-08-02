@@ -22,7 +22,7 @@ export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 
 export type ScreenRenderMode = "official" | "inkloop-text";
 
-export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather" | "weatherLarge";
+export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather" | "weatherLarge" | "qr";
 
 export type ScreenElementPosition = {
   x: number;
@@ -37,6 +37,7 @@ export const DEFAULT_ELEMENT_POSITIONS: Record<ScreenElementKey, ScreenElementPo
   timeLarge: { x: 264, y: 390 },
   weather: { x: 350, y: 108 },
   weatherLarge: { x: 264, y: 350 },
+  qr: { x: 410, y: 660 },
 };
 
 export const DEFAULT_ELEMENT_SIZES: Record<ScreenElementKey, number> = {
@@ -47,6 +48,7 @@ export const DEFAULT_ELEMENT_SIZES: Record<ScreenElementKey, number> = {
   timeLarge: 112,
   weather: 18,
   weatherLarge: 88,
+  qr: 176,
 };
 
 export type ScreenDisplay = {
@@ -57,11 +59,13 @@ export type ScreenDisplay = {
   timeLarge: boolean;
   weather: boolean;
   weatherLarge: boolean;
+  qr: boolean;
   border: boolean;
   font: ScreenFont;
   renderMode: ScreenRenderMode;
   renderModeExplicit: boolean;
   logoText: string;
+  qrText: string;
   positions: Record<ScreenElementKey, ScreenElementPosition>;
   elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
   elementSizes: Partial<Record<ScreenElementKey, number>>;
@@ -108,6 +112,10 @@ export type ScreenSpec = {
   dateText?: string;
   timeText?: string;
   weatherText?: string;
+  weatherValue?: string;
+  weatherUnit?: string;
+  weatherDetail?: string;
+  weatherAccent?: "red" | "blue" | "green" | "yellow";
   table?: ScreenTable;
 };
 
@@ -186,9 +194,11 @@ export function displaySettings(spec: ScreenSpec, hasLocalImage = false): Screen
     timeLarge: Boolean(spec.clock?.enabled),
     weather: saved?.weather ?? false,
     weatherLarge: saved?.weatherLarge ?? (!saved && spec.kind === "weather"),
+    qr: saved?.qr ?? false,
     border: false,
     font: fallbackFont,
     logoText: "INKLOOP",
+    qrText: "https://p.todoo.tech/?lang=zh",
     ...saved,
     renderMode,
     renderModeExplicit,
