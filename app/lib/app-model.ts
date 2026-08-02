@@ -60,6 +60,7 @@ export type ScreenDisplay = {
   border: boolean;
   font: ScreenFont;
   renderMode: ScreenRenderMode;
+  renderModeExplicit: boolean;
   logoText: string;
   positions: Record<ScreenElementKey, ScreenElementPosition>;
   elementFonts: Partial<Record<ScreenElementKey, ScreenFont>>;
@@ -165,9 +166,18 @@ export const starterApp: InkApp = {
 
 const includesAny = (source: string, terms: string[]) => terms.some((term) => source.includes(term));
 
-export function displaySettings(spec: ScreenSpec): ScreenDisplay {
+export function displaySettings(spec: ScreenSpec, hasLocalImage = false): ScreenDisplay {
   const fallbackFont = spec.clock?.font && spec.clock.font !== "random" ? spec.clock.font : "sans";
   const saved = spec.display as Partial<ScreenDisplay> | undefined;
+  const savedRenderMode = saved?.renderMode === "official" || saved?.renderMode === "inkloop-text"
+    ? saved.renderMode
+    : undefined;
+  const renderModeExplicit = saved?.renderModeExplicit === true;
+  const renderMode = renderModeExplicit && savedRenderMode
+    ? savedRenderMode
+    : spec.artwork || hasLocalImage
+      ? "official"
+      : "inkloop-text";
   return {
     quote: Boolean(spec.footer),
     logo: false,
@@ -180,7 +190,8 @@ export function displaySettings(spec: ScreenSpec): ScreenDisplay {
     font: fallbackFont,
     logoText: "INKLOOP",
     ...saved,
-    renderMode: saved?.renderMode === "inkloop-text" ? saved.renderMode : "official",
+    renderMode,
+    renderModeExplicit,
     positions: {
       ...DEFAULT_ELEMENT_POSITIONS,
       ...saved?.positions,

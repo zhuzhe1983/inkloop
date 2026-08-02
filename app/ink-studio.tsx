@@ -143,8 +143,8 @@ const renderModeOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "official", label: "Official Skill", description: "完整抖动，保留最多照片细节" },
-  { value: "inkloop-text", label: "Inkloop text", description: "低噪点，适合文字、图标和纯色画面" },
+  { value: "official", label: "Official Skill", description: "完整抖动，适合照片、渐变和丰富细节" },
+  { value: "inkloop-text", label: "Inkloop text", description: "低噪点，适合课程表、日历和纯文字画面" },
 ];
 
 const knownWeatherCities = [
@@ -205,7 +205,7 @@ function upgradeLegacyApp(savedApp: InkApp): InkApp {
     ...savedApp,
     spec: {
       ...savedApp.spec,
-      display: displaySettings(savedApp.spec),
+      display: displaySettings(savedApp.spec, Boolean(savedApp.localImage)),
     },
   };
   const prompt = savedApp.prompt || "";
@@ -1394,7 +1394,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   const ink = "#151816";
   const paper = EPAPER_WHITE;
   const accent = accentColors[spec.accent];
-  const display = displaySettings(spec);
+  const display = displaySettings(spec, Boolean(localImage));
   const family = screenFontFamily(spec);
 
   ctx.clearRect(0, 0, width, height);
@@ -1404,6 +1404,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     drawStructuredTable(ctx, spec);
     drawDisplayMeta(ctx, spec, accent, false);
     if (display.border) drawOuterScreenBorder(ctx);
+    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     return false;
   }
   const artwork = spec.artwork ?? (localImage
@@ -1458,10 +1459,14 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
 
   if (spec.clock?.enabled) {
     if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
+    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     return false;
   }
 
-  if (spec.kind === "weather" && (display.weather || display.weatherLarge)) return false;
+  if (spec.kind === "weather" && (display.weather || display.weatherLarge)) {
+    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    return false;
+  }
 
   if (spec.kind === "countdown") {
     ctx.fillStyle = ink;
@@ -1510,6 +1515,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.font = `700 24px ${family}`;
   ctx.fillText(spec.detail, 48, 552);
   if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
+  quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
 
   return false;
 }
@@ -1895,7 +1901,7 @@ export default function InkStudio() {
 
   const updateDisplay = (patch: Partial<ScreenDisplay>) => {
     setApp((current) => {
-      const currentDisplay = displaySettings(current.spec);
+      const currentDisplay = displaySettings(current.spec, Boolean(current.localImage));
       const nextDisplay = {
         ...currentDisplay,
         ...patch,
@@ -2357,7 +2363,7 @@ export default function InkStudio() {
   };
 
   const contentTitle = tab === "mine" ? "我的应用" : tab === "explore" ? "发现灵感" : tab === "device" ? "设备中心" : null;
-  const screenDisplay = displaySettings(app.spec);
+  const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
   const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
   const deviceSummaries = devices.map((device) => {
     const tasks = deviceTasks.filter((task) => task.deviceId === device.id);
@@ -2831,28 +2837,28 @@ export default function InkStudio() {
                     </div>
                   </div>
                   <div className="display-fields">
-                    {(app.spec.artwork || app.localImage) && (
-                      <div className="render-mode-field">
-                        <div className="render-mode-heading">
-                          <span>图片渲染</span>
-                          <small>默认使用 Official Skill</small>
-                        </div>
-                        <div className="render-mode-options" role="group" aria-label="图片渲染方式">
-                          {renderModeOptions.map((mode) => (
-                            <button
-                              type="button"
-                              key={mode.value}
-                              className={screenDisplay.renderMode === mode.value ? "selected" : ""}
-                              onClick={() => updateDisplay({ renderMode: mode.value })}
-                              aria-pressed={screenDisplay.renderMode === mode.value}
-                            >
-                              {mode.label}
-                            </button>
-                          ))}
-                        </div>
-                        <p>{renderModeOptions.find((mode) => mode.value === screenDisplay.renderMode)?.description}</p>
+                    <div className="render-mode-field">
+                      <div className="render-mode-heading">
+                        <span>画面渲染</span>
+                        <small>{app.spec.artwork || app.localImage
+                          ? "图片默认 Official Skill"
+                          : "纯文字默认 Inkloop text"}</small>
                       </div>
-                    )}
+                      <div className="render-mode-options" role="group" aria-label="画面渲染方式">
+                        {renderModeOptions.map((mode) => (
+                          <button
+                            type="button"
+                            key={mode.value}
+                            className={screenDisplay.renderMode === mode.value ? "selected" : ""}
+                            onClick={() => updateDisplay({ renderMode: mode.value, renderModeExplicit: true })}
+                            aria-pressed={screenDisplay.renderMode === mode.value}
+                          >
+                            {mode.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p>{renderModeOptions.find((mode) => mode.value === screenDisplay.renderMode)?.description}</p>
+                    </div>
                     <label className="display-field">
                       <span>画面默认字体</span>
                       <select

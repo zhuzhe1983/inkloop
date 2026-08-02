@@ -326,6 +326,7 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
     border: explicitBorder && candidate.border !== false,
     font: ALLOWED_SCREEN_FONTS.has(requestedFont) ? requestedFont : defaults.font,
     renderMode: defaults.renderMode,
+    renderModeExplicit: false,
     logoText: trimText(candidate.logoText, defaults.logoText, 20),
     positions: defaults.positions,
     elementFonts: defaults.elementFonts,
