@@ -1610,12 +1610,37 @@ function tableAccent(text: string) {
   return choices[hash % choices.length];
 }
 
-function agendaEventColors(event: AgendaEvent) {
-  const background = tableAccent(event.category || event.calendar || event.title);
-  const foreground = background === "#2756c7" || background === "#087c4e"
-    ? EPAPER_WHITE
-    : "#000000";
-  return { background, foreground };
+function agendaEventAccent(event: AgendaEvent) {
+  return tableAccent(event.category || event.calendar || event.title);
+}
+
+function fillAgendaTint(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  accent: string,
+) {
+  if (width <= 0 || height <= 0) return;
+  ctx.fillStyle = EPAPER_WHITE;
+  ctx.fillRect(x, y, width, height);
+
+  // The panel has no pastel pigments. A sparse, ordered one-pixel screen
+  // keeps the card visibly tinted without introducing photographic noise.
+  const spacing = 5;
+  ctx.fillStyle = accent;
+  const firstRow = Math.ceil(y / spacing);
+  const lastRow = Math.floor((y + height - 1) / spacing);
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    const py = row * spacing;
+    const offset = row % 2 === 0 ? 0 : Math.floor(spacing / 2);
+    const firstColumn = Math.ceil((x - offset) / spacing);
+    const lastColumn = Math.floor((x + width - 1 - offset) / spacing);
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      ctx.fillRect(column * spacing + offset, py, 1, 1);
+    }
+  }
 }
 
 function drawTimetable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
@@ -1784,10 +1809,11 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     usable.forEach((event, index) => {
       const y = top + index * rowHeight;
       const date = new Date(event.start);
-      const colors = agendaEventColors(event);
-      ctx.fillStyle = colors.background;
-      ctx.fillRect(margin, y + 3, width - margin * 2, rowHeight - 7);
-      ctx.fillStyle = colors.foreground;
+      const accent = agendaEventAccent(event);
+      fillAgendaTint(ctx, margin, y + 3, width - margin * 2, rowHeight - 7, accent);
+      ctx.fillStyle = accent;
+      ctx.fillRect(margin, y + 3, 8, rowHeight - 7);
+      ctx.fillStyle = ink;
       ctx.textAlign = "left";
       ctx.font = `900 ${rowHeight < 54 ? 15 : 18}px ${family}`;
       ctx.fillText(
@@ -1808,7 +1834,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
         y + rowHeight / 2 - 5,
       );
       if (spec.table.showLocation !== false && event.location && rowHeight >= 54) {
-        ctx.fillStyle = colors.foreground;
+        ctx.fillStyle = ink;
         ctx.font = `700 13px ${family}`;
         ctx.fillText(
           truncateCanvasText(ctx, event.location, width - 260),
@@ -1924,13 +1950,14 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
       const cardWidth = columnWidth * eventWidthRatio;
       allDay.slice(0, allDayRows).forEach((event, index) => {
         const y = allDayTop + index * allDayRowHeight;
-        const colors = agendaEventColors(event);
-        ctx.fillStyle = colors.background;
-        ctx.fillRect(x, y, cardWidth, allDayRowHeight - 4);
-        ctx.fillStyle = colors.foreground;
+        const accent = agendaEventAccent(event);
+        fillAgendaTint(ctx, x, y, cardWidth, allDayRowHeight - 4, accent);
+        ctx.fillStyle = accent;
+        ctx.fillRect(x, y, 6, allDayRowHeight - 4);
+        ctx.fillStyle = ink;
         ctx.textAlign = "left";
         ctx.font = `900 ${view === "workweek" ? 12 : 15}px ${family}`;
-        ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - 16), x + 8, y + 20);
+        ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - 20), x + 12, y + 20);
       });
     });
   }
@@ -1972,23 +1999,26 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
       const containingSegment = segmentLayouts.find((segment) => startMinute >= segment.start && startMinute <= segment.end);
       const segmentBottom = containingSegment?.pixelEnd ?? timelineBottom;
       const y = Math.min(naturalTop, Math.max(timelineTop, segmentBottom - cardHeight));
-      const colors = agendaEventColors(event);
-      ctx.fillStyle = colors.background;
-      ctx.fillRect(cardX, y, cardWidth, cardHeight);
-      ctx.fillStyle = colors.foreground;
+      const accent = agendaEventAccent(event);
+      fillAgendaTint(ctx, cardX, y, cardWidth, cardHeight, accent);
+      const stripeWidth = laneCount > 2 ? 4 : 6;
+      ctx.fillStyle = accent;
+      ctx.fillRect(cardX, y, stripeWidth, cardHeight);
+      ctx.fillStyle = ink;
       ctx.textAlign = "left";
       const dense = laneCount > 1;
+      const textInset = stripeWidth + (dense ? 3 : 5);
       ctx.font = `800 ${dense ? 8 : view === "workweek" ? 10 : 12}px ${family}`;
       ctx.fillText(
-        truncateCanvasText(ctx, agendaTimeLabel(event, spec.table.showEndTime !== false && cardWidth >= 76), cardWidth - 12),
-        cardX + 6,
+        truncateCanvasText(ctx, agendaTimeLabel(event, spec.table.showEndTime !== false && cardWidth >= 76), cardWidth - textInset - 5),
+        cardX + textInset,
         y + 14,
       );
       ctx.font = `900 ${dense ? 10 : view === "workweek" ? 13 : 16}px ${family}`;
-      ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - 12), cardX + 6, y + 34);
+      ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - textInset - 5), cardX + textInset, y + 34);
       if (spec.table.showLocation !== false && event.location && cardHeight >= 64 && cardWidth >= 68) {
         ctx.font = `700 ${dense ? 8 : view === "workweek" ? 10 : 11}px ${family}`;
-        ctx.fillText(truncateCanvasText(ctx, event.location, cardWidth - 12), cardX + 6, y + 51);
+        ctx.fillText(truncateCanvasText(ctx, event.location, cardWidth - textInset - 5), cardX + textInset, y + 51);
       }
     });
     if (!timed.length && !days[column].allDay.length) {
