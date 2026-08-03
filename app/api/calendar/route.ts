@@ -4,6 +4,7 @@ type CalendarRequest = {
   year?: unknown;
   month?: unknown;
   customUrl?: unknown;
+  customUrls?: unknown;
   presets?: unknown;
   view?: unknown;
   start?: unknown;
@@ -24,6 +25,7 @@ type AgendaEvent = {
   allDay?: boolean;
   location?: string;
   calendar?: string;
+  category?: string;
 };
 
 const MAX_ICAL_BYTES = 1024 * 1024;
@@ -254,6 +256,10 @@ function parseAgenda(text: string, rangeStart: Date, rangeEnd: Date, timeZone: s
     const title = unescapeIcal(fieldValue(block, "SUMMARY")).slice(0, 32);
     if (!title) continue;
     const location = unescapeIcal(fieldValue(block, "LOCATION")).slice(0, 40);
+    const category = fieldValues(block, "CATEGORIES")
+      .map(unescapeIcal)
+      .find(Boolean)
+      ?.slice(0, 24);
     const uid = unescapeIcal(fieldValue(block, "UID")) || `${title}-${parsedStart.date.toISOString()}`;
     recurrenceStarts(block, parsedStart.date, rangeStart, rangeEnd).forEach((start) => {
       const end = new Date(start.getTime() + eventDuration);
@@ -266,6 +272,7 @@ function parseAgenda(text: string, rangeStart: Date, rangeEnd: Date, timeZone: s
         allDay: parsedStart.allDay,
         location: location || undefined,
         calendar,
+        category,
       });
     });
   }
@@ -346,10 +353,26 @@ export async function POST(request: Request) {
         if (typeof preset === "string" && PUBLIC_CALENDARS[preset]) feeds.push(PUBLIC_CALENDARS[preset]);
       });
     }
-    if (typeof body.customUrl === "string" && body.customUrl.trim()) {
+    if (Array.isArray(body.customUrls)) {
+      body.customUrls.slice(0, 5).forEach((entry, index) => {
+        if (typeof entry === "string" && entry.trim()) {
+          feeds.push({ name: `个人日历 ${index + 1}`, url: entry.trim() });
+          return;
+        }
+        if (!entry || typeof entry !== "object") return;
+        const candidate = entry as { name?: unknown; url?: unknown };
+        if (typeof candidate.url !== "string" || !candidate.url.trim()) return;
+        const name = typeof candidate.name === "string"
+          ? candidate.name.trim().replace(/\s+/g, " ").slice(0, 24)
+          : "";
+        feeds.push({ name: name || `个人日历 ${index + 1}`, url: candidate.url.trim() });
+      });
+    } else if (typeof body.customUrl === "string" && body.customUrl.trim()) {
       feeds.push({ name: "个人 iCal", url: body.customUrl.trim() });
     }
-    const uniqueFeeds = feeds.filter((feed, index) => feeds.findIndex((item) => item.url === feed.url) === index).slice(0, 2);
+    const uniqueFeeds = feeds
+      .filter((feed, index) => feeds.findIndex((item) => item.url === feed.url) === index)
+      .slice(0, 6);
     if (!uniqueFeeds.length) return NextResponse.json({ events: [], timedEvents: [], sources: [], warnings: [] });
 
     const events: CalendarEvent[] = [];
@@ -371,7 +394,7 @@ export async function POST(request: Request) {
       .sort((a, b) => a.day - b.day)
       .slice(0, 24);
     const dedupedTimed = timedEvents
-      .filter((event, index) => timedEvents.findIndex((item) => item.uid === event.uid) === index)
+      .filter((event, index) => timedEvents.findIndex((item) => item.uid === event.uid && item.calendar === event.calendar) === index)
       .sort((left, right) => Date.parse(left.start) - Date.parse(right.start))
       .slice(0, 80);
     const response = NextResponse.json({ events: deduped, timedEvents: dedupedTimed, sources, warnings });

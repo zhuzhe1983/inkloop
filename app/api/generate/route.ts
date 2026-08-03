@@ -117,6 +117,9 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "rangeHours": 72,
       "customStart": "2026-08-03T09:00",
       "customEnd": "2026-08-05T22:00",
+      "eventWidth": 100,
+      "showEndTime": true,
+      "showLocation": true,
       "events": [{ "day": 8, "text": "月历事件" }, { "uid": "preview-1", "title": "日程事件", "start": "2026-08-03T10:00:00+08:00", "end": "2026-08-03T11:00:00+08:00", "location": "会议室 A", "allDay": false }]
     }
   },
@@ -149,7 +152,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；weather 是角落的一行小天气摘要，weatherLarge 是把城市、天气、温度和高低温组合成一个整体的大天气组件。天气应用默认使用 weatherLarge，二者不要同时开启。时钟默认使用 timeLarge。qr 是二维码元素，只有用户明确要求二维码时开启；普通内容使用 qrMode=text 并把内容原样放进 qrText。用户明确要求 Wi-Fi/WPA 二维码时使用 qrMode=wifi，填写 qrWifiSsid 和 qrWifiSecurity，但绝不编造 Wi-Fi 密码，qrWifiPassword 默认留空供用户手动填写。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；其他组件只按用户需求开启。
 21. 用户要求月历、日历或月度计划时使用 kind=calendar，table.type=calendar，提供 year、month、weekStartsOn 和最多 12 个简短 events；明确要求显示农历时 lunar=true。不需要输出 42 个日期格，系统会按月份计算。
 22. 用户要求课程表、课表或周时间表时使用 kind=timetable，table.type=timetable；columns 为 2—7 个列标题，rows 为 1—8 个时间段，每个 cells 长度与 columns 一致，每格最多 8 个汉字。表格数据只表达语义，不包含坐标、HTML、CSS 或绘图代码。
-23. 用户要求苹果日历、日程安排、议程、未来几天安排或带起止时间的周日历时使用 kind=agenda，table.type=agenda。默认 orientation=landscape、view=three-day、rangeMode=rolling、rangeHours=72；只需要生成 3—8 条明显为预览数据的事件，真实事件会由 iCal 在运行时注入。不要把日程当成固定课表，不要为没有事件的小时生成空行。
+23. 用户要求苹果日历、日程安排、议程、未来几天安排或带起止时间的周日历时使用 kind=agenda，table.type=agenda。默认 orientation=landscape、view=three-day、rangeMode=rolling、rangeHours=72；用户要求五天时使用 view=workweek、rangeHours=120。eventWidth 控制日程块宽度，密集五日视图可设为 70—85；showEndTime 和 showLocation 可按用户希望的简洁程度关闭。只需要生成 3—8 条明显为预览数据的事件，真实事件会由 iCal 在运行时注入。不要把日程当成固定课表，不要为没有事件的小时生成空行。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
 ${EPAPER_DESIGN_GUIDE}`;
@@ -420,6 +423,9 @@ function normalizeTable(value: unknown, fallback: ScreenTable | undefined, kind:
       rangeHours: Math.min(168, Math.max(4, Math.round(Number(candidate.rangeHours) || fallbackAgenda?.rangeHours || (view === "workweek" ? 120 : 72)))),
       customStart: typeof candidate.customStart === "string" ? candidate.customStart.slice(0, 32) : fallbackAgenda?.customStart,
       customEnd: typeof candidate.customEnd === "string" ? candidate.customEnd.slice(0, 32) : fallbackAgenda?.customEnd,
+      eventWidth: Math.min(100, Math.max(45, Math.round(Number(candidate.eventWidth) || fallbackAgenda?.eventWidth || 100))),
+      showEndTime: typeof candidate.showEndTime === "boolean" ? candidate.showEndTime : fallbackAgenda?.showEndTime ?? true,
+      showLocation: typeof candidate.showLocation === "boolean" ? candidate.showLocation : fallbackAgenda?.showLocation ?? true,
       events: events.length ? events : fallbackAgenda?.events ?? [],
     };
   }

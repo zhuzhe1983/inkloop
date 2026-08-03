@@ -44,8 +44,14 @@ type GeneratorStatus = "checking" | "online" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
 type DeviceTaskStatus = "scheduled" | "writing" | "error";
 type ArtworkCredit = { provider: string; url: string };
+type CalendarSourcePreference = {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+};
 type CalendarPreferences = {
-  customUrl: string;
+  sources: CalendarSourcePreference[];
   chinaHolidays: boolean;
   lunar: boolean;
 };
@@ -115,12 +121,28 @@ const LOCAL_APPS_KEY = "inkloop-apps-v1";
 const WEATHER_CITY_KEY = "inkloop-weather-city-v1";
 const CALENDAR_PREFERENCES_KEY = "inkloop-calendar-sources-v1";
 const DEFAULT_CALENDAR_PREFERENCES: CalendarPreferences = {
-  customUrl: "",
+  sources: [],
   chinaHolidays: false,
   lunar: false,
 };
 const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
 const EPAPER_WHITE = "#fafaf8";
+
+function calendarSourceName(url: string, position: number) {
+  try {
+    const hostname = new URL(url.replace(/^webcal:/i, "https:")).hostname.toLowerCase();
+    const provider = hostname.includes("icloud")
+      ? "iCloud 日历"
+      : hostname.includes("google")
+        ? "Google 日历"
+        : hostname.includes("outlook") || hostname.includes("office365")
+          ? "Outlook 日历"
+          : hostname.replace(/^www\./, "");
+    return position === 0 ? provider : `${provider} ${position + 1}`;
+  } catch {
+    return `个人日历 ${position + 1}`;
+  }
+}
 
 const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
   { id: "studio", label: "创作台", glyph: "✦" },
@@ -286,6 +308,29 @@ function fitText(
   return size;
 }
 
+function truncateCanvasText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+) {
+  if (!text || maxWidth <= 0) return "";
+  if (ctx.measureText(text).width <= maxWidth) return text;
+
+  const ellipsis = "…";
+  if (ctx.measureText(ellipsis).width > maxWidth) return "";
+
+  const characters = Array.from(text);
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${characters.slice(0, middle).join("")}${ellipsis}`;
+    if (ctx.measureText(candidate).width <= maxWidth) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join("")}${ellipsis}`;
+}
+
 function randomArtworkSeed() {
   const values = new Uint32Array(1);
   crypto.getRandomValues(values);
@@ -382,9 +427,10 @@ async function resolveRuntimeScreen(
   const resolved = resolveTimeVariables(currentApp.spec, now);
   if (resolved.table?.type === "agenda") {
     const preferences = calendarPreferences ?? DEFAULT_CALENDAR_PREFERENCES;
+    const enabledSources = preferences.sources.filter((source) => source.enabled && source.url.trim());
     const window = agendaWindow(resolved.table, now);
     let remoteEvents: AgendaEvent[] = [];
-    if (preferences.customUrl || preferences.chinaHolidays) {
+    if (enabledSources.length || preferences.chinaHolidays) {
       try {
         const response = await fetch("/api/calendar", {
           method: "POST",
@@ -394,7 +440,7 @@ async function resolveRuntimeScreen(
             start: window.start.toISOString(),
             end: window.end.toISOString(),
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            customUrl: preferences.customUrl || undefined,
+            customUrls: enabledSources.map(({ name, url }) => ({ name, url })),
             presets: preferences.chinaHolidays ? ["china-holidays"] : [],
           }),
           cache: "no-store",
@@ -413,13 +459,16 @@ async function resolveRuntimeScreen(
     } else {
       onCalendarNotice?.(null);
     }
-    const events = [...resolved.table.events, ...remoteEvents]
+    // A personal iCal is the source of truth. Generated sample events are useful
+    // before a feed is connected, but must not be mixed into a real calendar.
+    const localEvents = enabledSources.length ? [] : resolved.table.events;
+    const events = [...localEvents, ...remoteEvents]
       .filter((event) => {
         const start = Date.parse(event.start);
         const end = Date.parse(event.end);
         return Number.isFinite(start) && Number.isFinite(end) && start < window.end.getTime() && end > window.start.getTime();
       })
-      .filter((event, index, values) => values.findIndex((item) => item.uid === event.uid) === index)
+      .filter((event, index, values) => values.findIndex((item) => item.uid === event.uid && item.calendar === event.calendar) === index)
       .sort((left, right) => Date.parse(left.start) - Date.parse(right.start))
       .slice(0, 80);
     return {
@@ -429,8 +478,9 @@ async function resolveRuntimeScreen(
   }
   if (resolved.table?.type === "calendar") {
     const preferences = calendarPreferences ?? DEFAULT_CALENDAR_PREFERENCES;
+    const enabledSources = preferences.sources.filter((source) => source.enabled && source.url.trim());
     let remoteEvents: CalendarEvent[] = [];
-    if (preferences.customUrl || preferences.chinaHolidays) {
+    if (enabledSources.length || preferences.chinaHolidays) {
       try {
         const response = await fetch("/api/calendar", {
           method: "POST",
@@ -438,7 +488,7 @@ async function resolveRuntimeScreen(
           body: JSON.stringify({
             year: resolved.table.year,
             month: resolved.table.month,
-            customUrl: preferences.customUrl || undefined,
+            customUrls: enabledSources.map(({ name, url }) => ({ name, url })),
             presets: preferences.chinaHolidays ? ["china-holidays"] : [],
           }),
           cache: "no-store",
@@ -457,7 +507,10 @@ async function resolveRuntimeScreen(
     } else {
       onCalendarNotice?.(null);
     }
-    const events = [...resolved.table.events, ...remoteEvents]
+    // Keep generated annotations when only public presets are enabled, but replace
+    // sample data once the user connects a personal iCal feed.
+    const localEvents = enabledSources.length ? [] : resolved.table.events;
+    const events = [...localEvents, ...remoteEvents]
       .filter((event, index, values) => values.findIndex((item) => item.day === event.day && item.text === event.text) === index)
       .sort((left, right) => left.day - right.day)
       .slice(0, 24);
@@ -1557,6 +1610,14 @@ function tableAccent(text: string) {
   return choices[hash % choices.length];
 }
 
+function agendaEventColors(event: AgendaEvent) {
+  const background = tableAccent(event.category || event.calendar || event.title);
+  const foreground = background === "#2756c7" || background === "#087c4e"
+    ? EPAPER_WHITE
+    : "#000000";
+  return { background, foreground };
+}
+
 function drawTimetable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   if (spec.table?.type !== "timetable") return;
   const { columns, rows } = spec.table;
@@ -1618,12 +1679,54 @@ function agendaDateKey(value: Date) {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 }
 
-function agendaTimeLabel(event: AgendaEvent) {
+function agendaTimeLabel(event: AgendaEvent, showEndTime = true) {
   if (event.allDay) return "全天";
   const start = new Date(event.start);
   const end = new Date(event.end);
   const time = (value: Date) => `${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
-  return `${time(start)}–${time(end)}`;
+  return showEndTime ? `${time(start)}–${time(end)}` : time(start);
+}
+
+type AgendaLaneItem = {
+  event: AgendaEvent;
+  lane: number;
+  laneCount: number;
+};
+
+function layoutAgendaLanes(events: AgendaEvent[], minimumVisualMinutes: number): AgendaLaneItem[] {
+  const minuteOfDay = (value: Date) => value.getHours() * 60 + value.getMinutes();
+  const items = events
+    .map((event) => {
+      const start = minuteOfDay(new Date(event.start));
+      const naturalEnd = minuteOfDay(new Date(event.end));
+      const end = Math.max(start + 15, naturalEnd, start + minimumVisualMinutes);
+      return { event, start, end };
+    })
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  const clusters: typeof items[] = [];
+  let cluster: typeof items = [];
+  let clusterEnd = -Infinity;
+  items.forEach((item) => {
+    if (cluster.length && item.start >= clusterEnd) {
+      clusters.push(cluster);
+      cluster = [];
+      clusterEnd = -Infinity;
+    }
+    cluster.push(item);
+    clusterEnd = Math.max(clusterEnd, item.end);
+  });
+  if (cluster.length) clusters.push(cluster);
+
+  return clusters.flatMap((group) => {
+    const laneEnds: number[] = [];
+    const assigned = group.map((item) => {
+      let lane = laneEnds.findIndex((end) => end <= item.start);
+      if (lane < 0) lane = laneEnds.length;
+      laneEnds[lane] = item.end;
+      return { event: item.event, lane };
+    });
+    return assigned.map((item) => ({ ...item, laneCount: laneEnds.length }));
+  });
 }
 
 function agendaStartDate(spec: ScreenSpec, events: AgendaEvent[]) {
@@ -1650,24 +1753,22 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     .sort((left, right) => Date.parse(left.start) - Date.parse(right.start));
   const family = screenFontFamily(spec);
   const ink = "#151816";
-  const paper = EPAPER_WHITE;
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
   const margin = 24;
 
   ctx.save();
-  ctx.fillStyle = ink;
-  ctx.textAlign = "left";
-  ctx.font = `900 ${width > height ? 34 : 40}px ${family}`;
-  ctx.fillText(spec.title || "智能日程", margin, width > height ? 46 : 62, width - margin * 2 - 150);
-  ctx.fillStyle = accentColors[spec.accent];
-  ctx.fillRect(margin, width > height ? 60 : 80, 88, 7);
-  ctx.fillStyle = ink;
-  ctx.textAlign = "right";
-  ctx.font = `800 15px ${family}`;
-  ctx.fillText(view === "agenda" ? "按时间排序" : view === "three-day" ? "未来三天" : "工作周", width - margin, width > height ? 47 : 62);
-
   if (view === "agenda") {
+    ctx.fillStyle = ink;
+    ctx.textAlign = "left";
+    ctx.font = `900 ${width > height ? 34 : 40}px ${family}`;
+    ctx.fillText(spec.title || "智能日程", margin, width > height ? 46 : 62, width - margin * 2 - 150);
+    ctx.fillStyle = accentColors[spec.accent];
+    ctx.fillRect(margin, width > height ? 60 : 80, 88, 7);
+    ctx.fillStyle = ink;
+    ctx.textAlign = "right";
+    ctx.font = `800 15px ${family}`;
+    ctx.fillText("按时间排序", width - margin, width > height ? 47 : 62);
     const top = width > height ? 86 : 108;
     const usable = events.slice(0, width > height ? 7 : 9);
     if (!usable.length) {
@@ -1683,21 +1784,37 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     usable.forEach((event, index) => {
       const y = top + index * rowHeight;
       const date = new Date(event.start);
-      ctx.fillStyle = index === 0 ? "#e5c900" : paper;
+      const colors = agendaEventColors(event);
+      ctx.fillStyle = colors.background;
       ctx.fillRect(margin, y + 3, width - margin * 2, rowHeight - 7);
-      ctx.fillStyle = tableAccent(event.calendar || event.title);
-      ctx.fillRect(margin, y + 3, 8, rowHeight - 7);
-      ctx.fillStyle = ink;
+      ctx.fillStyle = colors.foreground;
       ctx.textAlign = "left";
       ctx.font = `900 ${rowHeight < 54 ? 15 : 18}px ${family}`;
-      ctx.fillText(`${date.getMonth() + 1}/${date.getDate()}`, margin + 22, y + rowHeight / 2 - 5, 54);
+      ctx.fillText(
+        truncateCanvasText(ctx, `${date.getMonth() + 1}/${date.getDate()}`, 54),
+        margin + 22,
+        y + rowHeight / 2 - 5,
+      );
       ctx.font = `800 ${rowHeight < 54 ? 14 : 17}px ${family}`;
-      ctx.fillText(agendaTimeLabel(event), margin + 78, y + rowHeight / 2 - 5, 118);
+      ctx.fillText(
+        truncateCanvasText(ctx, agendaTimeLabel(event, spec.table.showEndTime !== false), 118),
+        margin + 78,
+        y + rowHeight / 2 - 5,
+      );
       ctx.font = `900 ${rowHeight < 54 ? 17 : 21}px ${family}`;
-      ctx.fillText(event.title, margin + 210, y + rowHeight / 2 - 5, width - 260);
-      if (event.location && rowHeight >= 54) {
+      ctx.fillText(
+        truncateCanvasText(ctx, event.title, width - 260),
+        margin + 210,
+        y + rowHeight / 2 - 5,
+      );
+      if (spec.table.showLocation !== false && event.location && rowHeight >= 54) {
+        ctx.fillStyle = colors.foreground;
         ctx.font = `700 13px ${family}`;
-        ctx.fillText(event.location, margin + 210, y + rowHeight / 2 + 18, width - 260);
+        ctx.fillText(
+          truncateCanvasText(ctx, event.location, width - 260),
+          margin + 210,
+          y + rowHeight / 2 + 18,
+        );
       }
     });
     if (events.length > usable.length) {
@@ -1711,51 +1828,180 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
 
   const columnCount = view === "workweek" ? 5 : 3;
   const start = agendaStartDate(spec, events);
-  const top = width > height ? 90 : 112;
+  const top = width > height ? 16 : 20;
   const gap = 8;
-  const columnWidth = (width - margin * 2 - gap * (columnCount - 1)) / columnCount;
-  const cardsPerDay = width > height ? (view === "workweek" ? 3 : 4) : 3;
-  for (let column = 0; column < columnCount; column += 1) {
+  const headerHeight = 48;
+  const timeRailWidth = width > height ? 44 : 38;
+  const eventWidthRatio = Math.min(100, Math.max(45, spec.table.eventWidth ?? 100)) / 100;
+  const gridLeft = margin + timeRailWidth;
+  const gridRight = width - margin;
+  const columnWidth = (gridRight - gridLeft - gap * (columnCount - 1)) / columnCount;
+  const days = Array.from({ length: columnCount }, (_, column) => {
     const day = new Date(start);
     day.setDate(start.getDate() + column);
     const key = agendaDateKey(day);
     const dayEvents = events.filter((event) => agendaDateKey(new Date(event.start)) === key);
-    const x = margin + column * (columnWidth + gap);
+    return {
+      day,
+      allDay: dayEvents.filter((event) => event.allDay),
+      timed: dayEvents.filter((event) => !event.allDay),
+    };
+  });
+  const allDayRows = Math.min(2, Math.max(0, ...days.map((day) => day.allDay.length)));
+  const allDayRowHeight = 32;
+  const allDayTop = top + headerHeight + 8;
+  const allDayHeight = allDayRows ? allDayRows * allDayRowHeight + 4 : 0;
+  const timelineTop = allDayTop + allDayHeight + (allDayRows ? 8 : 0);
+  const timelineBottom = height - 18;
+  const visibleTimed = days.flatMap((day) => day.timed);
+  const minuteOfDay = (value: Date) => value.getHours() * 60 + value.getMinutes();
+  const timelineHeight = Math.max(80, timelineBottom - timelineTop);
+  const activeSegments = visibleTimed
+    .map((event) => {
+      const start = minuteOfDay(new Date(event.start));
+      const end = Math.min(24 * 60, Math.max(start + 15, minuteOfDay(new Date(event.end))));
+      return { start, end };
+    })
+    .sort((left, right) => left.start - right.start)
+    .reduce<Array<{ start: number; end: number }>>((segments, segment) => {
+      const previous = segments.at(-1);
+      if (previous && segment.start - previous.end <= 30) {
+        previous.end = Math.max(previous.end, segment.end);
+      } else {
+        segments.push({ ...segment });
+      }
+      return segments;
+    }, []);
+  if (!activeSegments.length) activeSegments.push({ start: 8 * 60, end: 18 * 60 });
+
+  // The vertical timeline is intentionally discontinuous: periods with no event
+  // on any visible day collapse into a small visual gap instead of consuming space.
+  const segmentGap = activeSegments.length > 1 ? Math.min(14, timelineHeight / (activeSegments.length * 5)) : 0;
+  const totalGapHeight = segmentGap * Math.max(0, activeSegments.length - 1);
+  const activeMinuteSpan = activeSegments.reduce((total, segment) => total + segment.end - segment.start, 0);
+  const desiredActiveHeight = Math.max(activeSegments.length * 56, activeMinuteSpan * 0.78);
+  const activeHeight = Math.min(timelineHeight - totalGapHeight, desiredActiveHeight);
+  const minuteScale = activeHeight / Math.max(1, activeMinuteSpan);
+  let segmentCursor = timelineTop;
+  const segmentLayouts = activeSegments.map((segment) => {
+    const pixelStart = segmentCursor;
+    const pixelEnd = pixelStart + (segment.end - segment.start) * minuteScale;
+    segmentCursor = pixelEnd + segmentGap;
+    return { ...segment, pixelStart, pixelEnd };
+  });
+  const timelineStart = activeSegments[0].start;
+  const timelineEnd = activeSegments.at(-1)?.end ?? timelineStart + 60;
+  const yForMinute = (minute: number) => {
+    const layout = segmentLayouts.find((segment) => minute >= segment.start && minute <= segment.end)
+      ?? (minute < timelineStart ? segmentLayouts[0] : segmentLayouts.at(-1));
+    if (!layout) return timelineTop;
+    const clamped = Math.min(layout.end, Math.max(layout.start, minute));
+    return layout.pixelStart + (clamped - layout.start) * minuteScale;
+  };
+
+  days.forEach(({ day }, column) => {
+    const x = gridLeft + column * (columnWidth + gap);
     ctx.fillStyle = column === 0 ? "#e5c900" : "#f0eee4";
-    ctx.fillRect(x, top, columnWidth, 48);
+    ctx.fillRect(x, top, columnWidth, headerHeight);
     ctx.fillStyle = ink;
     ctx.textAlign = "left";
     ctx.font = `900 ${view === "workweek" ? 16 : 19}px ${family}`;
     const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(day);
-    ctx.fillText(`${day.getMonth() + 1}/${day.getDate()} ${weekday}`, x + 10, top + 31, columnWidth - 18);
-    const cardTop = top + 56;
-    const cardHeight = Math.floor((height - cardTop - 18 - gap * (cardsPerDay - 1)) / cardsPerDay);
-    dayEvents.slice(0, cardsPerDay).forEach((event, index) => {
-      const y = cardTop + index * (cardHeight + gap);
-      ctx.fillStyle = paper;
-      ctx.fillRect(x, y, columnWidth, cardHeight);
-      ctx.fillStyle = tableAccent(event.calendar || event.title);
-      ctx.fillRect(x, y, 7, cardHeight);
-      ctx.fillStyle = ink;
-      ctx.font = `800 ${view === "workweek" ? 13 : 15}px ${family}`;
-      ctx.fillText(agendaTimeLabel(event), x + 14, y + 21, columnWidth - 22);
-      ctx.font = `900 ${view === "workweek" ? 15 : 18}px ${family}`;
-      ctx.fillText(event.title, x + 14, y + 45, columnWidth - 22);
-      if (event.location && cardHeight >= 76) {
-        ctx.font = `700 ${view === "workweek" ? 11 : 13}px ${family}`;
-        ctx.fillText(event.location, x + 14, y + 66, columnWidth - 22);
+    ctx.fillText(
+      truncateCanvasText(ctx, `${day.getMonth() + 1}/${day.getDate()} ${weekday}`, columnWidth - 18),
+      x + 10,
+      top + 31,
+    );
+  });
+
+  if (allDayRows) {
+    ctx.fillStyle = ink;
+    ctx.textAlign = "right";
+    ctx.font = `800 11px ${family}`;
+    ctx.fillText("全天", gridLeft - 8, allDayTop + 20, timeRailWidth - 4);
+    days.forEach(({ allDay }, column) => {
+      const x = gridLeft + column * (columnWidth + gap);
+      const cardWidth = columnWidth * eventWidthRatio;
+      allDay.slice(0, allDayRows).forEach((event, index) => {
+        const y = allDayTop + index * allDayRowHeight;
+        const colors = agendaEventColors(event);
+        ctx.fillStyle = colors.background;
+        ctx.fillRect(x, y, cardWidth, allDayRowHeight - 4);
+        ctx.fillStyle = colors.foreground;
+        ctx.textAlign = "left";
+        ctx.font = `900 ${view === "workweek" ? 12 : 15}px ${family}`;
+        ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - 16), x + 8, y + 20);
+      });
+    });
+  }
+
+  segmentLayouts.forEach((segment) => {
+    ctx.fillStyle = ink;
+    ctx.textAlign = "right";
+    ctx.font = `700 10px ${family}`;
+    ctx.fillText(
+      `${String(Math.floor(segment.start / 60)).padStart(2, "0")}:${String(segment.start % 60).padStart(2, "0")}`,
+      gridLeft - 8,
+      segment.pixelStart + 10,
+    );
+  });
+
+  segmentLayouts.slice(0, -1).forEach((segment, index) => {
+    const next = segmentLayouts[index + 1];
+    const gapY = Math.round((segment.pixelEnd + next.pixelStart) / 2);
+    const markerCenter = Math.round(gridLeft - timeRailWidth / 2);
+    ctx.fillStyle = ink;
+    [-6, 0, 6].forEach((offset) => ctx.fillRect(markerCenter + offset, gapY, 2, 2));
+  });
+
+  days.forEach(({ timed }, column) => {
+    const x = gridLeft + column * (columnWidth + gap);
+    const eventLimit = view === "workweek" ? 8 : 10;
+    const minimumVisualMinutes = Math.max(15, Math.ceil(44 / Math.max(0.01, minuteScale)));
+    const laneItems = layoutAgendaLanes(timed.slice(0, eventLimit), minimumVisualMinutes);
+    laneItems.forEach(({ event, lane, laneCount }) => {
+      const totalCardWidth = columnWidth * eventWidthRatio;
+      const laneGap = laneCount > 1 ? 3 : 0;
+      const cardWidth = Math.max(12, (totalCardWidth - laneGap * (laneCount - 1)) / laneCount);
+      const cardX = x + lane * (cardWidth + laneGap);
+      const startMinute = Math.max(timelineStart, minuteOfDay(new Date(event.start)));
+      const endMinute = Math.min(timelineEnd, Math.max(startMinute + 15, minuteOfDay(new Date(event.end))));
+      const naturalTop = yForMinute(startMinute);
+      const naturalHeight = yForMinute(endMinute) - naturalTop - 2;
+      const cardHeight = Math.max(42, naturalHeight);
+      const containingSegment = segmentLayouts.find((segment) => startMinute >= segment.start && startMinute <= segment.end);
+      const segmentBottom = containingSegment?.pixelEnd ?? timelineBottom;
+      const y = Math.min(naturalTop, Math.max(timelineTop, segmentBottom - cardHeight));
+      const colors = agendaEventColors(event);
+      ctx.fillStyle = colors.background;
+      ctx.fillRect(cardX, y, cardWidth, cardHeight);
+      ctx.fillStyle = colors.foreground;
+      ctx.textAlign = "left";
+      const dense = laneCount > 1;
+      ctx.font = `800 ${dense ? 8 : view === "workweek" ? 10 : 12}px ${family}`;
+      ctx.fillText(
+        truncateCanvasText(ctx, agendaTimeLabel(event, spec.table.showEndTime !== false && cardWidth >= 76), cardWidth - 12),
+        cardX + 6,
+        y + 14,
+      );
+      ctx.font = `900 ${dense ? 10 : view === "workweek" ? 13 : 16}px ${family}`;
+      ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - 12), cardX + 6, y + 34);
+      if (spec.table.showLocation !== false && event.location && cardHeight >= 64 && cardWidth >= 68) {
+        ctx.font = `700 ${dense ? 8 : view === "workweek" ? 10 : 11}px ${family}`;
+        ctx.fillText(truncateCanvasText(ctx, event.location, cardWidth - 12), cardX + 6, y + 51);
       }
     });
-    if (!dayEvents.length) {
+    if (!timed.length && !days[column].allDay.length) {
       ctx.fillStyle = "#707871";
-      ctx.font = `700 14px ${family}`;
-      ctx.fillText("无安排", x + 10, cardTop + 28, columnWidth - 18);
-    } else if (dayEvents.length > cardsPerDay) {
+      ctx.textAlign = "left";
+      ctx.font = `700 12px ${family}`;
+      ctx.fillText("无安排", x + 10, timelineTop + 22, columnWidth - 18);
+    } else if (timed.length > (view === "workweek" ? 8 : 10)) {
       ctx.fillStyle = ink;
       ctx.font = `900 13px ${family}`;
-      ctx.fillText(`+${dayEvents.length - cardsPerDay} 项`, x + 10, height - 8, columnWidth - 18);
+      ctx.fillText(`+${timed.length - (view === "workweek" ? 8 : 10)} 项`, x + 10, height - 8, columnWidth - 18);
     }
-  }
+  });
   ctx.restore();
 }
 
@@ -2211,15 +2457,33 @@ export default function InkStudio() {
       if (Array.isArray(stored)) setLocalApps(stored.map(upgradeLegacyApp));
       const storedCity = localStorage.getItem(WEATHER_CITY_KEY)?.trim();
       if (storedCity) setPreferredWeatherCity(storedCity);
-      const storedCalendar = JSON.parse(localStorage.getItem(CALENDAR_PREFERENCES_KEY) ?? "null") as Partial<CalendarPreferences> | null;
+      const storedCalendar = JSON.parse(localStorage.getItem(CALENDAR_PREFERENCES_KEY) ?? "null") as (Partial<CalendarPreferences> & { customUrl?: unknown }) | null;
       if (storedCalendar && typeof storedCalendar === "object") {
+        const storedSources = Array.isArray(storedCalendar.sources)
+          ? storedCalendar.sources
+              .filter((source): source is CalendarSourcePreference => Boolean(source && typeof source === "object" && typeof source.url === "string" && source.url.trim()))
+              .slice(0, 5)
+              .map((source, index) => ({
+                id: typeof source.id === "string" && source.id ? source.id : `ical-${index + 1}`,
+                name: typeof source.name === "string" && source.name.trim()
+                  ? source.name.trim().slice(0, 24)
+                  : calendarSourceName(source.url, index),
+                url: source.url.trim(),
+                enabled: source.enabled !== false,
+              }))
+          : [];
+        const legacyUrl = typeof storedCalendar.customUrl === "string" ? storedCalendar.customUrl.trim() : "";
         const preferences: CalendarPreferences = {
-          customUrl: typeof storedCalendar.customUrl === "string" ? storedCalendar.customUrl : "",
+          sources: storedSources.length
+            ? storedSources
+            : legacyUrl
+              ? [{ id: "ical-legacy", name: calendarSourceName(legacyUrl, 0), url: legacyUrl, enabled: true }]
+              : [],
           chinaHolidays: storedCalendar.chinaHolidays === true,
           lunar: storedCalendar.lunar === true,
         };
         setCalendarPreferences(preferences);
-        setCalendarUrlDraft(preferences.customUrl);
+        localStorage.setItem(CALENDAR_PREFERENCES_KEY, JSON.stringify(preferences));
       }
     } catch {
       localStorage.removeItem(LOCAL_APPS_KEY);
@@ -2442,16 +2706,49 @@ export default function InkStudio() {
     setApp((current) => ({ ...current, scheduleMode }));
   };
 
-  const applyCalendarUrl = () => {
-    const customUrl = calendarUrlDraft.trim();
-    if (customUrl && !/^(?:https|webcal):\/\//i.test(customUrl)) {
+  const addCalendarSource = () => {
+    const url = calendarUrlDraft.trim();
+    if (!url) {
+      showToast("先填写 iCal 地址", "error");
+      return;
+    }
+    if (!/^(?:https|webcal):\/\//i.test(url)) {
       showToast("请填写 HTTPS 或 webcal 开头的 iCal 地址", "error");
       return;
     }
-    updateCalendarPreferences({ customUrl });
-    setCalendarUrlDraft(customUrl);
+    const normalizedUrl = url.replace(/^webcal:/i, "https:");
+    if (calendarPreferences.sources.some((source) => source.url.replace(/^webcal:/i, "https:") === normalizedUrl)) {
+      showToast("这个日历已经添加过了", "info");
+      return;
+    }
+    if (calendarPreferences.sources.length >= 5) {
+      showToast("最多可添加 5 个个人日历", "error");
+      return;
+    }
+    const source: CalendarSourcePreference = {
+      id: `ical-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      name: calendarSourceName(url, calendarPreferences.sources.length),
+      url,
+      enabled: true,
+    };
+    updateCalendarPreferences({ sources: [...calendarPreferences.sources, source] });
+    setCalendarUrlDraft("");
     setCalendarNotice(null);
-    showToast(customUrl ? "iCal 地址已保存，正在读取日程" : "个人 iCal 已移除", "success");
+    showToast("日历已添加，正在合并日程", "success");
+  };
+
+  const updateCalendarSource = (id: string, patch: Partial<CalendarSourcePreference>) => {
+    updateCalendarPreferences({
+      sources: calendarPreferences.sources.map((source) => source.id === id ? { ...source, ...patch } : source),
+    });
+    setCalendarNotice(null);
+  };
+
+  const removeCalendarSource = (id: string) => {
+    const source = calendarPreferences.sources.find((item) => item.id === id);
+    updateCalendarPreferences({ sources: calendarPreferences.sources.filter((item) => item.id !== id) });
+    setCalendarNotice(null);
+    showToast(`${source?.name || "个人日历"}已移除`, "success");
   };
 
   const updateDisplay = (patch: Partial<ScreenDisplay>) => {
@@ -3681,13 +3978,15 @@ export default function InkStudio() {
                       {([
                         ["agenda", "智能议程"],
                         ["three-day", "三日时间轴"],
-                        ["workweek", "工作周"],
+                        ["workweek", "五日时间轴"],
                       ] as Array<[AgendaView, string]>).map(([value, label]) => (
                         <button
                           type="button"
                           key={value}
                           className={app.spec.table?.type === "agenda" && app.spec.table.view === value ? "selected" : ""}
-                          onClick={() => updateAgendaTable({ view: value })}
+                          onClick={() => updateAgendaTable(value === "workweek"
+                            ? { view: value, rangeMode: "rolling", rangeHours: 120 }
+                            : { view: value })}
                         >
                           {label}
                         </button>
@@ -3709,6 +4008,7 @@ export default function InkStudio() {
                           <option value="12">接下来 12 小时</option>
                           <option value="24">接下来 24 小时</option>
                           <option value="72">接下来 3 天</option>
+                          <option value="120">接下来 5 天</option>
                           <option value="168">接下来 7 天</option>
                           <option value="today">今天</option>
                           <option value="custom">自定义</option>
@@ -3735,13 +4035,48 @@ export default function InkStudio() {
                         </>
                       )}
                     </div>
+                    <div className="agenda-density-controls">
+                      <label className="agenda-width-control">
+                        <span>
+                          <strong>日程块宽度</strong>
+                          <output>{Math.round(app.spec.table.eventWidth ?? 100)}%</output>
+                        </span>
+                        <input
+                          type="range"
+                          min={45}
+                          max={100}
+                          step={5}
+                          value={app.spec.table.eventWidth ?? 100}
+                          aria-label="日程块宽度"
+                          onChange={(event) => updateAgendaTable({ eventWidth: Number(event.target.value) })}
+                        />
+                      </label>
+                      <div className="agenda-content-toggles" role="group" aria-label="日程显示内容">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={app.spec.table.showEndTime !== false}
+                            onChange={(event) => updateAgendaTable({ showEndTime: event.target.checked })}
+                          />
+                          <span>结束时间</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={app.spec.table.showLocation !== false}
+                            onChange={(event) => updateAgendaTable({ showLocation: event.target.checked })}
+                          />
+                          <span>地点</span>
+                        </label>
+                      </div>
+                    </div>
                   </section>
                 )}
                 {(app.spec.table?.type === "calendar" || app.spec.table?.type === "agenda") && (
                   <section className="calendar-source-editor" aria-label="在线日历数据">
                     <div className="calendar-source-heading">
                       <strong>在线日历数据</strong>
-                      <small>仅保存在当前浏览器</small>
+                      <small>{calendarPreferences.sources.length} 个个人来源 · 仅保存在当前浏览器</small>
                     </div>
                     <div className="calendar-source-options">
                       {app.spec.table.type === "calendar" && (
@@ -3763,29 +4098,75 @@ export default function InkStudio() {
                         <span><strong>中国公众假期</strong><small>读取公开 iCal 日历</small></span>
                       </label>
                     </div>
+                    {calendarPreferences.sources.length > 0 && (
+                      <div className="calendar-source-list" role="list" aria-label="已添加的个人日历">
+                        {calendarPreferences.sources.map((source, index) => (
+                          <div
+                            key={source.id}
+                            className={`calendar-source-item${source.enabled ? "" : " disabled"}`}
+                            role="listitem"
+                          >
+                            <label className="calendar-source-toggle" title={source.enabled ? "暂停读取此日历" : "启用此日历"}>
+                              <input
+                                type="checkbox"
+                                checked={source.enabled}
+                                onChange={(event) => updateCalendarSource(source.id, { enabled: event.target.checked })}
+                                aria-label={`${source.enabled ? "停用" : "启用"}${source.name}`}
+                              />
+                              <span
+                                className="calendar-source-swatch"
+                                style={{ background: tableAccent(source.name) }}
+                                aria-hidden="true"
+                              />
+                            </label>
+                            <div className="calendar-source-meta">
+                              <input
+                                defaultValue={source.name}
+                                onBlur={(event) => {
+                                  const name = event.target.value.trim().slice(0, 24) || calendarSourceName(source.url, index);
+                                  event.target.value = name;
+                                  if (name !== source.name) updateCalendarSource(source.id, { name });
+                                }}
+                                aria-label={`日历 ${index + 1} 名称`}
+                                maxLength={24}
+                              />
+                              <small title={source.url}>{source.url.replace(/^webcal:\/\//i, "")}</small>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeCalendarSource(source.id)}
+                              aria-label={`移除${source.name}`}
+                            >
+                              移除
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <label className="calendar-url-field" htmlFor="calendar-ical-url">
-                      <span>个人 iCal 地址</span>
+                      <span>添加 iCal 地址</span>
                       <div className="calendar-url-row">
                         <input
                           id="calendar-ical-url"
-                          type="url"
+                          type="text"
+                          inputMode="url"
                           value={calendarUrlDraft}
                           onChange={(event) => setCalendarUrlDraft(event.target.value)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
-                              applyCalendarUrl();
+                              addCalendarSource();
                             }
                           }}
                           placeholder="https://…/basic.ics 或 webcal://…"
                           autoComplete="off"
                           spellCheck={false}
                         />
-                        <button type="button" onClick={applyCalendarUrl}>读取</button>
+                        <button type="button" onClick={addCalendarSource}>添加</button>
                       </div>
                     </label>
                     <p className={calendarNotice ? "calendar-source-warning" : undefined}>
-                      {calendarNotice || "适用于 Google、Apple、Outlook 的只读 iCal；支持 HTTPS 与 webcal。地址不会写入应用或公开发现页。"}
+                      {calendarNotice || "最多 5 个 Google、Apple 或 Outlook 只读日历；可分别暂停与改名。地址不会写入应用或公开发现页。"}
                     </p>
                   </section>
                 )}

@@ -91,6 +91,7 @@ export type AgendaEvent = {
   allDay?: boolean;
   location?: string;
   calendar?: string;
+  category?: string;
 };
 
 export type AgendaView = "agenda" | "three-day" | "workweek";
@@ -122,6 +123,9 @@ export type ScreenTable =
       rangeHours: number;
       customStart?: string;
       customEnd?: string;
+      eventWidth?: number;
+      showEndTime?: boolean;
+      showLocation?: boolean;
       events: AgendaEvent[];
     };
 
@@ -535,6 +539,9 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
           view: "three-day",
           rangeMode: "rolling",
           rangeHours: 72,
+          eventWidth: 100,
+          showEndTime: true,
+          showLocation: true,
           events,
         },
         display: {
