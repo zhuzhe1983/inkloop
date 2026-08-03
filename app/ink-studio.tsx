@@ -22,6 +22,9 @@ import {
   starterApp,
   starterPrompt,
   type ArtworkSpec,
+  type AgendaEvent,
+  type AgendaRangeMode,
+  type AgendaView,
   type CalendarEvent,
   type InkApp,
   type ScheduleMode,
@@ -29,6 +32,7 @@ import {
   type ScreenElementKey,
   type ScreenFont,
   type ScreenRenderMode,
+  type ScreenOrientation,
   type ScreenSpec,
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
@@ -47,8 +51,34 @@ type CalendarPreferences = {
 };
 type CalendarFeedPayload = {
   events?: CalendarEvent[];
+  timedEvents?: AgendaEvent[];
   warnings?: string[];
 };
+
+function agendaWindow(table: Extract<NonNullable<ScreenSpec["table"]>, { type: "agenda" }>, now: Date) {
+  if (table.rangeMode === "custom") {
+    const start = table.customStart ? new Date(table.customStart) : now;
+    const end = table.customEnd ? new Date(table.customEnd) : new Date(start.getTime() + table.rangeHours * 60 * 60 * 1000);
+    if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && end > start) return { start, end };
+  }
+  if (table.rangeMode === "today") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { start, end };
+  }
+  if (table.view === "workweek") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const weekday = start.getDay() || 7;
+    start.setDate(start.getDate() - weekday + 1);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 5);
+    return { start, end };
+  }
+  return { start: now, end: new Date(now.getTime() + table.rangeHours * 60 * 60 * 1000) };
+}
 
 type DeviceProfile = {
   id: string;
@@ -106,6 +136,7 @@ const samplePrompts = [
   "美女时钟，每分钟换背景和字体",
   "生成本月日历，8号项目发布，18号复盘",
   "生成周一到周五的课程表",
+  "横版苹果日历风格，显示未来三天日程",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
 ];
@@ -349,6 +380,53 @@ async function resolveRuntimeScreen(
   onCalendarNotice?: (message: string | null) => void,
 ): Promise<ScreenSpec> {
   const resolved = resolveTimeVariables(currentApp.spec, now);
+  if (resolved.table?.type === "agenda") {
+    const preferences = calendarPreferences ?? DEFAULT_CALENDAR_PREFERENCES;
+    const window = agendaWindow(resolved.table, now);
+    let remoteEvents: AgendaEvent[] = [];
+    if (preferences.customUrl || preferences.chinaHolidays) {
+      try {
+        const response = await fetch("/api/calendar", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            view: "agenda",
+            start: window.start.toISOString(),
+            end: window.end.toISOString(),
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            customUrl: preferences.customUrl || undefined,
+            presets: preferences.chinaHolidays ? ["china-holidays"] : [],
+          }),
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const payload = await response.json() as CalendarFeedPayload;
+          remoteEvents = Array.isArray(payload.timedEvents) ? payload.timedEvents : [];
+          onCalendarNotice?.(payload.warnings?.length ? payload.warnings.join("；") : null);
+        } else {
+          onCalendarNotice?.("在线日历暂时无法读取");
+        }
+      } catch {
+        remoteEvents = [];
+        onCalendarNotice?.("在线日历暂时无法读取");
+      }
+    } else {
+      onCalendarNotice?.(null);
+    }
+    const events = [...resolved.table.events, ...remoteEvents]
+      .filter((event) => {
+        const start = Date.parse(event.start);
+        const end = Date.parse(event.end);
+        return Number.isFinite(start) && Number.isFinite(end) && start < window.end.getTime() && end > window.start.getTime();
+      })
+      .filter((event, index, values) => values.findIndex((item) => item.uid === event.uid) === index)
+      .sort((left, right) => Date.parse(left.start) - Date.parse(right.start))
+      .slice(0, 80);
+    return {
+      ...resolved,
+      table: { ...resolved.table, events },
+    };
+  }
   if (resolved.table?.type === "calendar") {
     const preferences = calendarPreferences ?? DEFAULT_CALENDAR_PREFERENCES;
     let remoteEvents: CalendarEvent[] = [];
@@ -513,6 +591,28 @@ function screenElementPosition(spec: ScreenSpec, element: ScreenElementKey) {
   return displaySettings(spec).positions[element] ?? DEFAULT_ELEMENT_POSITIONS[element];
 }
 
+function screenOrientation(spec: ScreenSpec): ScreenOrientation {
+  return spec.orientation === "landscape" ? "landscape" : "portrait";
+}
+
+function screenDimensions(spec: ScreenSpec) {
+  return screenOrientation(spec) === "landscape"
+    ? { width: 792, height: 528 }
+    : { width: 528, height: 792 };
+}
+
+function screenElementCanvasPosition(
+  ctx: CanvasRenderingContext2D,
+  spec: ScreenSpec,
+  element: ScreenElementKey,
+) {
+  const position = screenElementPosition(spec, element);
+  return {
+    x: position.x / 528 * ctx.canvas.width,
+    y: position.y / 792 * ctx.canvas.height,
+  };
+}
+
 function screenElementFontSize(spec: ScreenSpec, element: ScreenElementKey) {
   const value = displaySettings(spec).elementSizes[element] ?? DEFAULT_ELEMENT_SIZES[element];
   const maximum = element === "timeLarge" ? 180 : element === "weatherLarge" ? 132 : 72;
@@ -581,12 +681,13 @@ const nativeEPaperPalette = [
   [0, 255, 0],
 ] as const;
 
-function artworkUrl(artwork: ArtworkSpec) {
+function artworkUrl(artwork: ArtworkSpec, orientation: ScreenOrientation = "portrait") {
   const params = new URLSearchParams({
     v: "8",
     query: artwork.query,
     style: artwork.style || "editorial high contrast composition",
     seed: String(artwork.seed),
+    orientation,
   });
   return `/api/artwork?${params.toString()}`;
 }
@@ -1100,7 +1201,7 @@ function drawDisplayMeta(
   ctx.save();
   ctx.textAlign = "center";
   if (leftLabel) {
-    const position = screenElementPosition(spec, "date");
+    const position = screenElementCanvasPosition(ctx, spec, "date");
     ctx.font = `700 ${screenElementFontSize(spec, "date")}px ${screenElementFontFamily(spec, "date")}`;
     if (transparentOverlay) drawGlowText(ctx, leftLabel.slice(0, 32), position.x, position.y, 300);
     else {
@@ -1110,7 +1211,7 @@ function drawDisplayMeta(
   }
 
   if (display.time && spec.timeText) {
-    const position = screenElementPosition(spec, "time");
+    const position = screenElementCanvasPosition(ctx, spec, "time");
     ctx.font = `800 ${screenElementFontSize(spec, "time")}px ${screenElementFontFamily(spec, "time")}`;
     if (transparentOverlay) drawGlowText(ctx, spec.timeText, position.x, position.y, 140);
     else {
@@ -1122,7 +1223,7 @@ function drawDisplayMeta(
   if (display.weatherLarge && spec.weatherText) drawWeatherGroup(ctx, spec, accent, transparentOverlay, true);
 
   if (display.logo && display.logoText) {
-    const position = screenElementPosition(spec, "logo");
+    const position = screenElementCanvasPosition(ctx, spec, "logo");
     ctx.font = `800 ${screenElementFontSize(spec, "logo")}px ${screenElementFontFamily(spec, "logo")}`;
     if (transparentOverlay) drawGlowText(ctx, display.logoText.slice(0, 20), position.x, position.y, 240);
     else {
@@ -1132,7 +1233,7 @@ function drawDisplayMeta(
   }
 
   if (display.quote && spec.footer) {
-    const position = screenElementPosition(spec, "quote");
+    const position = screenElementCanvasPosition(ctx, spec, "quote");
     ctx.font = `700 ${screenElementFontSize(spec, "quote")}px ${screenElementFontFamily(spec, "quote")}`;
     if (transparentOverlay) drawGlowText(ctx, spec.footer.slice(0, 30), position.x, position.y, 400);
     else {
@@ -1153,24 +1254,25 @@ function drawClockCopy(
   const display = displaySettings(spec);
   const family = clockFontFamily(spec);
   const timeValue = spec.timeText || spec.value;
+  const maxWidth = Math.min(ctx.canvas.width - 72, screenOrientation(spec) === "landscape" ? 620 : 420);
   const valueSize = fitClockText(
     ctx,
     timeValue,
-    420,
+    maxWidth,
     screenElementFontSize(spec, "timeLarge"),
     family,
   );
-  const position = screenElementPosition(spec, "timeLarge");
+  const position = screenElementCanvasPosition(ctx, spec, "timeLarge");
 
   ctx.textAlign = "center";
   if (display.timeLarge) {
     if (transparentOverlay) {
       ctx.font = `900 ${valueSize}px ${family}`;
-      drawGlowText(ctx, timeValue, position.x, position.y, 420);
+      drawGlowText(ctx, timeValue, position.x, position.y, maxWidth);
     } else {
       ctx.font = `900 ${valueSize}px ${family}`;
       ctx.fillStyle = ink;
-      ctx.fillText(timeValue, position.x, position.y, 420);
+      ctx.fillText(timeValue, position.x, position.y, maxWidth);
     }
   }
   ctx.textAlign = "left";
@@ -1190,6 +1292,45 @@ function drawArtworkCopy(
   const backgroundLayout = layout === "background";
   const transparentOverlay = backgroundLayout && imageBackdrop;
   drawDisplayMeta(ctx, spec, accent, transparentOverlay);
+
+  if (screenOrientation(spec) === "landscape") {
+    if (spec.clock?.enabled) {
+      if (display.timeLarge) drawClockCopy(ctx, spec, accent, transparentOverlay);
+      return;
+    }
+    if (spec.kind === "weather" && (display.weather || display.weatherLarge)) return;
+    const valueWithUnit = `${spec.value}${spec.unit ? ` ${spec.unit}` : ""}`;
+    const copyLeft = layout === "hero" ? 520 : 48;
+    const copyWidth = layout === "hero" ? 232 : 690;
+    const titleY = layout === "hero" ? 190 : 214;
+    const valueY = layout === "hero" ? 280 : 320;
+    if (!transparentOverlay) {
+      ctx.fillStyle = paper;
+      if (layout === "hero") ctx.fillRect(500, 118, 260, 306);
+    }
+    ctx.textAlign = "left";
+    ctx.font = `800 ${fitText(ctx, spec.title, copyWidth, layout === "hero" ? 30 : 42, family)}px ${family}`;
+    if (transparentOverlay) drawGlowText(ctx, spec.title, copyLeft, titleY, copyWidth);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(spec.title, copyLeft, titleY, copyWidth);
+    }
+    const valueSize = fitText(ctx, valueWithUnit, copyWidth, layout === "hero" ? 54 : 92, family);
+    ctx.font = `900 ${valueSize}px ${family}`;
+    if (transparentOverlay) drawGlowText(ctx, valueWithUnit, copyLeft, valueY, copyWidth);
+    else {
+      ctx.fillStyle = accent;
+      ctx.fillText(valueWithUnit, copyLeft, valueY, copyWidth);
+    }
+    ctx.font = `700 19px ${family}`;
+    if (transparentOverlay) drawGlowText(ctx, spec.detail.slice(0, 42), copyLeft, 456, copyWidth);
+    else {
+      ctx.fillStyle = ink;
+      ctx.fillText(spec.detail.slice(0, 42), copyLeft, layout === "hero" ? 376 : 456, copyWidth);
+    }
+    if (display.timeLarge) drawClockCopy(ctx, spec, accent, transparentOverlay);
+    return;
+  }
 
   if (spec.clock?.enabled) {
     if (display.timeLarge) drawClockCopy(ctx, spec, accent, transparentOverlay);
@@ -1252,7 +1393,7 @@ function drawOuterScreenBorder(ctx: CanvasRenderingContext2D) {
   ctx.save();
   ctx.strokeStyle = "#151816";
   ctx.lineWidth = 3;
-  ctx.strokeRect(22, 22, 484, 748);
+  ctx.strokeRect(22, 22, ctx.canvas.width - 44, ctx.canvas.height - 44);
   ctx.restore();
 }
 
@@ -1268,7 +1409,7 @@ function drawQrElement(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     const requestedSize = screenQrSize(spec);
     const scale = Math.max(2, Math.floor(requestedSize / (moduleCount + quietModules * 2)));
     const actualSize = scale * (moduleCount + quietModules * 2);
-    const position = screenElementPosition(spec, "qr");
+    const position = screenElementCanvasPosition(ctx, spec, "qr");
     const left = Math.round(position.x - actualSize / 2);
     const top = Math.round(position.y - actualSize / 2);
 
@@ -1328,30 +1469,31 @@ function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const offset = weekStartsOn === "sunday" ? firstWeekday : (firstWeekday + 6) % 7;
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const today = new Date();
+  const landscape = screenOrientation(spec) === "landscape";
   const eventMap = new Map<number, string[]>();
   events.forEach((event) => {
     const current = eventMap.get(event.day) ?? [];
     if (!current.includes(event.text)) eventMap.set(event.day, [...current, event.text]);
   });
   const left = 24;
-  const top = 118;
-  const width = 480;
-  const weekdayHeight = 42;
-  const rowHeight = 98;
+  const top = landscape ? 84 : 118;
+  const width = ctx.canvas.width - 48;
+  const weekdayHeight = landscape ? 30 : 42;
+  const rowHeight = Math.floor((ctx.canvas.height - top - weekdayHeight - 18) / 6);
   const columnWidth = width / 7;
 
   ctx.save();
   ctx.fillStyle = ink;
   ctx.textAlign = "left";
-  ctx.font = `900 42px ${family}`;
-  ctx.fillText(`${year} 年 ${month} 月`, left, 68, 360);
+  ctx.font = `900 ${landscape ? 34 : 42}px ${family}`;
+  ctx.fillText(`${year} 年 ${month} 月`, left, landscape ? 48 : 68, 360);
   ctx.fillStyle = accent;
-  ctx.fillRect(left, 88, 88, 8);
+  ctx.fillRect(left, landscape ? 62 : 88, 88, 8);
   ctx.textAlign = "center";
   weekdays.forEach((weekday, column) => {
     ctx.fillStyle = column >= 5 ? "#dc3f2f" : ink;
-    ctx.font = `800 18px ${family}`;
-    ctx.fillText(weekday, left + columnWidth * (column + 0.5), top + 27);
+    ctx.font = `800 ${landscape ? 16 : 18}px ${family}`;
+    ctx.fillText(weekday, left + columnWidth * (column + 0.5), top + (landscape ? 21 : 27));
   });
 
   for (let index = 0; index < 42; index += 1) {
@@ -1377,30 +1519,32 @@ function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     ctx.stroke();
     if (day < 1 || day > daysInMonth) continue;
     ctx.fillStyle = ink;
-    ctx.font = `900 23px ${family}`;
-    ctx.fillText(String(day), x + columnWidth / 2, y + 30);
+    ctx.font = `900 ${landscape ? 19 : 23}px ${family}`;
+    ctx.fillText(String(day), x + columnWidth / 2, y + (landscape ? 24 : 30));
     const event = eventMap.get(day)?.join(" · ");
     const lunarLabel = lunar ? lunarDateLabel(year, month, day) : "";
     if (event) {
-      const eventFontSize = lunarLabel
+      const eventFontSize = landscape
+        ? event.length <= 4 ? 12 : 11
+        : lunarLabel
         ? event.length <= 4 ? 15 : 14
         : event.length <= 4 ? 18 : 16;
       ctx.fillStyle = accent;
       ctx.beginPath();
-      ctx.arc(x + columnWidth / 2, y + 44, 3.5, 0, Math.PI * 2);
+      ctx.arc(x + columnWidth / 2, y + (landscape ? 34 : 44), 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = ink;
       ctx.font = `800 ${eventFontSize}px ${family}`;
-      ctx.fillText(event.slice(0, 6), x + columnWidth / 2, y + (lunarLabel ? 66 : 70), columnWidth - 7);
-      if (!lunarLabel && event.length > 6) {
+      ctx.fillText(event.slice(0, landscape ? 8 : 6), x + columnWidth / 2, y + (landscape ? 52 : lunarLabel ? 66 : 70), columnWidth - 7);
+      if (!landscape && !lunarLabel && event.length > 6) {
         ctx.font = `800 ${Math.max(14, eventFontSize - 1)}px ${family}`;
         ctx.fillText(event.slice(6, 12), x + columnWidth / 2, y + 90, columnWidth - 7);
       }
     }
     if (lunarLabel) {
       ctx.fillStyle = event ? accent : "#087c4e";
-      ctx.font = `800 ${event ? 14 : 17}px ${family}`;
-      ctx.fillText(lunarLabel, x + columnWidth / 2, y + (event ? 87 : 70), columnWidth - 7);
+      ctx.font = `800 ${landscape ? 11 : event ? 14 : 17}px ${family}`;
+      ctx.fillText(lunarLabel, x + columnWidth / 2, y + (landscape ? rowHeight - 8 : event ? 87 : 70), columnWidth - 7);
     }
   }
   ctx.restore();
@@ -1418,28 +1562,29 @@ function drawTimetable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const { columns, rows } = spec.table;
   const family = screenFontFamily(spec);
   const ink = "#151816";
+  const landscape = screenOrientation(spec) === "landscape";
   const left = 24;
-  const top = 122;
-  const width = 480;
-  const labelWidth = 66;
-  const headerHeight = 48;
+  const top = landscape ? 84 : 122;
+  const width = ctx.canvas.width - 48;
+  const labelWidth = landscape ? 82 : 66;
+  const headerHeight = landscape ? 38 : 48;
   const usableRows = rows.slice(0, 8);
-  const rowHeight = Math.min(94, Math.floor((744 - top - headerHeight) / Math.max(1, usableRows.length)));
+  const rowHeight = Math.min(94, Math.floor((ctx.canvas.height - 24 - top - headerHeight) / Math.max(1, usableRows.length)));
   const columnWidth = (width - labelWidth) / Math.max(1, columns.length);
 
   ctx.save();
   ctx.fillStyle = ink;
   ctx.textAlign = "left";
-  ctx.font = `900 42px ${family}`;
-  ctx.fillText(spec.title || "一周课程表", left, 68, 400);
+  ctx.font = `900 ${landscape ? 34 : 42}px ${family}`;
+  ctx.fillText(spec.title || "一周课程表", left, landscape ? 48 : 68, ctx.canvas.width - 120);
   ctx.fillStyle = accentColors[spec.accent];
-  ctx.fillRect(left, 88, 88, 8);
+  ctx.fillRect(left, landscape ? 62 : 88, 88, 8);
 
   ctx.textAlign = "center";
   columns.forEach((column, index) => {
     ctx.fillStyle = ink;
-    ctx.font = `800 17px ${family}`;
-    ctx.fillText(column, left + labelWidth + columnWidth * (index + 0.5), top + 30, columnWidth - 6);
+    ctx.font = `800 ${landscape ? 16 : 17}px ${family}`;
+    ctx.fillText(column, left + labelWidth + columnWidth * (index + 0.5), top + (landscape ? 25 : 30), columnWidth - 6);
   });
 
   usableRows.forEach((row, rowIndex) => {
@@ -1469,16 +1614,161 @@ function drawTimetable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   ctx.restore();
 }
 
+function agendaDateKey(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
+
+function agendaTimeLabel(event: AgendaEvent) {
+  if (event.allDay) return "全天";
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const time = (value: Date) => `${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
+  return `${time(start)}–${time(end)}`;
+}
+
+function agendaStartDate(spec: ScreenSpec, events: AgendaEvent[]) {
+  if (spec.table?.type !== "agenda") return new Date();
+  const custom = spec.table.rangeMode === "custom" && spec.table.customStart
+    ? new Date(spec.table.customStart)
+    : null;
+  const firstEvent = events.length ? new Date(events[0].start) : null;
+  const base = custom && Number.isFinite(custom.getTime()) ? custom : firstEvent && Number.isFinite(firstEvent.getTime()) ? firstEvent : new Date();
+  const start = new Date(base);
+  start.setHours(0, 0, 0, 0);
+  if (spec.table.view === "workweek") {
+    const weekday = start.getDay() || 7;
+    start.setDate(start.getDate() - weekday + 1);
+  }
+  return start;
+}
+
+function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  if (spec.table?.type !== "agenda") return;
+  const { view } = spec.table;
+  const events = spec.table.events
+    .filter((event) => Number.isFinite(Date.parse(event.start)) && Number.isFinite(Date.parse(event.end)))
+    .sort((left, right) => Date.parse(left.start) - Date.parse(right.start));
+  const family = screenFontFamily(spec);
+  const ink = "#151816";
+  const paper = EPAPER_WHITE;
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+  const margin = 24;
+
+  ctx.save();
+  ctx.fillStyle = ink;
+  ctx.textAlign = "left";
+  ctx.font = `900 ${width > height ? 34 : 40}px ${family}`;
+  ctx.fillText(spec.title || "智能日程", margin, width > height ? 46 : 62, width - margin * 2 - 150);
+  ctx.fillStyle = accentColors[spec.accent];
+  ctx.fillRect(margin, width > height ? 60 : 80, 88, 7);
+  ctx.fillStyle = ink;
+  ctx.textAlign = "right";
+  ctx.font = `800 15px ${family}`;
+  ctx.fillText(view === "agenda" ? "按时间排序" : view === "three-day" ? "未来三天" : "工作周", width - margin, width > height ? 47 : 62);
+
+  if (view === "agenda") {
+    const top = width > height ? 86 : 108;
+    const usable = events.slice(0, width > height ? 7 : 9);
+    if (!usable.length) {
+      ctx.textAlign = "center";
+      ctx.font = `800 28px ${family}`;
+      ctx.fillText("这段时间没有日程", width / 2, height / 2);
+      ctx.font = `700 17px ${family}`;
+      ctx.fillText("可以调整时间范围，或读取 iCal", width / 2, height / 2 + 38);
+      ctx.restore();
+      return;
+    }
+    const rowHeight = Math.floor((height - top - 20) / usable.length);
+    usable.forEach((event, index) => {
+      const y = top + index * rowHeight;
+      const date = new Date(event.start);
+      ctx.fillStyle = index === 0 ? "#e5c900" : paper;
+      ctx.fillRect(margin, y + 3, width - margin * 2, rowHeight - 7);
+      ctx.fillStyle = tableAccent(event.calendar || event.title);
+      ctx.fillRect(margin, y + 3, 8, rowHeight - 7);
+      ctx.fillStyle = ink;
+      ctx.textAlign = "left";
+      ctx.font = `900 ${rowHeight < 54 ? 15 : 18}px ${family}`;
+      ctx.fillText(`${date.getMonth() + 1}/${date.getDate()}`, margin + 22, y + rowHeight / 2 - 5, 54);
+      ctx.font = `800 ${rowHeight < 54 ? 14 : 17}px ${family}`;
+      ctx.fillText(agendaTimeLabel(event), margin + 78, y + rowHeight / 2 - 5, 118);
+      ctx.font = `900 ${rowHeight < 54 ? 17 : 21}px ${family}`;
+      ctx.fillText(event.title, margin + 210, y + rowHeight / 2 - 5, width - 260);
+      if (event.location && rowHeight >= 54) {
+        ctx.font = `700 13px ${family}`;
+        ctx.fillText(event.location, margin + 210, y + rowHeight / 2 + 18, width - 260);
+      }
+    });
+    if (events.length > usable.length) {
+      ctx.textAlign = "right";
+      ctx.font = `800 13px ${family}`;
+      ctx.fillText(`还有 ${events.length - usable.length} 项`, width - margin, height - 6);
+    }
+    ctx.restore();
+    return;
+  }
+
+  const columnCount = view === "workweek" ? 5 : 3;
+  const start = agendaStartDate(spec, events);
+  const top = width > height ? 90 : 112;
+  const gap = 8;
+  const columnWidth = (width - margin * 2 - gap * (columnCount - 1)) / columnCount;
+  const cardsPerDay = width > height ? (view === "workweek" ? 3 : 4) : 3;
+  for (let column = 0; column < columnCount; column += 1) {
+    const day = new Date(start);
+    day.setDate(start.getDate() + column);
+    const key = agendaDateKey(day);
+    const dayEvents = events.filter((event) => agendaDateKey(new Date(event.start)) === key);
+    const x = margin + column * (columnWidth + gap);
+    ctx.fillStyle = column === 0 ? "#e5c900" : "#f0eee4";
+    ctx.fillRect(x, top, columnWidth, 48);
+    ctx.fillStyle = ink;
+    ctx.textAlign = "left";
+    ctx.font = `900 ${view === "workweek" ? 16 : 19}px ${family}`;
+    const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(day);
+    ctx.fillText(`${day.getMonth() + 1}/${day.getDate()} ${weekday}`, x + 10, top + 31, columnWidth - 18);
+    const cardTop = top + 56;
+    const cardHeight = Math.floor((height - cardTop - 18 - gap * (cardsPerDay - 1)) / cardsPerDay);
+    dayEvents.slice(0, cardsPerDay).forEach((event, index) => {
+      const y = cardTop + index * (cardHeight + gap);
+      ctx.fillStyle = paper;
+      ctx.fillRect(x, y, columnWidth, cardHeight);
+      ctx.fillStyle = tableAccent(event.calendar || event.title);
+      ctx.fillRect(x, y, 7, cardHeight);
+      ctx.fillStyle = ink;
+      ctx.font = `800 ${view === "workweek" ? 13 : 15}px ${family}`;
+      ctx.fillText(agendaTimeLabel(event), x + 14, y + 21, columnWidth - 22);
+      ctx.font = `900 ${view === "workweek" ? 15 : 18}px ${family}`;
+      ctx.fillText(event.title, x + 14, y + 45, columnWidth - 22);
+      if (event.location && cardHeight >= 76) {
+        ctx.font = `700 ${view === "workweek" ? 11 : 13}px ${family}`;
+        ctx.fillText(event.location, x + 14, y + 66, columnWidth - 22);
+      }
+    });
+    if (!dayEvents.length) {
+      ctx.fillStyle = "#707871";
+      ctx.font = `700 14px ${family}`;
+      ctx.fillText("无安排", x + 10, cardTop + 28, columnWidth - 18);
+    } else if (dayEvents.length > cardsPerDay) {
+      ctx.fillStyle = ink;
+      ctx.font = `900 13px ${family}`;
+      ctx.fillText(`+${dayEvents.length - cardsPerDay} 项`, x + 10, height - 8, columnWidth - 18);
+    }
+  }
+  ctx.restore();
+}
+
 function drawStructuredTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   if (spec.table?.type === "calendar") drawCalendarTable(ctx, spec);
   if (spec.table?.type === "timetable") drawTimetable(ctx, spec);
+  if (spec.table?.type === "agenda") drawAgendaTable(ctx, spec);
 }
 
 async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
-  const width = 528;
-  const height = 792;
+  const { width, height } = screenDimensions(spec);
   const ink = "#151816";
   const paper = EPAPER_WHITE;
   const accent = accentColors[spec.accent];
@@ -1518,11 +1808,13 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     const area = imageOnly || artwork.layout === "fullscreen" || artwork.layout === "background"
       ? { x: 0, y: 0, width, height }
       : artwork.layout === "hero"
-      ? { x: 48, y: 132, width: 432, height: 314 }
+      ? screenOrientation(spec) === "landscape"
+        ? { x: 34, y: 118, width: 440, height: 306 }
+        : { x: 48, y: 132, width: 432, height: 314 }
       : { x: 0, y: 0, width, height };
     try {
       if (localImage || artwork.mode === "web") {
-        const image = await loadArtwork(localImage || artworkUrl(artwork));
+        const image = await loadArtwork(localImage || artworkUrl(artwork, screenOrientation(spec)));
         drawImageCover(ctx, image, area.x, area.y, area.width, area.height, display.renderMode);
         quantizeRegion(ctx, area.x, area.y, area.width, area.height, display.renderMode);
       } else {
@@ -1557,6 +1849,27 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   }
 
   if (spec.kind === "weather" && (display.weather || display.weatherLarge)) {
+    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    drawQrElement(ctx, spec);
+    return false;
+  }
+
+  if (screenOrientation(spec) === "landscape") {
+    const margin = 48;
+    const valueWithUnit = `${spec.value}${spec.unit ? ` ${spec.unit}` : ""}`;
+    ctx.textAlign = "left";
+    ctx.fillStyle = ink;
+    ctx.font = `800 ${fitText(ctx, spec.title, width - margin * 2, 42, family)}px ${family}`;
+    ctx.fillText(spec.title, margin, 148, width - margin * 2);
+    ctx.fillStyle = accent;
+    ctx.fillRect(margin, 186, width - margin * 2, 180);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `900 ${fitText(ctx, valueWithUnit, width - margin * 2 - 60, 98, family)}px ${family}`;
+    ctx.fillText(valueWithUnit, margin + 30, 304, width - margin * 2 - 60);
+    ctx.fillStyle = ink;
+    ctx.font = `700 22px ${family}`;
+    ctx.fillText(spec.detail.slice(0, 54), margin, 438, width - margin * 2);
+    if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
     quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     drawQrElement(ctx, spec);
     return false;
@@ -1616,27 +1929,51 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
 }
 
 async function renderScreenToCanvas(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
+  const { width, height } = screenDimensions(spec);
   const staging = document.createElement("canvas");
-  staging.width = 528;
-  staging.height = 792;
+  staging.width = width;
+  staging.height = height;
   const usedArtwork = await drawScreen(staging, spec, localImage);
   const context = canvas.getContext("2d");
   if (!context) return usedArtwork;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(staging, 0, 0);
   return usedArtwork;
 }
 
+function canvasForDevice(source: HTMLCanvasElement, orientation: ScreenOrientation) {
+  if (orientation === "portrait" && source.width === 528 && source.height === 792) return source;
+  const physical = document.createElement("canvas");
+  physical.width = 528;
+  physical.height = 792;
+  const context = physical.getContext("2d");
+  if (!context) return source;
+  if (orientation === "landscape") {
+    context.translate(528, 0);
+    context.rotate(Math.PI / 2);
+    context.drawImage(source, 0, 0, 792, 528);
+  } else {
+    context.drawImage(source, 0, 0, 528, 792);
+  }
+  return physical;
+}
+
 function MiniScreen({ app }: { app: InkApp }) {
   const thumbnailRef = useRef<HTMLCanvasElement>(null);
+  const dimensions = screenDimensions(app.spec);
+  const landscape = screenOrientation(app.spec) === "landscape";
 
   useEffect(() => {
     const canvas = thumbnailRef.current;
     if (!canvas) return;
     let active = true;
     const staging = document.createElement("canvas");
-    staging.width = 528;
-    staging.height = 792;
+    staging.width = dimensions.width;
+    staging.height = dimensions.height;
 
     resolveRuntimeScreen(app, GALLERY_PREVIEW_DATE)
       .then((spec) => renderScreenToCanvas(staging, spec, app.localImage))
@@ -1652,11 +1989,11 @@ function MiniScreen({ app }: { app: InkApp }) {
     return () => {
       active = false;
     };
-  }, [app]);
+  }, [app, dimensions.height, dimensions.width]);
 
   return (
-    <div className="mini-screen" aria-label={`${app.title} 保存时的画布预览`}>
-      <canvas ref={thumbnailRef} width={528} height={792} />
+    <div className={`mini-screen${landscape ? " landscape" : ""}`} aria-label={`${app.title} 保存时的画布预览`}>
+      <canvas ref={thumbnailRef} width={dimensions.width} height={dimensions.height} />
     </div>
   );
 }
@@ -2018,14 +2355,19 @@ export default function InkStudio() {
     if (!canvas) return;
     const version = ++previewVersionRef.current;
     const staging = document.createElement("canvas");
-    staging.width = 528;
-    staging.height = 792;
+    const dimensions = screenDimensions(app.spec);
+    staging.width = dimensions.width;
+    staging.height = dimensions.height;
     const hasArtwork = Boolean(app.spec.artwork || app.localImage);
     setPreviewStatus(hasArtwork ? "loading" : "ready");
-    const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork) : null;
+    const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork, screenOrientation(app.spec)) : null;
     setArtworkCredit(null);
     resolveRuntimeScreen(app, new Date(), calendarPreferences, setCalendarNotice).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage)).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
+      if (canvas.width !== dimensions.width || canvas.height !== dimensions.height) {
+        canvas.width = dimensions.width;
+        canvas.height = dimensions.height;
+      }
       const context = canvas.getContext("2d");
       if (!context) return;
       context.clearRect(0, 0, canvas.width, canvas.height);
@@ -2102,14 +2444,14 @@ export default function InkStudio() {
 
   const applyCalendarUrl = () => {
     const customUrl = calendarUrlDraft.trim();
-    if (customUrl && !/^https:\/\//i.test(customUrl)) {
-      showToast("请填写 HTTPS 开头的 iCal 地址", "error");
+    if (customUrl && !/^(?:https|webcal):\/\//i.test(customUrl)) {
+      showToast("请填写 HTTPS 或 webcal 开头的 iCal 地址", "error");
       return;
     }
     updateCalendarPreferences({ customUrl });
     setCalendarUrlDraft(customUrl);
     setCalendarNotice(null);
-    showToast(customUrl ? "iCal 地址已保存，正在读取本月日程" : "个人 iCal 已移除", "success");
+    showToast(customUrl ? "iCal 地址已保存，正在读取日程" : "个人 iCal 已移除", "success");
   };
 
   const updateDisplay = (patch: Partial<ScreenDisplay>) => {
@@ -2143,6 +2485,19 @@ export default function InkStudio() {
             : current.spec.city,
           footer: nextDisplay.quote && !current.spec.footer ? "今天也要保持好心情" : current.spec.footer,
           display: nextDisplay,
+        },
+      };
+    });
+  };
+
+  const updateAgendaTable = (patch: Partial<Extract<NonNullable<ScreenSpec["table"]>, { type: "agenda" }>>) => {
+    setApp((current) => {
+      if (current.spec.table?.type !== "agenda") return current;
+      return {
+        ...current,
+        spec: {
+          ...current.spec,
+          table: { ...current.spec.table, ...patch },
         },
       };
     });
@@ -2443,8 +2798,9 @@ export default function InkStudio() {
           ? canvas
           : document.createElement("canvas");
       if (!reuseCurrentPreview) {
-        outputCanvas.width = 528;
-        outputCanvas.height = 792;
+        const dimensions = screenDimensions(transferApp.spec);
+        outputCanvas.width = dimensions.width;
+        outputCanvas.height = dimensions.height;
         const runtimeSpec = await resolveRuntimeScreen(transferApp, new Date(), calendarPreferencesRef.current);
         const hasArtwork = Boolean(runtimeSpec.artwork || transferApp.localImage);
         if (renderInPreview) setPreviewStatus(hasArtwork ? "loading" : "ready");
@@ -2453,7 +2809,7 @@ export default function InkStudio() {
       }
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
       if (options.reconnect) await driver.reconnect();
-      await driver.writeCanvas(outputCanvas, true);
+      await driver.writeCanvas(canvasForDevice(outputCanvas, screenOrientation(transferApp.spec)), true);
       if (nextSeed !== null && renderInPreview) {
         setApp((current) => current.spec.artwork
           ? { ...current, spec: { ...current.spec, artwork: { ...current.spec.artwork, seed: nextSeed } } }
@@ -2636,6 +2992,10 @@ export default function InkStudio() {
     ? publicApps.find((item) => item.id === selectedPublicAppId) ?? null
     : null;
   const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
+  const previewDimensions = screenDimensions(app.spec);
+  const previewLandscape = screenOrientation(app.spec) === "landscape";
+  const previewFrameWidth = previewLandscape ? 486 : 288;
+  const previewFrameHeight = previewLandscape ? 288 : 486;
   const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
   const deviceSummaries = devices.map((device) => {
     const tasks = deviceTasks.filter((task) => task.deviceId === device.id);
@@ -2885,7 +3245,7 @@ export default function InkStudio() {
                     <div>
                       <h2>屏幕预览</h2>
                       <p>
-                        528 × 792 · {previewStatus === "loading"
+                        {previewDimensions.width} × {previewDimensions.height} · {previewStatus === "loading"
                           ? "正在获取并转换图片素材"
                           : previewStatus === "fallback"
                             ? app.spec.artwork?.layout === "fullscreen"
@@ -2914,7 +3274,7 @@ export default function InkStudio() {
                       value={previewScale}
                       onChange={(event) => setPreviewScale(Number(event.target.value) as 35 | 50 | 75 | 100)}
                       aria-label="调整屏幕预览缩放"
-                      title="只调整网页预览大小，不影响 528 × 792 写入画质"
+                      title={`只调整网页预览大小，不影响 ${previewDimensions.width} × ${previewDimensions.height} 写入画质`}
                     >
                       {[35, 50, 75, 100].map((scale) => (
                         <option value={scale} key={scale}>{scale}%</option>
@@ -2923,25 +3283,25 @@ export default function InkStudio() {
                   </div>
                 </div>
                 <div
-                  className="canvas-stage"
-                  style={{ minHeight: `${Math.max(380, 486 * (previewScale / 50) + 24)}px` }}
+                  className={`canvas-stage${previewLandscape ? " landscape" : ""}`}
+                  style={{ minHeight: `${Math.max(360, previewFrameHeight * (previewScale / 50) + 24)}px` }}
                 >
                   <div
                     className="device-preview-scale"
                     style={{
-                      width: `${288 * (previewScale / 50)}px`,
-                      height: `${486 * (previewScale / 50)}px`,
+                      width: `${previewFrameWidth * (previewScale / 50)}px`,
+                      height: `${previewFrameHeight * (previewScale / 50)}px`,
                     }}
                   >
                     <div
-                      className="device-preview-inner"
+                      className={`device-preview-inner${previewLandscape ? " landscape" : ""}`}
                       style={{ transform: `scale(${previewScale / 50})` }}
                     >
                       <div className="device-shadow" />
                       <div className="device-frame">
                         <div className="device-label">TODOO</div>
                         <div className="screen-canvas-wrap">
-                          <canvas ref={canvasRef} width={528} height={792} aria-label="电子墨水屏预览" />
+                          <canvas ref={canvasRef} width={previewDimensions.width} height={previewDimensions.height} aria-label="电子墨水屏预览" />
                           <div className="screen-drag-layer" aria-label="拖拽画面元素调整位置">
                             {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
                               const savedPosition = screenDisplay.positions[element.key];
@@ -2956,8 +3316,8 @@ export default function InkStudio() {
                                   style={{
                                     left: `${(position.x / 528) * 100}%`,
                                     top: `${(position.y / 792) * 100}%`,
-                                    width: `${(elementWidth / 528) * 100}%`,
-                                    height: `${(elementHeight / 792) * 100}%`,
+                                    width: `${(elementWidth / previewDimensions.width) * 100}%`,
+                                    height: `${(elementHeight / previewDimensions.height) * 100}%`,
                                   }}
                                   aria-label={`拖拽调整${element.label}位置，方向键可微调`}
                                   onPointerDown={(event) => handleElementPointerDown(element.key, event)}
@@ -3026,6 +3386,31 @@ export default function InkStudio() {
                   <div className="settings-subhead">
                     <strong>画面元素</strong>
                     <small>勾选后可在预览中拖拽</small>
+                  </div>
+                  <div className="orientation-field">
+                    <div>
+                      <strong>屏幕方向</strong>
+                      <small>LLM 会先建议，你可以随时手动切换</small>
+                    </div>
+                    <div className="orientation-options" role="group" aria-label="屏幕方向">
+                      {([
+                        ["portrait", "竖版 528×792"],
+                        ["landscape", "横版 792×528"],
+                      ] as Array<[ScreenOrientation, string]>).map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={screenOrientation(app.spec) === value ? "selected" : ""}
+                          onClick={() => setApp((current) => ({
+                            ...current,
+                            spec: { ...current.spec, orientation: value },
+                          }))}
+                          aria-pressed={screenOrientation(app.spec) === value}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="component-list">
                     {screenElementOptions.map(({ key, label }) => (
@@ -3286,21 +3671,89 @@ export default function InkStudio() {
                     )}
                   </div>
                 </div>
-                {app.spec.table?.type === "calendar" && (
+                {app.spec.table?.type === "agenda" && (
+                  <section className="agenda-editor" aria-label="智能日程布局与范围">
+                    <div className="calendar-source-heading">
+                      <strong>智能日程布局</strong>
+                      <small>空闲时间会自动压缩</small>
+                    </div>
+                    <div className="agenda-view-options" role="group" aria-label="日程布局">
+                      {([
+                        ["agenda", "智能议程"],
+                        ["three-day", "三日时间轴"],
+                        ["workweek", "工作周"],
+                      ] as Array<[AgendaView, string]>).map(([value, label]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={app.spec.table?.type === "agenda" && app.spec.table.view === value ? "selected" : ""}
+                          onClick={() => updateAgendaTable({ view: value })}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="agenda-range-grid">
+                      <label>
+                        <span>时间范围</span>
+                        <select
+                          value={app.spec.table.rangeMode === "rolling" ? String(app.spec.table.rangeHours) : app.spec.table.rangeMode}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value === "today" || value === "custom") updateAgendaTable({ rangeMode: value as AgendaRangeMode });
+                            else updateAgendaTable({ rangeMode: "rolling", rangeHours: Number(value) || 72 });
+                          }}
+                        >
+                          <option value="4">接下来 4 小时</option>
+                          <option value="8">接下来 8 小时</option>
+                          <option value="12">接下来 12 小时</option>
+                          <option value="24">接下来 24 小时</option>
+                          <option value="72">接下来 3 天</option>
+                          <option value="168">接下来 7 天</option>
+                          <option value="today">今天</option>
+                          <option value="custom">自定义</option>
+                        </select>
+                      </label>
+                      {app.spec.table.rangeMode === "custom" && (
+                        <>
+                          <label>
+                            <span>开始</span>
+                            <input
+                              type="datetime-local"
+                              value={app.spec.table.customStart || ""}
+                              onChange={(event) => updateAgendaTable({ customStart: event.target.value })}
+                            />
+                          </label>
+                          <label>
+                            <span>结束</span>
+                            <input
+                              type="datetime-local"
+                              value={app.spec.table.customEnd || ""}
+                              onChange={(event) => updateAgendaTable({ customEnd: event.target.value })}
+                            />
+                          </label>
+                        </>
+                      )}
+                    </div>
+                  </section>
+                )}
+                {(app.spec.table?.type === "calendar" || app.spec.table?.type === "agenda") && (
                   <section className="calendar-source-editor" aria-label="在线日历数据">
                     <div className="calendar-source-heading">
                       <strong>在线日历数据</strong>
                       <small>仅保存在当前浏览器</small>
                     </div>
                     <div className="calendar-source-options">
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={calendarPreferences.lunar}
-                          onChange={(event) => updateCalendarPreferences({ lunar: event.target.checked })}
-                        />
-                        <span><strong>农历日期</strong><small>内置换算，无需联网</small></span>
-                      </label>
+                      {app.spec.table.type === "calendar" && (
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={calendarPreferences.lunar}
+                            onChange={(event) => updateCalendarPreferences({ lunar: event.target.checked })}
+                          />
+                          <span><strong>农历日期</strong><small>内置换算，无需联网</small></span>
+                        </label>
+                      )}
                       <label>
                         <input
                           type="checkbox"
@@ -3324,7 +3777,7 @@ export default function InkStudio() {
                               applyCalendarUrl();
                             }
                           }}
-                          placeholder="https://…/basic.ics"
+                          placeholder="https://…/basic.ics 或 webcal://…"
                           autoComplete="off"
                           spellCheck={false}
                         />
@@ -3332,7 +3785,7 @@ export default function InkStudio() {
                       </div>
                     </label>
                     <p className={calendarNotice ? "calendar-source-warning" : undefined}>
-                      {calendarNotice || "适用于 Google、Apple、Outlook 的只读 iCal。地址不会写入应用或公开发现页。"}
+                      {calendarNotice || "适用于 Google、Apple、Outlook 的只读 iCal；支持 HTTPS 与 webcal。地址不会写入应用或公开发现页。"}
                     </p>
                   </section>
                 )}

@@ -1,4 +1,6 @@
-export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable";
+export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda";
+
+export type ScreenOrientation = "portrait" | "landscape";
 
 export type ScheduleMode = "once" | "hourly" | "daily" | "custom";
 
@@ -81,6 +83,19 @@ export type CalendarEvent = {
   text: string;
 };
 
+export type AgendaEvent = {
+  uid: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay?: boolean;
+  location?: string;
+  calendar?: string;
+};
+
+export type AgendaView = "agenda" | "three-day" | "workweek";
+export type AgendaRangeMode = "rolling" | "today" | "custom";
+
 export type TimetableRow = {
   label: string;
   cells: string[];
@@ -99,10 +114,20 @@ export type ScreenTable =
       type: "timetable";
       columns: string[];
       rows: TimetableRow[];
+    }
+  | {
+      type: "agenda";
+      view: AgendaView;
+      rangeMode: AgendaRangeMode;
+      rangeHours: number;
+      customStart?: string;
+      customEnd?: string;
+      events: AgendaEvent[];
     };
 
 export type ScreenSpec = {
   kind: ScreenKind;
+  orientation?: ScreenOrientation;
   city?: string;
   eyebrow: string;
   title: string;
@@ -468,6 +493,76 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
+  if (includesAny(source, ["苹果日历", "周日程", "日程安排", "智能日程", "未来安排", "行程表", "议程"])) {
+    const start = new Date();
+    start.setMinutes(Math.ceil(start.getMinutes() / 30) * 30, 0, 0);
+    const eventAt = (offsetHours: number, durationHours: number, title: string, location: string) => {
+      const eventStart = new Date(start.getTime() + offsetHours * 60 * 60 * 1000);
+      const eventEnd = new Date(eventStart.getTime() + durationHours * 60 * 60 * 1000);
+      return {
+        uid: `preview-${offsetHours}-${title}`,
+        title,
+        start: eventStart.toISOString(),
+        end: eventEnd.toISOString(),
+        location,
+      };
+    };
+    const events = [
+      eventAt(1, 1, "项目同步", "线上会议"),
+      eventAt(4, 1.5, "方案评审", "会议室 A"),
+      eventAt(24, 1, "客户沟通", "视频会议"),
+      eventAt(29, 2, "专注工作", "工作室"),
+      eventAt(50, 1, "周计划复盘", "办公室"),
+    ];
+    return {
+      ...base,
+      title: "智能日程",
+      description: "从现在开始，只显示真正需要关注的日程",
+      scheduleMode: "custom",
+      customMinutes: 15,
+      spec: {
+        kind: "agenda",
+        orientation: "landscape",
+        eyebrow: "SMART CALENDAR",
+        title: "接下来三天",
+        value: "",
+        unit: "",
+        detail: "按时间自动压缩空闲区间",
+        footer: "",
+        accent: "blue",
+        table: {
+          type: "agenda",
+          view: "three-day",
+          rangeMode: "rolling",
+          rangeHours: 72,
+          events,
+        },
+        display: {
+          ...displaySettings({
+            kind: "agenda",
+            orientation: "landscape",
+            eyebrow: "",
+            title: "",
+            value: "",
+            unit: "",
+            detail: "",
+            footer: "",
+            accent: "blue",
+          }),
+          quote: false,
+          date: false,
+          time: false,
+          weather: false,
+          weatherLarge: false,
+        },
+      },
+      code: `export async function render(ctx) {
+  const events = await ctx.calendar.range({ hours: 72 });
+  return { type: "agenda", view: "three-day", events };
+}`,
+    };
+  }
+
   if (includesAny(source, ["月历", "日历", "月度计划", "月计划"])) {
     const { year, month } = requestedCalendarMonth(source);
     const events = requestedCalendarEvents(source);
@@ -479,6 +574,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
       dailyTime: "00:05",
       spec: {
         kind: "calendar",
+        orientation: "portrait",
         eyebrow: "MONTHLY OVERVIEW",
         title: `${year} 年 ${month} 月`,
         value: "",
@@ -520,6 +616,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
       scheduleMode: "once",
       spec: {
         kind: "timetable",
+        orientation: "landscape",
         eyebrow: "WEEKLY SCHEDULE",
         title: "一周课程表",
         value: "",

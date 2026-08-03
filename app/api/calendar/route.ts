@@ -5,11 +5,25 @@ type CalendarRequest = {
   month?: unknown;
   customUrl?: unknown;
   presets?: unknown;
+  view?: unknown;
+  start?: unknown;
+  end?: unknown;
+  timeZone?: unknown;
 };
 
 type CalendarEvent = {
   day: number;
   text: string;
+};
+
+type AgendaEvent = {
+  uid: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay?: boolean;
+  location?: string;
+  calendar?: string;
 };
 
 const MAX_ICAL_BYTES = 1024 * 1024;
@@ -35,7 +49,8 @@ function isPrivateIpv4(hostname: string) {
 }
 
 function validateCalendarUrl(input: string) {
-  const url = new URL(input);
+  const normalizedInput = input.trim().replace(/^webcal:\/\//i, "https://");
+  const url = new URL(normalizedInput);
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
   if (url.protocol !== "https:") throw new Error("iCal 地址必须使用 HTTPS");
   if (url.username || url.password) throw new Error("iCal 地址不能包含账号信息");
@@ -123,6 +138,140 @@ function unescapeIcal(value: string) {
     .trim();
 }
 
+type IcalField = { value: string; params: Record<string, string> };
+
+function fieldEntry(block: string, field: string): IcalField | null {
+  const line = block.split(/\r?\n/).find((entry) => {
+    const upper = entry.toUpperCase();
+    return upper.startsWith(`${field.toUpperCase()}:`) || upper.startsWith(`${field.toUpperCase()};`);
+  });
+  if (!line) return null;
+  const colon = line.indexOf(":");
+  if (colon < 0) return null;
+  const params: Record<string, string> = {};
+  line.slice(0, colon).split(";").slice(1).forEach((part) => {
+    const equals = part.indexOf("=");
+    if (equals > 0) params[part.slice(0, equals).toUpperCase()] = part.slice(equals + 1).replace(/^"|"$/g, "");
+  });
+  return { value: line.slice(colon + 1).trim(), params };
+}
+
+function zonedTimeToUtc(parts: number[], timeZone: string) {
+  const [year, month, day, hour, minute, second] = parts;
+  const target = Date.UTC(year, month - 1, day, hour, minute, second);
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    const formatted = formatter.formatToParts(new Date(target));
+    const part = (type: Intl.DateTimeFormatPartTypes) => Number(formatted.find((item) => item.type === type)?.value || 0);
+    const represented = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+    return new Date(target - (represented - target));
+  } catch {
+    return new Date(target);
+  }
+}
+
+function parseIcalDateTime(field: IcalField | null, fallbackTimeZone: string) {
+  if (!field) return null;
+  const match = field.value.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/i);
+  if (!match) return null;
+  const allDay = field.params.VALUE?.toUpperCase() === "DATE" || !match[4];
+  const parts = [
+    Number(match[1]), Number(match[2]), Number(match[3]),
+    Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0),
+  ];
+  const date = allDay || match[7]
+    ? new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5]))
+    : zonedTimeToUtc(parts, field.params.TZID || fallbackTimeZone);
+  return { date, allDay };
+}
+
+function parseDuration(value: string) {
+  const match = value.match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/i);
+  if (!match) return 0;
+  return (Number(match[1] || 0) * 24 * 60 + Number(match[2] || 0) * 60 + Number(match[3] || 0)) * 60_000;
+}
+
+function recurrenceStarts(block: string, baseStart: Date, rangeStart: Date, rangeEnd: Date) {
+  const rule = fieldValue(block, "RRULE");
+  if (!rule) return [baseStart];
+  const frequency = rule.match(/(?:^|;)FREQ=([^;]+)/i)?.[1]?.toUpperCase();
+  const interval = Math.max(1, Number(rule.match(/(?:^|;)INTERVAL=(\d+)/i)?.[1] || 1));
+  const untilField = rule.match(/(?:^|;)UNTIL=([^;]+)/i)?.[1];
+  const until = untilField ? parseIcalDateTime({ value: untilField, params: {} }, "UTC")?.date : null;
+  const byDays = (rule.match(/(?:^|;)BYDAY=([^;]+)/i)?.[1] || "")
+    .split(",")
+    .map((value) => weekdayNumbers[value.replace(/^[+-]?\d+/, "").toUpperCase()])
+    .filter((value): value is number => Number.isInteger(value));
+  const byMonthDays = (rule.match(/(?:^|;)BYMONTHDAY=([^;]+)/i)?.[1] || "")
+    .split(",").map(Number).filter((value) => value >= 1 && value <= 31);
+  const excluded = new Set(fieldValues(block, "EXDATE").map((value) => value.replace(/[^0-9]/g, "").slice(0, 14)));
+  const firstDay = new Date(Math.max(baseStart.getTime(), rangeStart.getTime() - 8 * 24 * 60 * 60 * 1000));
+  firstDay.setUTCHours(baseStart.getUTCHours(), baseStart.getUTCMinutes(), baseStart.getUTCSeconds(), 0);
+  const output: Date[] = [];
+  for (let cursor = firstDay; cursor < rangeEnd && output.length < 128; cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000)) {
+    if (cursor < baseStart || (until && cursor > until)) continue;
+    const days = Math.floor((Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), cursor.getUTCDate())
+      - Date.UTC(baseStart.getUTCFullYear(), baseStart.getUTCMonth(), baseStart.getUTCDate())) / 86_400_000);
+    const months = (cursor.getUTCFullYear() - baseStart.getUTCFullYear()) * 12 + cursor.getUTCMonth() - baseStart.getUTCMonth();
+    const matches = frequency === "DAILY"
+      ? days % interval === 0
+      : frequency === "WEEKLY"
+        ? Math.floor(days / 7) % interval === 0 && (byDays.length ? byDays : [baseStart.getUTCDay()]).includes(cursor.getUTCDay())
+        : frequency === "MONTHLY"
+          ? months % interval === 0 && (byMonthDays.length ? byMonthDays : [baseStart.getUTCDate()]).includes(cursor.getUTCDate())
+          : frequency === "YEARLY"
+            ? (cursor.getUTCFullYear() - baseStart.getUTCFullYear()) % interval === 0
+              && cursor.getUTCMonth() === baseStart.getUTCMonth()
+              && cursor.getUTCDate() === baseStart.getUTCDate()
+            : cursor.getTime() === baseStart.getTime();
+    const key = `${cursor.getUTCFullYear()}${String(cursor.getUTCMonth() + 1).padStart(2, "0")}${String(cursor.getUTCDate()).padStart(2, "0")}${String(cursor.getUTCHours()).padStart(2, "0")}${String(cursor.getUTCMinutes()).padStart(2, "0")}`;
+    if (matches && !excluded.has(key) && !excluded.has(key.slice(0, 8))) output.push(new Date(cursor));
+  }
+  return output;
+}
+
+function parseAgenda(text: string, rangeStart: Date, rangeEnd: Date, timeZone: string, calendar: string): AgendaEvent[] {
+  const unfolded = text.replace(/\r?\n[ \t]/g, "");
+  const events: AgendaEvent[] = [];
+  for (const match of unfolded.matchAll(/BEGIN:VEVENT\r?\n([\s\S]*?)\r?\nEND:VEVENT/g)) {
+    const block = match[1];
+    const parsedStart = parseIcalDateTime(fieldEntry(block, "DTSTART"), timeZone);
+    if (!parsedStart) continue;
+    const parsedEnd = parseIcalDateTime(fieldEntry(block, "DTEND"), timeZone);
+    const duration = parseDuration(fieldValue(block, "DURATION"));
+    const fallbackDuration = parsedStart.allDay ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+    const baseEnd = parsedEnd?.date ?? new Date(parsedStart.date.getTime() + (duration || fallbackDuration));
+    const eventDuration = Math.max(60_000, baseEnd.getTime() - parsedStart.date.getTime());
+    const title = unescapeIcal(fieldValue(block, "SUMMARY")).slice(0, 32);
+    if (!title) continue;
+    const location = unescapeIcal(fieldValue(block, "LOCATION")).slice(0, 40);
+    const uid = unescapeIcal(fieldValue(block, "UID")) || `${title}-${parsedStart.date.toISOString()}`;
+    recurrenceStarts(block, parsedStart.date, rangeStart, rangeEnd).forEach((start) => {
+      const end = new Date(start.getTime() + eventDuration);
+      if (start >= rangeEnd || end <= rangeStart) return;
+      events.push({
+        uid: `${uid}:${start.toISOString()}`,
+        title,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        allDay: parsedStart.allDay,
+        location: location || undefined,
+        calendar,
+      });
+    });
+  }
+  return events;
+}
+
 const weekdayNumbers: Record<string, number> = {
   SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
 };
@@ -179,8 +328,18 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as CalendarRequest;
     const now = new Date();
+    const agendaView = body.view === "agenda";
     const year = Math.min(2100, Math.max(2020, Math.round(Number(body.year) || now.getFullYear())));
     const month = Math.min(12, Math.max(1, Math.round(Number(body.month) || now.getMonth() + 1)));
+    const requestedStart = typeof body.start === "string" ? new Date(body.start) : now;
+    const requestedEnd = typeof body.end === "string" ? new Date(body.end) : new Date(requestedStart.getTime() + 72 * 60 * 60 * 1000);
+    const rangeStart = Number.isFinite(requestedStart.getTime()) ? requestedStart : now;
+    const unclampedEnd = Number.isFinite(requestedEnd.getTime()) ? requestedEnd : new Date(rangeStart.getTime() + 72 * 60 * 60 * 1000);
+    const rangeEnd = new Date(Math.max(
+      rangeStart.getTime() + 60 * 60 * 1000,
+      Math.min(unclampedEnd.getTime(), rangeStart.getTime() + 14 * 24 * 60 * 60 * 1000),
+    ));
+    const timeZone = typeof body.timeZone === "string" && body.timeZone.length <= 80 ? body.timeZone : "Asia/Shanghai";
     const feeds: Array<{ name: string; url: string }> = [];
     if (Array.isArray(body.presets)) {
       body.presets.slice(0, 2).forEach((preset) => {
@@ -191,15 +350,17 @@ export async function POST(request: Request) {
       feeds.push({ name: "个人 iCal", url: body.customUrl.trim() });
     }
     const uniqueFeeds = feeds.filter((feed, index) => feeds.findIndex((item) => item.url === feed.url) === index).slice(0, 2);
-    if (!uniqueFeeds.length) return NextResponse.json({ events: [], sources: [], warnings: [] });
+    if (!uniqueFeeds.length) return NextResponse.json({ events: [], timedEvents: [], sources: [], warnings: [] });
 
     const events: CalendarEvent[] = [];
+    const timedEvents: AgendaEvent[] = [];
     const sources: string[] = [];
     const warnings: string[] = [];
     await Promise.all(uniqueFeeds.map(async (feed) => {
       try {
         const text = await fetchCalendarText(feed.url);
-        events.push(...parseCalendar(text, year, month));
+        if (agendaView) timedEvents.push(...parseAgenda(text, rangeStart, rangeEnd, timeZone, feed.name));
+        else events.push(...parseCalendar(text, year, month));
         sources.push(feed.name);
       } catch (error) {
         warnings.push(`${feed.name}：${error instanceof Error ? error.message : "读取失败"}`);
@@ -209,7 +370,11 @@ export async function POST(request: Request) {
       .filter((event, index) => events.findIndex((item) => item.day === event.day && item.text === event.text) === index)
       .sort((a, b) => a.day - b.day)
       .slice(0, 24);
-    const response = NextResponse.json({ events: deduped, sources, warnings });
+    const dedupedTimed = timedEvents
+      .filter((event, index) => timedEvents.findIndex((item) => item.uid === event.uid) === index)
+      .sort((left, right) => Date.parse(left.start) - Date.parse(right.start))
+      .slice(0, 80);
+    const response = NextResponse.json({ events: deduped, timedEvents: dedupedTimed, sources, warnings });
     response.headers.set("cache-control", "private, no-store");
     return response;
   } catch (error) {

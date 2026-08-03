@@ -1,7 +1,5 @@
-const OUTPUT_WIDTH = 528;
-const OUTPUT_HEIGHT = 792;
-const REQUEST_WIDTH = OUTPUT_WIDTH;
-const REQUEST_HEIGHT = OUTPUT_HEIGHT;
+const DEFAULT_WIDTH = 528;
+const DEFAULT_HEIGHT = 792;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 type CommonsResponse = {
@@ -61,7 +59,7 @@ async function fetchImage(url: string) {
   return { body, contentType, sourceUrl: response.url };
 }
 
-async function fetchCommonsImage(query: string, seed: number) {
+async function fetchCommonsImage(query: string, seed: number, requestWidth: number, requestHeight: number) {
   const ignoredTokens = new Set([
     "photo", "photography", "portrait", "image", "movie", "cinematic", "editorial",
     "high", "contrast", "composition", "background", "superhero",
@@ -81,7 +79,7 @@ async function fetchCommonsImage(query: string, seed: number) {
     gsrlimit: "16",
     prop: "imageinfo",
     iiprop: "url|mime|size",
-    iiurlwidth: String(REQUEST_WIDTH),
+    iiurlwidth: String(requestWidth),
     format: "json",
     formatversion: "2",
   }).toString();
@@ -94,7 +92,7 @@ async function fetchCommonsImage(query: string, seed: number) {
   });
   if (!response.ok) throw new Error(`Wikimedia Commons ${response.status}`);
   const payload = (await response.json()) as CommonsResponse;
-  const targetRatio = OUTPUT_WIDTH / OUTPUT_HEIGHT;
+  const targetRatio = requestWidth / requestHeight;
   const candidates = (payload.query?.pages || [])
     .flatMap((page) => (page.imageinfo || []).map((info) => ({
       ...info,
@@ -111,8 +109,8 @@ async function fetchCommonsImage(query: string, seed: number) {
     }))
     .sort((left, right) => {
       if (left.relevance !== right.relevance) return right.relevance - left.relevance;
-      const leftRatio = (left.thumbwidth || left.width || OUTPUT_WIDTH) / (left.thumbheight || left.height || OUTPUT_HEIGHT);
-      const rightRatio = (right.thumbwidth || right.width || OUTPUT_WIDTH) / (right.thumbheight || right.height || OUTPUT_HEIGHT);
+      const leftRatio = (left.thumbwidth || left.width || requestWidth) / (left.thumbheight || left.height || requestHeight);
+      const rightRatio = (right.thumbwidth || right.width || requestWidth) / (right.thumbheight || right.height || requestHeight);
       const aspectDifference = Math.abs(leftRatio - targetRatio) - Math.abs(rightRatio - targetRatio);
       return Math.abs(aspectDifference) > 0.08 ? aspectDifference : left.searchIndex - right.searchIndex;
     })
@@ -127,6 +125,9 @@ export async function GET(request: Request) {
   const query = cleanQuery(url.searchParams.get("query"));
   const style = cleanStyle(url.searchParams.get("style"));
   const seed = cleanSeed(url.searchParams.get("seed"));
+  const landscape = url.searchParams.get("orientation") === "landscape";
+  const requestWidth = landscape ? DEFAULT_HEIGHT : DEFAULT_WIDTH;
+  const requestHeight = landscape ? DEFAULT_WIDTH : DEFAULT_HEIGHT;
   const keywords = `${query} ${style}`.split(/[\s,]+/).filter(Boolean).slice(0, 10).join(",");
   const lowerQuery = query.toLowerCase();
   const subjectTokens = query.split(/[\s,]+/)
@@ -152,7 +153,7 @@ export async function GET(request: Request) {
   const failures: string[] = [];
 
   try {
-    const themedUrl = `https://loremflickr.com/${REQUEST_WIDTH}/${REQUEST_HEIGHT}/${encodeURIComponent(subjectKeywords || keywords)}/all?lock=${seed}`;
+    const themedUrl = `https://loremflickr.com/${requestWidth}/${requestHeight}/${encodeURIComponent(subjectKeywords || keywords)}/all?lock=${seed}`;
     const image = await fetchImage(themedUrl);
     if (image) {
       return new Response(image.body, {
@@ -171,7 +172,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const image = await fetchCommonsImage(query, seed);
+    const image = await fetchCommonsImage(query, seed, requestWidth, requestHeight);
     if (image) {
       return new Response(image.body, {
         headers: {
@@ -190,7 +191,7 @@ export async function GET(request: Request) {
 
   const genericQuery = /^(colorful editorial illustration|abstract|texture|pattern)/i.test(query);
   const providers: Array<[string, string]> = genericQuery
-    ? [["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${REQUEST_WIDTH}/${REQUEST_HEIGHT}`]]
+    ? [["picsum", `https://picsum.photos/seed/${encodeURIComponent(`${keywords}-${seed}`)}/${requestWidth}/${requestHeight}`]]
     : [];
 
   for (const [name, provider] of providers) {

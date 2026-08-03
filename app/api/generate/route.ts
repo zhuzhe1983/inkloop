@@ -4,10 +4,13 @@ import {
   generateInkApp,
   inferWeatherCity,
   type ArtworkSpec,
+  type AgendaRangeMode,
+  type AgendaView,
   type ClockSpec,
   type InkApp,
   type ScreenKind,
   type ScreenFont,
+  type ScreenDisplay,
   type ScreenSpec,
   type ScreenTable,
 } from "../../lib/app-model";
@@ -20,7 +23,7 @@ const MODEL_PREFERENCES = [
   "qwen3-32b",
 ];
 
-const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric", "calendar", "timetable"]);
+const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric", "calendar", "timetable", "agenda"]);
 const ALLOWED_ACCENTS = new Set<ScreenSpec["accent"]>(["red", "blue", "green", "yellow"]);
 const ALLOWED_ARTWORK_MODES = new Set<ArtworkSpec["mode"] | "none">(["none", "generated", "web"]);
 const ALLOWED_ARTWORK_MOTIFS = new Set<ArtworkSpec["motif"]>([
@@ -59,7 +62,8 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
   "title": "应用名，最多20个汉字",
   "description": "一句用途说明",
   "spec": {
-    "kind": "weather|focus|countdown|meeting|metric|calendar|timetable",
+    "kind": "weather|focus|countdown|meeting|metric|calendar|timetable|agenda",
+    "orientation": "portrait|landscape",
     "city": "天气应用填写城市，其他应用省略",
     "eyebrow": "屏幕顶部短标签",
     "title": "屏幕标题",
@@ -101,14 +105,19 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "qrWifiHidden": false
     },
     "table": {
-      "type": "calendar|timetable",
+      "type": "calendar|timetable|agenda",
       "year": 2026,
       "month": 8,
       "weekStartsOn": "monday|sunday",
       "lunar": false,
-      "events": [{ "day": 8, "text": "项目发布" }],
       "columns": ["周一", "周二", "周三", "周四", "周五"],
-      "rows": [{ "label": "08:00", "cells": ["语文", "数学", "英语", "体育", "美术"] }]
+      "rows": [{ "label": "08:00", "cells": ["语文", "数学", "英语", "体育", "美术"] }],
+      "view": "agenda|three-day|workweek",
+      "rangeMode": "rolling|today|custom",
+      "rangeHours": 72,
+      "customStart": "2026-08-03T09:00",
+      "customEnd": "2026-08-05T22:00",
+      "events": [{ "day": 8, "text": "月历事件" }, { "uid": "preview-1", "title": "日程事件", "start": "2026-08-03T10:00:00+08:00", "end": "2026-08-03T11:00:00+08:00", "location": "会议室 A", "allDay": false }]
     }
   },
   "code": "可供用户审阅的 JavaScript 业务逻辑源码字符串",
@@ -120,7 +129,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 约束：
 1. 代码只用于审阅，不使用 eval，不包含密钥，不直接调用蓝牙。
 2. 代码通过 render(ctx) 返回与 spec 对应的数据，外部数据使用 ctx.weather、ctx.calendar 或 ctx.data 等抽象接口。
-3. 屏幕为 528×792 竖屏，只支持黑、白、黄、红、蓝、绿六色；内容必须短而清晰。
+3. 屏幕竖版为 528×792，横版为 792×528，只支持黑、白、黄、红、蓝、绿六色；内容必须短而清晰。orientation 可由你根据内容建议，月历通常竖版，课程表、三日和工作周日程通常横版；用户明确要求横版或竖版时必须遵循。
 4. 只有用户明确提到刷新时间或周期时才设置定时；“随机图片”只表示换图，不代表每小时刷新。没有周期要求时必须使用 once。
 5. 不编造真实个人数据；示例值应明显是合理预览。
 6. 用户要求图片、照片、背景、插画或明显视觉主题时，artwork.mode 不能是 none。
@@ -140,6 +149,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 20. display 控制可手动编辑的画面组件。time 是顶部小时间，timeLarge 是画面主视觉大时间；weather 是角落的一行小天气摘要，weatherLarge 是把城市、天气、温度和高低温组合成一个整体的大天气组件。天气应用默认使用 weatherLarge，二者不要同时开启。时钟默认使用 timeLarge。qr 是二维码元素，只有用户明确要求二维码时开启；普通内容使用 qrMode=text 并把内容原样放进 qrText。用户明确要求 Wi-Fi/WPA 二维码时使用 qrMode=wifi，填写 qrWifiSsid 和 qrWifiSecurity，但绝不编造 Wi-Fi 密码，qrWifiPassword 默认留空供用户手动填写。border 只控制整张屏幕最外侧的细框，不给文字、画板或其他组件加框；默认且通常必须是 false。logo 只有用户明确要求 LOGO/品牌文字时开启；其他组件只按用户需求开启。
 21. 用户要求月历、日历或月度计划时使用 kind=calendar，table.type=calendar，提供 year、month、weekStartsOn 和最多 12 个简短 events；明确要求显示农历时 lunar=true。不需要输出 42 个日期格，系统会按月份计算。
 22. 用户要求课程表、课表或周时间表时使用 kind=timetable，table.type=timetable；columns 为 2—7 个列标题，rows 为 1—8 个时间段，每个 cells 长度与 columns 一致，每格最多 8 个汉字。表格数据只表达语义，不包含坐标、HTML、CSS 或绘图代码。
+23. 用户要求苹果日历、日程安排、议程、未来几天安排或带起止时间的周日历时使用 kind=agenda，table.type=agenda。默认 orientation=landscape、view=three-day、rangeMode=rolling、rangeHours=72；只需要生成 3—8 条明显为预览数据的事件，真实事件会由 iCal 在运行时注入。不要把日程当成固定课表，不要为没有事件的小时生成空行。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
 ${EPAPER_DESIGN_GUIDE}`;
@@ -186,6 +196,10 @@ function wantsWeather(prompt: string) {
 
 function wantsCalendar(prompt: string) {
   return /月历|日历|月度计划|月计划/.test(prompt);
+}
+
+function wantsAgenda(prompt: string) {
+  return /苹果日历|智能日程|周日程|日程安排|未来安排|行程表|议程|时间轴/.test(prompt);
 }
 
 function wantsTimetable(prompt: string) {
@@ -308,7 +322,7 @@ function normalizeClock(value: unknown, fallback: ClockSpec | undefined): ClockS
   };
 }
 
-function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
+function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string): ScreenDisplay {
   const defaults = displaySettings(fallback.spec);
   const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const requestedFont = candidate.font as ScreenFont;
@@ -352,7 +366,7 @@ function normalizeDisplay(value: unknown, fallback: InkApp, prompt: string) {
 }
 
 function normalizeTable(value: unknown, fallback: ScreenTable | undefined, kind: ScreenKind) {
-  if (kind !== "calendar" && kind !== "timetable") return undefined;
+  if (kind !== "calendar" && kind !== "timetable" && kind !== "agenda") return undefined;
   const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
 
   if (kind === "calendar") {
@@ -374,6 +388,39 @@ function normalizeTable(value: unknown, fallback: ScreenTable | undefined, kind:
       weekStartsOn: candidate.weekStartsOn === "sunday" ? "sunday" as const : "monday" as const,
       events,
       lunar: candidate.lunar === true || fallbackCalendar?.lunar === true,
+    };
+  }
+
+  if (kind === "agenda") {
+    const fallbackAgenda = fallback?.type === "agenda" ? fallback : undefined;
+    const rawEvents = Array.isArray(candidate.events) ? candidate.events : fallbackAgenda?.events ?? [];
+    const events = rawEvents.flatMap((entry, index) => {
+      if (!entry || typeof entry !== "object") return [];
+      const event = entry as Record<string, unknown>;
+      const title = typeof event.title === "string" ? event.title.trim().slice(0, 32) : "";
+      const start = typeof event.start === "string" && Number.isFinite(Date.parse(event.start)) ? event.start : "";
+      const end = typeof event.end === "string" && Number.isFinite(Date.parse(event.end)) ? event.end : start;
+      if (!title || !start) return [];
+      return [{
+        uid: typeof event.uid === "string" ? event.uid.slice(0, 120) : `preview-${index}-${start}`,
+        title,
+        start,
+        end,
+        allDay: event.allDay === true,
+        location: typeof event.location === "string" ? event.location.trim().slice(0, 40) : undefined,
+        calendar: typeof event.calendar === "string" ? event.calendar.trim().slice(0, 24) : undefined,
+      }];
+    }).slice(0, 12);
+    const view: AgendaView = candidate.view === "agenda" || candidate.view === "workweek" ? candidate.view : "three-day";
+    const rangeMode: AgendaRangeMode = candidate.rangeMode === "today" || candidate.rangeMode === "custom" ? candidate.rangeMode : "rolling";
+    return {
+      type: "agenda" as const,
+      view,
+      rangeMode,
+      rangeHours: Math.min(168, Math.max(4, Math.round(Number(candidate.rangeHours) || fallbackAgenda?.rangeHours || (view === "workweek" ? 120 : 72)))),
+      customStart: typeof candidate.customStart === "string" ? candidate.customStart.slice(0, 32) : fallbackAgenda?.customStart,
+      customEnd: typeof candidate.customEnd === "string" ? candidate.customEnd.slice(0, 32) : fallbackAgenda?.customEnd,
+      events: events.length ? events : fallbackAgenda?.events ?? [],
     };
   }
 
@@ -433,11 +480,13 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
   const schedule = resolveSchedule(prompt, fallback, rawMinutes, rawTime);
   const normalizedKind = wantsWeather(prompt)
     ? "weather"
-    : wantsCalendar(prompt)
+    : wantsAgenda(prompt)
+      ? "agenda"
+      : wantsCalendar(prompt)
       ? "calendar"
       : wantsTimetable(prompt)
         ? "timetable"
-        : ALLOWED_KINDS.has(candidateKind) && !["weather", "calendar", "timetable"].includes(candidateKind)
+        : ALLOWED_KINDS.has(candidateKind) && !["weather", "calendar", "timetable", "agenda"].includes(candidateKind)
           ? candidateKind
           : fallback.spec.kind;
 
@@ -449,6 +498,13 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
     prompt,
     spec: {
       kind: normalizedKind,
+      orientation: /横版|横屏/.test(prompt)
+        ? "landscape"
+        : /竖版|竖屏/.test(prompt)
+          ? "portrait"
+          : candidateSpec.orientation === "landscape" || candidateSpec.orientation === "portrait"
+            ? candidateSpec.orientation
+            : fallback.spec.orientation || (normalizedKind === "agenda" || normalizedKind === "timetable" ? "landscape" : "portrait"),
       city: normalizedKind === "weather"
         ? screenText(candidateSpec.city, fallback.spec.city || inferWeatherCity(prompt), 30)
         : undefined,
