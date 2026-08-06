@@ -136,6 +136,8 @@ type DragPreview = {
 };
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
+const DEVICE_PROFILES_KEY = "inkloop-device-profiles-v1";
+const SIDEBAR_COLLAPSED_KEY = "inkloop-sidebar-collapsed-v1";
 const WEATHER_CITY_KEY = "inkloop-weather-city-v1";
 const CALENDAR_PREFERENCES_KEY = "inkloop-calendar-sources-v1";
 const DEFAULT_CALENDAR_PREFERENCES: CalendarPreferences = {
@@ -2743,6 +2745,64 @@ function AppCard({
   );
 }
 
+function DeviceTaskCard({
+  task,
+  now,
+  onRetry,
+  onStop,
+}: {
+  task: DeviceTask;
+  now: number;
+  onRetry: (taskId: string) => void | Promise<void>;
+  onStop: (taskId: string) => void;
+}) {
+  return (
+    <article className={`device-task ${task.status}`}>
+      <div className="device-task-heading">
+        <div>
+          <span className="task-status-label">
+            {task.status === "writing" ? "正在写入" : task.status === "error" ? "等待重试" : "运行中"}
+          </span>
+          <h3>{task.app.title}</h3>
+          <p>{scheduleLabel(task.app)}</p>
+        </div>
+        <div className="device-task-heading-actions">
+          <button
+            type="button"
+            className="retry-task-button"
+            onClick={() => void onRetry(task.id)}
+            disabled={task.status === "writing"}
+          >
+            立即重试
+          </button>
+          <button type="button" onClick={() => onStop(task.id)}>停止</button>
+        </div>
+      </div>
+      <div className="task-countdown">
+        <span>距离下次刷新</span>
+        <strong>{formatRemaining(task.nextRunAt, now)}</strong>
+        <small>{task.nextRunAt ? formatExactTime(task.nextRunAt) : "首次写入完成后开始计时"}</small>
+      </div>
+      <dl className="task-stats">
+        <div><dt>成功</dt><dd>{task.successCount}</dd></div>
+        <div><dt>失败</dt><dd>{task.failureCount}</dd></div>
+        <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : "尚未执行"}</dd></div>
+      </dl>
+      {task.lastError && (
+        <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
+      )}
+      {task.lastCanvas ? (
+        <figure className="task-canvas">
+          <img src={task.lastCanvas} alt={`${task.app.title} 最近一次刷新的画面`} />
+          <figcaption>最近一次刷新的 Canvas</figcaption>
+        </figure>
+      ) : (
+        <div className="task-canvas-empty">写入完成后，这里会保留最近画面</div>
+      )}
+    </article>
+  );
+}
+
 export default function InkStudio() {
   const [tab, setTab] = useState<Tab>("studio");
   const [prompt, setPrompt] = useState(starterPrompt);
@@ -2775,6 +2835,8 @@ export default function InkStudio() {
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceProfile[]>([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [expandedDeviceIds, setExpandedDeviceIds] = useState<Set<string>>(() => new Set());
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [taskPanelDeviceId, setTaskPanelDeviceId] = useState<string | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"idle" | "ready" | "writing" | "scheduled" | "error">("idle");
@@ -2858,7 +2920,15 @@ export default function InkStudio() {
     if (previousDriver && previousDriver !== driver) previousDriver.disconnect();
     deviceDriversRef.current.set(profile.id, driver);
     driverRef.current = driver;
-    setDevices((current) => [profile, ...current.filter((item) => item.id !== profile.id)]);
+    setDevices((current) => {
+      const next = [profile, ...current.filter((item) => item.id !== profile.id)];
+      try {
+        localStorage.setItem(DEVICE_PROFILES_KEY, JSON.stringify(next));
+      } catch {
+        // Device history is a convenience only; Bluetooth authorization remains the source of truth.
+      }
+      return next;
+    });
     setActiveDeviceId(profile.id);
     setDeviceName(profile.name);
     setDeviceStatus("ready");
@@ -2870,6 +2940,27 @@ export default function InkStudio() {
     setDeviceName(profile.name);
     const driver = deviceDriversRef.current.get(profile.id);
     if (driver) driverRef.current = driver;
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      } catch {
+        // Continue without persisting the display preference.
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleDeviceTasks = useCallback((deviceId: string) => {
+    setExpandedDeviceIds((current) => {
+      const next = new Set(current);
+      if (next.has(deviceId)) next.delete(deviceId);
+      else next.add(deviceId);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -2903,6 +2994,17 @@ export default function InkStudio() {
     try {
       const stored = JSON.parse(localStorage.getItem(LOCAL_APPS_KEY) ?? "[]") as InkApp[];
       if (Array.isArray(stored)) setLocalApps(stored.map(upgradeLegacyApp));
+      const storedDevices = JSON.parse(localStorage.getItem(DEVICE_PROFILES_KEY) ?? "[]") as DeviceProfile[];
+      if (Array.isArray(storedDevices)) {
+        setDevices(storedDevices.filter((device) => Boolean(
+          device
+          && typeof device.id === "string"
+          && device.id
+          && typeof device.name === "string"
+          && device.name,
+        )).slice(0, 12));
+      }
+      setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
       const storedCity = localStorage.getItem(WEATHER_CITY_KEY)?.trim();
       if (storedCity) setPreferredWeatherCity(storedCity);
       const storedCalendar = JSON.parse(localStorage.getItem(CALENDAR_PREFERENCES_KEY) ?? "null") as (Partial<CalendarPreferences> & { customUrl?: unknown }) | null;
@@ -3063,9 +3165,29 @@ export default function InkStudio() {
     const driver = new TodooCard(setProgress);
     driverRef.current = driver;
     driver
-      .restoreAuthorizedDevice()
-      .then((device) => {
-        if (device) rememberDevice(driver, device);
+      .listAuthorizedDevices()
+      .then((authorizedDevices) => {
+        if (!authorizedDevices.length) return;
+        const profiles = authorizedDevices.map((device, index) => {
+          const deviceDriver = index === 0 ? driver : new TodooCard(setProgress);
+          deviceDriver.useAuthorizedDevice(device);
+          deviceDriversRef.current.set(device.id, deviceDriver);
+          return { id: device.id, name: device.name ?? "TodooCard" };
+        });
+        driverRef.current = deviceDriversRef.current.get(profiles[0].id) ?? driver;
+        setDevices((current) => {
+          const authorizedIds = new Set(profiles.map((profile) => profile.id));
+          const next = [...profiles, ...current.filter((profile) => !authorizedIds.has(profile.id))].slice(0, 12);
+          try {
+            localStorage.setItem(DEVICE_PROFILES_KEY, JSON.stringify(next));
+          } catch {
+            // Keep authorized devices available for this session.
+          }
+          return next;
+        });
+        setActiveDeviceId(profiles[0].id);
+        setDeviceName(profiles[0].name);
+        setDeviceStatus("ready");
       })
       .catch(() => undefined);
     return () => {
@@ -3074,7 +3196,7 @@ export default function InkStudio() {
       knownDrivers.forEach((knownDriver) => knownDriver.disconnect());
       deviceDriversRef.current.clear();
     };
-  }, [rememberDevice]);
+  }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => setSecondTick(Date.now()), 1000);
@@ -3975,11 +4097,13 @@ export default function InkStudio() {
     const tasks = deviceTasks.filter((task) => task.deviceId === device.id);
     const hasError = tasks.some((task) => task.status === "error");
     const isWriting = tasks.some((task) => task.status === "writing");
+    const authorized = deviceDriversRef.current.has(device.id);
     return {
       ...device,
       tasks,
       hasError,
-      status: hasError ? "error" : isWriting ? "writing" : tasks.length ? "scheduled" : "ready",
+      authorized,
+      status: hasError ? "error" : isWriting ? "writing" : tasks.length ? "scheduled" : authorized ? "ready" : "idle",
     };
   });
   const panelDevice = devices.find((device) => device.id === taskPanelDeviceId) ?? activeDevice;
@@ -3992,12 +4116,24 @@ export default function InkStudio() {
   const nextRun = currentTask?.nextRunAt ?? null;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
-        <button className="brand" type="button" onClick={() => navigateToTab("studio")} aria-label="返回创作台">
-          <span className="brand-mark">I</span>
-          <span>Inkloop</span>
-        </button>
+        <div className="sidebar-head">
+          <button className="brand" type="button" onClick={() => navigateToTab("studio")} aria-label="返回创作台">
+            <span className="brand-mark">I</span>
+            <span className="brand-name">Inkloop</span>
+          </button>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+            aria-label={sidebarCollapsed ? "展开左侧边栏" : "收起左侧边栏"}
+            aria-expanded={!sidebarCollapsed}
+            title={sidebarCollapsed ? "展开边栏" : "收起边栏"}
+          >
+            <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
+          </button>
+        </div>
         <nav aria-label="主导航">
           {navItems.map((item) => (
             <button
@@ -4005,9 +4141,10 @@ export default function InkStudio() {
               key={item.id}
               className={tab === item.id ? "active" : ""}
               onClick={() => navigateToTab(item.id)}
+              title={sidebarCollapsed ? item.label : undefined}
             >
-              <span>{item.glyph}</span>
-              {item.label}
+              <span className="nav-glyph" aria-hidden="true">{item.glyph}</span>
+              <span className="nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -4024,6 +4161,7 @@ export default function InkStudio() {
               }}
               aria-expanded={taskPanelOpen && panelDevice?.id === device.id}
               aria-controls="device-task-panel"
+              title={sidebarCollapsed ? `${device.name} · ${device.tasks.length} 个刷新任务` : undefined}
             >
               <span className={`status-dot ${device.status}`} />
               <div className="sidebar-device-copy">
@@ -4041,11 +4179,11 @@ export default function InkStudio() {
             </div>
           )}
           <button type="button" className="add-device-button" onClick={() => void selectNewDevice()}>
-            <span>＋</span> 添加设备
+            <span aria-hidden="true">＋</span><span className="add-device-label">添加设备</span>
           </button>
         </div>
         <a className="product-link" href="https://p.todoo.tech/?lang=zh" target="_blank" rel="noreferrer">
-          产品信息 <span>↗</span>
+          <span className="product-link-label">产品信息</span><span aria-hidden="true">↗</span>
         </a>
       </aside>
 
@@ -4061,49 +4199,13 @@ export default function InkStudio() {
           {panelTasks.length ? (
             <div className="device-task-list">
               {panelTasks.map((task) => (
-                <article className={`device-task ${task.status}`} key={task.id}>
-                  <div className="device-task-heading">
-                    <div>
-                      <span className="task-status-label">
-                        {task.status === "writing" ? "正在写入" : task.status === "error" ? "等待重试" : "运行中"}
-                      </span>
-                      <h3>{task.app.title}</h3>
-                      <p>{scheduleLabel(task.app)}</p>
-                    </div>
-                    <div className="device-task-heading-actions">
-                      <button
-                        type="button"
-                        className="retry-task-button"
-                        onClick={() => void retryDeviceTask(task.id)}
-                        disabled={task.status === "writing"}
-                      >
-                        立即重试
-                      </button>
-                      <button type="button" onClick={() => stopDeviceTask(task.id)}>停止</button>
-                    </div>
-                  </div>
-                  <div className="task-countdown">
-                    <span>距离下次刷新</span>
-                    <strong>{formatRemaining(task.nextRunAt, secondTick)}</strong>
-                    <small>{task.nextRunAt ? formatExactTime(task.nextRunAt) : "首次写入完成后开始计时"}</small>
-                  </div>
-                  <dl className="task-stats">
-                    <div><dt>成功</dt><dd>{task.successCount}</dd></div>
-                    <div><dt>失败</dt><dd>{task.failureCount}</dd></div>
-                    <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : "尚未执行"}</dd></div>
-                  </dl>
-                  {task.lastError && (
-                    <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
-                  )}
-                  {task.lastCanvas ? (
-                    <figure className="task-canvas">
-                      <img src={task.lastCanvas} alt={`${task.app.title} 最近一次刷新的画面`} />
-                      <figcaption>最近一次刷新的 Canvas</figcaption>
-                    </figure>
-                  ) : (
-                    <div className="task-canvas-empty">写入完成后，这里会保留最近画面</div>
-                  )}
-                </article>
+                <DeviceTaskCard
+                  key={task.id}
+                  task={task}
+                  now={secondTick}
+                  onRetry={retryDeviceTask}
+                  onStop={stopDeviceTask}
+                />
               ))}
             </div>
           ) : (
@@ -5342,6 +5444,86 @@ export default function InkStudio() {
                 <button type="button" onClick={() => void selectNewDevice()}>{devices.length ? "添加另一台设备" : "选择设备"}</button>
               </div>
             </div>
+            <section className="device-registry" aria-labelledby="device-registry-title">
+              <header>
+                <div>
+                  <span className="eyebrow">AUTHORIZED DEVICES</span>
+                  <h2 id="device-registry-title">连接过的设备</h2>
+                  <p>刷新任务按设备保存于当前页面会话中。点开设备即可查看倒计时、刷新结果与最近画面。</p>
+                </div>
+                <button type="button" onClick={() => void selectNewDevice()}>添加设备</button>
+              </header>
+              {deviceSummaries.length ? (
+                <div className="device-registry-list">
+                  {deviceSummaries.map((device) => {
+                    const expanded = expandedDeviceIds.has(device.id);
+                    const statusLabel = device.hasError
+                      ? "任务异常"
+                      : device.status === "writing"
+                        ? "正在写入"
+                        : device.tasks.length
+                          ? "定时刷新中"
+                          : device.authorized
+                            ? "浏览器已授权"
+                            : "历史设备";
+                    return (
+                      <article className={`device-registry-item ${device.status}`} key={device.id}>
+                        <button
+                          type="button"
+                          className="device-registry-summary"
+                          onClick={() => {
+                            activateDevice(device);
+                            toggleDeviceTasks(device.id);
+                          }}
+                          aria-expanded={expanded}
+                          aria-controls={`device-history-${device.id}`}
+                        >
+                          <span className={`status-dot ${device.status}`} aria-hidden="true" />
+                          <span className="device-registry-copy">
+                            <strong>{device.name}</strong>
+                            <small>{statusLabel}{!device.authorized ? " · 写入时可能需要重新选择" : ""}</small>
+                          </span>
+                          <span className="device-registry-meta">
+                            <b>{device.tasks.length}</b>
+                            <small>刷新任务</small>
+                          </span>
+                          {device.hasError && <span className="device-registry-alert" aria-label="任务出现错误">!</span>}
+                          <span className="device-registry-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
+                        </button>
+                        {expanded && (
+                          <div className="device-registry-tasks" id={`device-history-${device.id}`}>
+                            {device.tasks.length ? (
+                              <div className="device-history-task-list">
+                                {device.tasks.map((task) => (
+                                  <DeviceTaskCard
+                                    key={task.id}
+                                    task={task}
+                                    now={secondTick}
+                                    onRetry={retryDeviceTask}
+                                    onStop={stopDeviceTask}
+                                  />
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="device-history-empty">
+                                <strong>暂无运行中的刷新任务</strong>
+                                <p>在创作台选择每小时、每天或自定义计划并开始写入后，任务会显示在这里。</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="device-registry-empty">
+                  <span className="status-dot idle" aria-hidden="true" />
+                  <div><strong>还没有连接过设备</strong><p>点击“添加设备”，授权后会保留在这个列表中。</p></div>
+                  <button type="button" onClick={() => void selectNewDevice()}>选择 TodooCard</button>
+                </div>
+              )}
+            </section>
             <div className="feasibility-grid">
               <article className="verdict-card yes">
                 <span>可以做到</span>

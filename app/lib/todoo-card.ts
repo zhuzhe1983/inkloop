@@ -19,6 +19,7 @@ export type TodooProgress = {
 };
 
 type ProgressHandler = (progress: TodooProgress) => void;
+type AuthorizedBluetoothDevice = { id: string; name?: string | null };
 
 const stateProgress: Record<string, TodooProgress> = {
   connecting: { phase: "connecting", percent: 4, message: "正在连接 TodooCard…" },
@@ -70,21 +71,29 @@ export class TodooCard {
     return this.core.device;
   }
 
-  async restoreAuthorizedDevice() {
+  async listAuthorizedDevices() {
     try {
-      const devices = await this.core.listAuthorizedDevices();
-      const remembered = devices[0] ?? null;
-      if (remembered) this.core.useDevice(remembered);
-      return remembered;
+      return await this.core.listAuthorizedDevices();
     } catch (error) {
       if (
         error
         && typeof error === "object"
         && "code" in error
         && error.code === "AUTHORIZED_DEVICE_LIST_UNSUPPORTED"
-      ) return null;
+      ) return [];
       throw error;
     }
+  }
+
+  useAuthorizedDevice(device: AuthorizedBluetoothDevice) {
+    this.core.useDevice(device);
+  }
+
+  async restoreAuthorizedDevice() {
+    const devices = await this.listAuthorizedDevices();
+    const remembered = devices[0] ?? null;
+    if (remembered) this.useAuthorizedDevice(remembered);
+    return remembered;
   }
 
   requestDevice() {
