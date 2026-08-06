@@ -617,18 +617,53 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
   };
 }
 
-async function chooseModel(baseUrl: string, apiKey: string) {
-  if (env.LLM_MODEL?.trim()) return env.LLM_MODEL.trim();
-  const response = await fetch(`${baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(10_000),
+async function listGatewayModels(baseUrl: string, apiKey: string) {
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as GatewayModels;
+    return (payload.data ?? payload.models ?? [])
+      .map((model) => (typeof model.id === "string" ? model.id : ""))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function preferredModel(models: string[], excluded = "") {
+  return MODEL_PREFERENCES.find((model) => model !== excluded && models.includes(model))
+    ?? models.find((model) => model !== excluded)
+    ?? MODEL_PREFERENCES.find((model) => model !== excluded)
+    ?? MODEL_PREFERENCES[0];
+}
+
+async function requestCompletion(baseUrl: string, apiKey: string, model: string, prompt: string, timeoutMs: number) {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "X-Client-Name": "Inkloop",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.2,
+      max_tokens: 1800,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!response.ok) return MODEL_PREFERENCES[0];
-  const payload = (await response.json()) as GatewayModels;
-  const models = (payload.data ?? payload.models ?? [])
-    .map((model) => (typeof model.id === "string" ? model.id : ""))
-    .filter(Boolean);
-  return MODEL_PREFERENCES.find((model) => models.includes(model)) ?? models[0] ?? MODEL_PREFERENCES[0];
+  if (!response.ok) throw new Error(`模型网关返回 ${response.status}`);
+  const completion = (await response.json()) as ChatCompletion;
+  const content = completion.choices?.[0]?.message?.content;
+  if (typeof content !== "string") throw new Error("模型响应缺少内容");
+  return content;
 }
 
 export function GET() {
@@ -658,31 +693,32 @@ export async function POST(request: Request) {
     }
 
     const baseUrl = normalizeBaseUrl(env.LLM_BASE_URL);
-    const model = await chooseModel(baseUrl, apiKey);
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "X-Client-Name": "Inkloop",
-      },
-      body: JSON.stringify({
+    const modelsPromise = listGatewayModels(baseUrl, apiKey);
+    const configuredModel = env.LLM_MODEL?.trim() || "";
+    const models = configuredModel ? [] : await modelsPromise;
+    let model = configuredModel || preferredModel(models);
+    let content: string;
+    try {
+      content = await requestCompletion(baseUrl, apiKey, model, prompt, 18_000);
+    } catch (primaryError) {
+      const availableModels = models.length ? models : await modelsPromise;
+      const fallbackModel = preferredModel(availableModels, model);
+      console.warn("Inkloop primary LLM failed; retrying with fallback", {
         model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        max_tokens: 2400,
-      }),
-      signal: AbortSignal.timeout(50_000),
-    });
-    if (!response.ok) {
-      throw new Error(`模型网关返回 ${response.status}`);
+        fallbackModel,
+        error: primaryError instanceof Error ? primaryError.message : String(primaryError),
+      });
+      try {
+        content = await requestCompletion(baseUrl, apiKey, fallbackModel, prompt, 28_000);
+        model = fallbackModel;
+      } catch (fallbackError) {
+        console.error("Inkloop fallback LLM failed", {
+          model: fallbackModel,
+          error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
+        throw fallbackError;
+      }
     }
-    const completion = (await response.json()) as ChatCompletion;
-    const content = completion.choices?.[0]?.message?.content;
-    if (typeof content !== "string") throw new Error("模型响应缺少内容");
     const app = normalizeApp(extractJson(content), prompt);
     return Response.json({ app, mode: "llm", model });
   } catch (error) {
