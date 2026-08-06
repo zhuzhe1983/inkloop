@@ -2315,7 +2315,6 @@ async function drawCardScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, l
   const material = card.rarity;
   const darkMaterial = material === "gold";
   const ink = darkMaterial ? EPAPER_WHITE : "#151816";
-  const panel = darkMaterial ? "#151816" : EPAPER_WHITE;
   const accent = material === "common"
     ? accentColors.green
     : material === "silver"
@@ -2323,44 +2322,27 @@ async function drawCardScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, l
       : material === "gold"
         ? accentColors.yellow
         : accentColors.red;
-  const outer = { x: 18, y: 18, width: 492, height: 756 };
-  const header = { x: 34, y: 34, width: 460, height: 92 };
-  const art = { x: 34, y: 140, width: 460, height: 390 };
-  const copy = { x: 34, y: 544, width: 460, height: 134 };
-  const stats = { x: 34, y: 692, width: 460, height: 64 };
+  // Every generated material master uses this exact 528×792 content grid.
+  const header = { x: 58, y: 112, width: 412, height: 66 };
+  const art = { x: 61, y: 187, width: 406, height: 366 };
+  const copy = { x: 58, y: 562, width: 412, height: 112 };
 
   ctx.save();
   ctx.fillStyle = EPAPER_WHITE;
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   try {
-    const texture = await loadArtwork(cardMaterialAssets[material]);
-    drawImageCover(ctx, texture, outer.x, outer.y, outer.width, outer.height, "inkloop-text");
+    const template = await loadArtwork(cardMaterialAssets[material]);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(template, 0, 0, ctx.canvas.width, ctx.canvas.height);
   } catch {
     ctx.fillStyle = darkMaterial ? "#151816" : EPAPER_WHITE;
-    ctx.fillRect(outer.x, outer.y, outer.width, outer.height);
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   }
 
-  // One immutable geometry for every rarity. Material and ornament density are the only variables.
-  ctx.strokeStyle = ink;
-  ctx.lineWidth = material === "common" ? 3 : 5;
-  chamferedRectPath(ctx, outer.x, outer.y, outer.width, outer.height, 18);
-  ctx.stroke();
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 2;
-  chamferedRectPath(ctx, outer.x + 8, outer.y + 8, outer.width - 16, outer.height - 16, 13);
-  ctx.stroke();
-
-  [header, copy, stats].forEach((area) => {
-    ctx.fillStyle = panel;
-    chamferedRectPath(ctx, area.x, area.y, area.width, area.height, 10);
-    ctx.fill();
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 3;
-    ctx.stroke();
-  });
-
+  // The master already contains the frame. Artwork is clipped inside its fixed window.
   ctx.save();
-  chamferedRectPath(ctx, art.x, art.y, art.width, art.height, 12);
+  chamferedRectPath(ctx, art.x, art.y, art.width, art.height, 9);
   ctx.clip();
   ctx.fillStyle = darkMaterial ? "#151816" : "#dfe4df";
   ctx.fillRect(art.x, art.y, art.width, art.height);
@@ -2393,73 +2375,71 @@ async function drawCardScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, l
   if (!usedArtwork) {
     ctx.fillStyle = accent;
     ctx.fillRect(art.x, art.y, art.width, art.height);
-    ctx.fillStyle = darkMaterial ? EPAPER_WHITE : "#151816";
     drawCardStar(ctx, art.x + art.width / 2, art.y + art.height / 2, 112, darkMaterial ? EPAPER_WHITE : "#151816");
   }
   ctx.restore();
+
+  // Fine decorative lines in the generated masters can disappear after the
+  // six-colour conversion. Reinforce only the shared structural grid so every
+  // material keeps the same readable hierarchy on the physical display.
+  ctx.save();
   ctx.strokeStyle = ink;
-  ctx.lineWidth = 5;
-  chamferedRectPath(ctx, art.x, art.y, art.width, art.height, 12);
+  ctx.lineWidth = 2;
+  chamferedRectPath(ctx, 18, 18, 492, 756, 18);
   ctx.stroke();
   ctx.strokeStyle = accent;
-  ctx.lineWidth = 2;
-  chamferedRectPath(ctx, art.x + 7, art.y + 7, art.width - 14, art.height - 14, 8);
+  ctx.lineWidth = 3;
+  chamferedRectPath(ctx, header.x, header.y, header.width, header.height, 10);
   ctx.stroke();
+  chamferedRectPath(ctx, art.x - 3, art.y - 3, art.width + 6, art.height + 6, 12);
+  ctx.stroke();
+  chamferedRectPath(ctx, copy.x, copy.y, copy.width, copy.height, 10);
+  ctx.stroke();
+  drawCardStar(ctx, 264, 70, 14, accent);
+  drawCardStar(ctx, 264, 738, 12, accent);
+  ctx.restore();
 
   ctx.textAlign = "left";
   ctx.fillStyle = ink;
-  ctx.font = `900 ${fitText(ctx, card.name, 330, 36, family)}px ${family}`;
-  ctx.fillText(card.name, header.x + 22, header.y + 43, 330);
-  ctx.font = `800 15px ${family}`;
-  ctx.fillText(`${card.type}  ·  ${cardRarityLabels[material]}`, header.x + 22, header.y + 72, 340);
+  ctx.font = `900 ${fitText(ctx, card.name, 294, 30, family)}px ${family}`;
+  ctx.fillText(card.name, header.x + 28, header.y + 31, 294);
+  ctx.font = `800 13px ${family}`;
+  ctx.fillText(`${card.type}  ·  ${cardRarityLabels[material]}`, header.x + 28, header.y + 53, 308);
   ctx.textAlign = "right";
-  ctx.font = `900 22px ${screenFonts.mono}`;
-  ctx.fillText(`✦ ${card.level}`, header.x + header.width - 20, header.y + 49);
+  ctx.font = `900 18px ${screenFonts.mono}`;
+  ctx.fillText(`LV ${card.level}`, header.x + header.width - 26, header.y + 37);
 
   ctx.textAlign = "left";
   ctx.fillStyle = ink;
-  ctx.font = `900 15px ${family}`;
-  ctx.fillText("CARD EFFECT", copy.x + 20, copy.y + 28);
+  ctx.font = `900 13px ${family}`;
+  ctx.fillText("CARD EFFECT", copy.x + 24, copy.y + 25);
   ctx.fillStyle = accent;
-  ctx.fillRect(copy.x + 20, copy.y + 38, 72, 5);
+  ctx.fillRect(copy.x + 24, copy.y + 34, 66, 4);
   ctx.fillStyle = ink;
-  ctx.font = `700 18px ${family}`;
-  cardTextLines(ctx, card.description, copy.width - 40, 3).forEach((line, index) => {
-    ctx.fillText(line, copy.x + 20, copy.y + 70 + index * 23, copy.width - 40);
+  ctx.font = `700 16px ${family}`;
+  cardTextLines(ctx, card.description, copy.width - 48, 3).forEach((line, index) => {
+    ctx.fillText(line, copy.x + 24, copy.y + 61 + index * 20, copy.width - 48);
   });
 
+  ctx.textAlign = "center";
+  ctx.fillStyle = ink;
+  ctx.font = `800 11px ${screenFonts.mono}`;
+  ctx.fillText(card.cardId, 264, 704, 132);
+
   ctx.textAlign = "left";
   ctx.fillStyle = accent;
-  ctx.font = `900 18px ${family}`;
-  ctx.fillText("ATK", stats.x + 18, stats.y + 27);
+  ctx.font = `900 16px ${family}`;
+  ctx.fillText("ATK", 62, 754);
   ctx.fillStyle = ink;
-  ctx.font = `900 27px ${screenFonts.mono}`;
-  ctx.fillText(String(card.attack), stats.x + 72, stats.y + 31);
-  ctx.fillStyle = accent;
-  ctx.font = `900 18px ${family}`;
-  ctx.fillText("DEF", stats.x + 218, stats.y + 27);
-  ctx.fillStyle = ink;
-  ctx.font = `900 27px ${screenFonts.mono}`;
-  ctx.fillText(String(card.defense), stats.x + 272, stats.y + 31);
+  ctx.font = `900 25px ${screenFonts.mono}`;
+  ctx.fillText(String(card.attack), 105, 758, 112);
   ctx.textAlign = "right";
-  ctx.font = `800 13px ${screenFonts.mono}`;
-  ctx.fillText(card.cardId, stats.x + stats.width - 18, stats.y + 50);
-  drawCardStar(ctx, stats.x + stats.width - 28, stats.y + 20, 9, accent);
-
-  if (material !== "common") {
-    drawCardStar(ctx, 36, 34, material === "holo" ? 13 : 9, accent);
-    drawCardStar(ctx, 492, 756, material === "holo" ? 13 : 9, accent);
-  }
-  if (material === "gold" || material === "holo") {
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(26, 132);
-    ctx.lineTo(26, 666);
-    ctx.moveTo(502, 132);
-    ctx.lineTo(502, 666);
-    ctx.stroke();
-  }
+  ctx.fillStyle = accent;
+  ctx.font = `900 16px ${family}`;
+  ctx.fillText("DEF", 466, 754);
+  ctx.fillStyle = ink;
+  ctx.font = `900 25px ${screenFonts.mono}`;
+  ctx.fillText(String(card.defense), 424, 758, 112);
   ctx.restore();
   quantizeRegion(ctx, 0, 0, ctx.canvas.width, ctx.canvas.height, "official");
   return usedArtwork;
