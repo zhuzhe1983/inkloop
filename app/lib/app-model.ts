@@ -1,4 +1,4 @@
-export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda";
+export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda" | "map";
 
 export type ScreenOrientation = "portrait" | "landscape";
 
@@ -23,6 +23,25 @@ export type ClockSpec = {
 export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 
 export type ScreenRenderMode = "official" | "inkloop-text";
+
+export type MapLocationMode = "picker" | "browser" | "ip";
+export type MapStyle = "eink" | "balanced" | "detail";
+
+export type MapSpec = {
+  locationMode: MapLocationMode;
+  query: string;
+  latitude?: number;
+  longitude?: number;
+  coordinateType: "bd09ll" | "wgs84ll";
+  zoomLevel: number;
+  style: MapStyle;
+  marker: boolean;
+  showAddress: boolean;
+  showCoordinates: boolean;
+  address?: string;
+  approximate?: boolean;
+  statusMessage?: string;
+};
 
 export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather" | "weatherLarge" | "qr";
 
@@ -150,6 +169,7 @@ export type ScreenSpec = {
   weatherUnit?: string;
   weatherDetail?: string;
   weatherAccent?: "red" | "blue" | "green" | "yellow";
+  map?: MapSpec;
   table?: ScreenTable;
 };
 
@@ -455,6 +475,34 @@ function fallbackTimetable(source: string): TimetableRow[] {
   }));
 }
 
+function inferMapQuery(source: string) {
+  const quoted = source.match(/[「“\"]([^」”\"]{2,40})[」”\"]/)?.[1]?.trim();
+  if (quoted) return quoted;
+  const normalized = source
+    .replace(/^(?:请|帮我|麻烦)?\s*/, "")
+    .replace(/^(?:生成|做一张|做|显示|查看|打开)\s*/, "")
+    .replace(/^(?:横版|竖版|横屏|竖屏)\s*/, "")
+    .replace(/^(?:生成|做一张|做|显示|查看|打开)\s*/, "");
+  const beforeMap = normalized.match(/([^，。；;\n]{2,40}?)(?:附近|周边|入口|位置)?(?:的)?地图/)?.[1]
+    ?.replace(/^(?:一个|一张|当前|我的)/, "")
+    .trim();
+  if (beforeMap && !/^(?:地图|附近|当前位置)$/.test(beforeMap)) return beforeMap.slice(0, 40);
+  return "";
+}
+
+function inferMapZoomLevel(source: string) {
+  const explicit = Number(source.match(/(?:zoomLevel|zoom|缩放(?:级别)?)[\s:=：]*(\d{1,2})/i)?.[1]);
+  if (Number.isFinite(explicit) && explicit >= 3 && explicit <= 19) return Math.round(explicit);
+  if (includesAny(source, ["入口", "门口", "楼栋", "停车位"])) return 19;
+  if (includesAny(source, ["城市", "城区", "全市", "概览"])) return 12;
+  return 17;
+}
+
+function shouldShowMapCoordinates(source: string) {
+  if (/(?:不|不要|无需|隐藏)(?:显示)?(?:地图)?(?:坐标|经纬度)/.test(source)) return false;
+  return includesAny(source, ["坐标", "经纬度"]);
+}
+
 export function generateInkApp(prompt: string, stableId?: string): InkApp {
   const source = prompt.trim() || starterPrompt;
   const promptHour = source.match(/(\d{1,2})\s*[点:时]/)?.[1];
@@ -468,6 +516,69 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     author: "我",
     createdAt: stableId ? "2026-08-01T00:00:00.000Z" : nowIso(),
   };
+
+  if (includesAny(source, ["地图", "位置图", "路线图", "导航图", "周边图"])) {
+    const query = inferMapQuery(source);
+    const orientation: ScreenOrientation = includesAny(source, ["横版", "横屏"])
+      ? "landscape"
+      : "portrait";
+    return {
+      ...base,
+      title: query ? `${query}地图` : "附近地图",
+      description: "选择位置并生成适合六色电子纸的静态地图",
+      scheduleMode: "once",
+      spec: {
+        kind: "map",
+        orientation,
+        eyebrow: "",
+        title: "",
+        value: "",
+        unit: "",
+        detail: "",
+        footer: "",
+        accent: "blue",
+        map: {
+          locationMode: "picker",
+          query,
+          coordinateType: "bd09ll",
+          zoomLevel: inferMapZoomLevel(source),
+          style: "eink",
+          marker: !includesAny(source, ["不要标记", "无标记", "隐藏标记"]),
+          showAddress: true,
+          showCoordinates: shouldShowMapCoordinates(source),
+          statusMessage: query ? "正在查找地点；可在右侧重新选点" : "请在右侧地图中选点",
+        },
+        display: {
+          ...displaySettings({
+            kind: "map",
+            orientation,
+            eyebrow: "",
+            title: "",
+            value: "",
+            unit: "",
+            detail: "",
+            footer: "",
+            accent: "blue",
+          }),
+          quote: false,
+          logo: false,
+          date: false,
+          time: false,
+          timeLarge: false,
+          weather: false,
+          weatherLarge: false,
+          qr: false,
+          border: false,
+          renderMode: "inkloop-text",
+          renderModeExplicit: true,
+        },
+      },
+      code: `export async function render(ctx) {
+  const location = await ctx.map.resolve({ mode: "picker", query: ${JSON.stringify(query)} });
+  return { type: "map", location, zoomLevel: ${inferMapZoomLevel(source)}, marker: true };
+}`,
+    };
+  }
 
   if (artwork?.layout === "fullscreen") {
     const subject = includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])

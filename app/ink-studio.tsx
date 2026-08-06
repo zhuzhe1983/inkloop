@@ -27,6 +27,9 @@ import {
   type AgendaView,
   type CalendarEvent,
   type InkApp,
+  type MapLocationMode,
+  type MapSpec,
+  type MapStyle,
   type ScheduleMode,
   type ScreenDisplay,
   type ScreenElementKey,
@@ -60,6 +63,19 @@ type CalendarFeedPayload = {
   timedEvents?: AgendaEvent[];
   warnings?: string[];
 };
+type MapResolvePayload = {
+  configured?: boolean;
+  coordinateType?: "bd09ll";
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+  city?: string;
+  approximate?: boolean;
+  source?: MapLocationMode;
+  error?: string;
+  code?: string;
+};
+type MapServiceStatus = "idle" | "checking" | "ready" | "missing" | "error";
 
 function agendaWindow(table: Extract<NonNullable<ScreenSpec["table"]>, { type: "agenda" }>, now: Date) {
   if (table.rangeMode === "custom") {
@@ -127,6 +143,65 @@ const DEFAULT_CALENDAR_PREFERENCES: CalendarPreferences = {
 };
 const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
 const EPAPER_WHITE = "#fafaf8";
+
+function mapApiParams(map: MapSpec, mode: "resolve" | "image", orientation?: ScreenOrientation) {
+  const params = new URLSearchParams({
+    mode,
+    locationMode: map.locationMode,
+    query: map.query,
+    coordtype: map.coordinateType,
+    zoom: String(map.zoomLevel),
+    marker: String(map.marker),
+  });
+  if (typeof map.latitude === "number") params.set("lat", String(map.latitude));
+  if (typeof map.longitude === "number") params.set("lng", String(map.longitude));
+  if (orientation) params.set("orientation", orientation);
+  return params;
+}
+
+async function resolveMapLocation(map: MapSpec) {
+  const response = await fetch(`/api/map?${mapApiParams(map, "resolve").toString()}`, {
+    cache: "no-store",
+  });
+  const payload = await response.json() as MapResolvePayload;
+  if (!response.ok || typeof payload.latitude !== "number" || typeof payload.longitude !== "number") {
+    throw new Error(payload.error || "地图位置暂时无法解析");
+  }
+  return payload;
+}
+
+function mapImageUrl(map: MapSpec, orientation: ScreenOrientation) {
+  return `/api/map?${mapApiParams(map, "image", orientation).toString()}`;
+}
+
+function pointFromStaticMapClick(
+  map: MapSpec,
+  orientation: ScreenOrientation,
+  horizontalRatio: number,
+  verticalRatio: number,
+) {
+  if (typeof map.longitude !== "number" || typeof map.latitude !== "number") return null;
+  const zoom = Math.min(19, Math.max(3, map.zoomLevel));
+  const worldSize = 256 * 2 ** zoom;
+  const logicalWidth = (orientation === "landscape" ? 792 : 528) / 2;
+  const logicalHeight = (orientation === "landscape" ? 528 : 792) / 2;
+  const longitudeToX = (longitude: number) => (longitude + 180) / 360 * worldSize;
+  const latitudeToY = (latitude: number) => {
+    const radians = latitude * Math.PI / 180;
+    return (1 - Math.log(Math.tan(radians) + 1 / Math.cos(radians)) / Math.PI) / 2 * worldSize;
+  };
+  const xToLongitude = (x: number) => x / worldSize * 360 - 180;
+  const yToLatitude = (y: number) => {
+    const value = Math.PI - 2 * Math.PI * y / worldSize;
+    return 180 / Math.PI * Math.atan(Math.sinh(value));
+  };
+  const x = longitudeToX(map.longitude) + (horizontalRatio - 0.5) * logicalWidth;
+  const y = latitudeToY(map.latitude) + (verticalRatio - 0.5) * logicalHeight;
+  return {
+    longitude: Math.min(180, Math.max(-180, xToLongitude(x))),
+    latitude: Math.min(85, Math.max(-85, yToLatitude(y))),
+  };
+}
 
 function calendarSourceName(url: string, position: number) {
   try {
@@ -425,6 +500,33 @@ async function resolveRuntimeScreen(
   onCalendarNotice?: (message: string | null) => void,
 ): Promise<ScreenSpec> {
   const resolved = resolveTimeVariables(currentApp.spec, now);
+  if (resolved.kind === "map" && resolved.map) {
+    try {
+      const location = await resolveMapLocation(resolved.map);
+      return {
+        ...resolved,
+        map: {
+          ...resolved.map,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          coordinateType: "bd09ll",
+          address: location.address || location.city || resolved.map.query || "已选位置",
+          approximate: location.approximate === true,
+          statusMessage: location.approximate
+            ? "当前为 IP 城市级估算，请在右侧选点提高精度"
+            : "位置已确认",
+        },
+      };
+    } catch (error) {
+      return {
+        ...resolved,
+        map: {
+          ...resolved.map,
+          statusMessage: error instanceof Error ? error.message : "地图位置暂时无法解析",
+        },
+      };
+    }
+  }
   if (resolved.table?.type === "agenda") {
     const preferences = calendarPreferences ?? DEFAULT_CALENDAR_PREFERENCES;
     const enabledSources = preferences.sources.filter((source) => source.enabled && source.url.trim());
@@ -2041,6 +2143,95 @@ function drawStructuredTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   if (spec.table?.type === "agenda") drawAgendaTable(ctx, spec);
 }
 
+function drawMapMessage(ctx: CanvasRenderingContext2D, spec: ScreenSpec, message: string) {
+  const family = screenFontFamily(spec);
+  const centerX = ctx.canvas.width / 2;
+  const centerY = ctx.canvas.height / 2;
+  ctx.save();
+  ctx.fillStyle = EPAPER_WHITE;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.fillStyle = accentColors.yellow;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY - 74, 28, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#151816";
+  ctx.textAlign = "center";
+  ctx.font = `900 34px ${family}`;
+  ctx.fillText("地图等待位置", centerX, centerY, ctx.canvas.width - 80);
+  ctx.font = `700 19px ${family}`;
+  ctx.fillText(truncateCanvasText(ctx, message, ctx.canvas.width - 96), centerX, centerY + 50);
+  ctx.font = `700 16px ${family}`;
+  ctx.fillText("请在右侧地图设置中修正后重试", centerX, centerY + 88, ctx.canvas.width - 96);
+  ctx.restore();
+}
+
+function drawMapInformation(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  const map = spec.map;
+  if (!map || (!map.showAddress && !map.showCoordinates)) return;
+  const family = screenFontFamily(spec);
+  const padding = screenOrientation(spec) === "landscape" ? 24 : 22;
+  const address = map.address || map.query || (map.approximate ? "IP 城市级估算" : "已选位置");
+  const coordinateText = typeof map.latitude === "number" && typeof map.longitude === "number"
+    ? `${map.longitude.toFixed(5)}, ${map.latitude.toFixed(5)}`
+    : "";
+  const lineCount = Number(map.showAddress) + Number(map.showCoordinates && coordinateText);
+  const panelHeight = lineCount > 1 ? 92 : 62;
+  const top = ctx.canvas.height - panelHeight - padding;
+  const left = padding;
+  const width = ctx.canvas.width - padding * 2;
+  ctx.save();
+  ctx.fillStyle = EPAPER_WHITE;
+  ctx.fillRect(left, top, width, panelHeight);
+  ctx.fillStyle = map.approximate ? accentColors.yellow : accentColors.blue;
+  ctx.fillRect(left, top, 9, panelHeight);
+  ctx.fillStyle = "#151816";
+  ctx.textAlign = "left";
+  if (map.showAddress) {
+    ctx.font = `900 ${screenOrientation(spec) === "landscape" ? 21 : 19}px ${family}`;
+    const prefix = map.approximate ? "约 " : "";
+    ctx.fillText(truncateCanvasText(ctx, `${prefix}${address}`, width - 42), left + 25, top + 33);
+  }
+  if (map.showCoordinates && coordinateText) {
+    ctx.font = `700 15px ${screenFonts.mono}`;
+    ctx.fillText(coordinateText, left + 25, top + (map.showAddress ? 68 : 38), width - 42);
+  }
+  ctx.restore();
+}
+
+async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+  const map = spec.map;
+  if (!map || typeof map.latitude !== "number" || typeof map.longitude !== "number") {
+    drawMapMessage(ctx, spec, map?.statusMessage || "请先选择地图位置");
+    return false;
+  }
+  try {
+    const image = await loadArtwork(mapImageUrl(map, screenOrientation(spec)));
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.filter = map.style === "detail"
+      ? "saturate(0.92) contrast(1.1) brightness(1.01)"
+      : map.style === "balanced"
+        ? "saturate(0.88) contrast(1.02) brightness(1.03)"
+        : "saturate(0.72) contrast(1.08) brightness(1.06)";
+    ctx.drawImage(image, 0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    quantizeRegion(
+      ctx,
+      0,
+      0,
+      ctx.canvas.width,
+      ctx.canvas.height,
+      map.style === "eink" ? "inkloop-text" : "official",
+    );
+    drawMapInformation(ctx, spec);
+    return true;
+  } catch {
+    drawMapMessage(ctx, spec, "静态地图暂时无法获取；请检查服务端配置或稍后重试");
+    return false;
+  }
+}
+
 async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
@@ -2054,6 +2245,9 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, width, height);
+  if (spec.kind === "map") {
+    return drawMapScreen(ctx, spec);
+  }
   if (spec.table) {
     drawStructuredTable(ctx, spec);
     drawDisplayMeta(ctx, spec, accent, false);
@@ -2350,6 +2544,13 @@ export default function InkStudio() {
   const [calendarPreferences, setCalendarPreferences] = useState<CalendarPreferences>(DEFAULT_CALENDAR_PREFERENCES);
   const [calendarUrlDraft, setCalendarUrlDraft] = useState("");
   const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
+  const [mapServiceStatus, setMapServiceStatus] = useState<MapServiceStatus>("idle");
+  const [mapServiceMessage, setMapServiceMessage] = useState<string | null>(null);
+  const [mapPickerOpen, setMapPickerOpen] = useState(false);
+  const [mapPickerDraft, setMapPickerDraft] = useState<MapSpec | null>(null);
+  const [mapPickerSearch, setMapPickerSearch] = useState("");
+  const [mapPickerLoading, setMapPickerLoading] = useState(false);
+  const [mapPickerError, setMapPickerError] = useState<string | null>(null);
   const [fontTick, setFontTick] = useState(0);
   const [clockTick, setClockTick] = useState(0);
   const [codeOpen, setCodeOpen] = useState(false);
@@ -2551,6 +2752,43 @@ export default function InkStudio() {
   }, [taskPanelOpen]);
 
   useEffect(() => {
+    if (app.spec.kind !== "map") return;
+    const controller = new AbortController();
+    const checkMapService = async () => {
+      await Promise.resolve();
+      setMapServiceStatus("checking");
+      try {
+        const response = await fetch("/api/map?mode=status", { signal: controller.signal, cache: "no-store" });
+        const payload = await response.json() as MapResolvePayload;
+        if (!response.ok || payload.configured !== true) throw new Error(payload.error || "地图服务未配置");
+        setMapServiceStatus("ready");
+        setMapServiceMessage(null);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        const message = error instanceof Error ? error.message : "地图服务暂时不可用";
+        setMapServiceStatus(message.includes("BAIDU_MAP_AK") || message.includes("未配置") ? "missing" : "error");
+        setMapServiceMessage(message);
+      }
+    };
+    void checkMapService();
+    return () => controller.abort();
+  }, [app.spec.kind]);
+
+  useEffect(() => {
+    if (!mapPickerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMapPickerOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [mapPickerOpen]);
+
+  useEffect(() => {
     fetch("/api/generate")
       .then(async (response) => {
         if (!response.ok) throw new Error("generator unavailable");
@@ -2652,7 +2890,7 @@ export default function InkStudio() {
     const dimensions = screenDimensions(app.spec);
     staging.width = dimensions.width;
     staging.height = dimensions.height;
-    const hasArtwork = Boolean(app.spec.artwork || app.localImage);
+    const hasArtwork = Boolean(app.spec.artwork || app.localImage || app.spec.kind === "map");
     setPreviewStatus(hasArtwork ? "loading" : "ready");
     const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork, screenOrientation(app.spec)) : null;
     setArtworkCredit(null);
@@ -2814,6 +3052,162 @@ export default function InkStudio() {
           display: nextDisplay,
         },
       };
+    });
+  };
+
+  const updateMap = (patch: Partial<MapSpec>) => {
+    setApp((current) => {
+      if (current.spec.kind !== "map" || !current.spec.map) return current;
+      const nextMap = {
+        ...current.spec.map,
+        ...patch,
+        zoomLevel: patch.zoomLevel === undefined
+          ? current.spec.map.zoomLevel
+          : Math.min(19, Math.max(3, Math.round(patch.zoomLevel))),
+      };
+      return {
+        ...current,
+        spec: { ...current.spec, map: nextMap },
+      };
+    });
+  };
+
+  const openMapPicker = async () => {
+    const map = currentAppRef.current.spec.map;
+    if (!map) return;
+    setMapPickerOpen(true);
+    setMapPickerDraft(map);
+    setMapPickerSearch(map.query || map.address || "");
+    setMapPickerError(null);
+    if (typeof map.latitude === "number" && typeof map.longitude === "number" && map.coordinateType === "bd09ll") return;
+    setMapPickerLoading(true);
+    try {
+      const location = await resolveMapLocation(map);
+      setMapPickerDraft({
+        ...map,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        coordinateType: "bd09ll",
+        address: location.address || location.city || map.query || "已选位置",
+        approximate: location.approximate === true,
+        statusMessage: location.approximate ? "当前为 IP 城市级估算" : "位置已确认",
+      });
+    } catch (error) {
+      setMapPickerError(error instanceof Error ? error.message : "地图位置暂时无法解析");
+    } finally {
+      setMapPickerLoading(false);
+    }
+  };
+
+  const searchMapPicker = async () => {
+    const query = mapPickerSearch.trim();
+    if (!mapPickerDraft || !query) {
+      setMapPickerError("请先输入地点、地址或 POI");
+      return;
+    }
+    setMapPickerLoading(true);
+    setMapPickerError(null);
+    try {
+      const location = await resolveMapLocation({
+        ...mapPickerDraft,
+        locationMode: "picker",
+        query,
+        latitude: undefined,
+        longitude: undefined,
+        coordinateType: "bd09ll",
+      });
+      setMapPickerDraft((current) => current ? {
+        ...current,
+        locationMode: "picker",
+        query,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        coordinateType: "bd09ll",
+        address: location.address || query,
+        approximate: false,
+        statusMessage: "位置已确认",
+      } : current);
+    } catch (error) {
+      setMapPickerError(error instanceof Error ? error.message : "没有找到这个地点");
+    } finally {
+      setMapPickerLoading(false);
+    }
+  };
+
+  const selectPointOnStaticMap = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!mapPickerDraft || mapPickerLoading) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const point = pointFromStaticMapClick(
+      mapPickerDraft,
+      screenOrientation(currentAppRef.current.spec),
+      (event.clientX - bounds.left) / bounds.width,
+      (event.clientY - bounds.top) / bounds.height,
+    );
+    if (!point) return;
+    const selected: MapSpec = {
+      ...mapPickerDraft,
+      locationMode: "picker",
+      ...point,
+      coordinateType: "bd09ll",
+      address: "已选位置",
+      approximate: false,
+      statusMessage: "位置已确认",
+    };
+    setMapPickerDraft(selected);
+    setMapPickerLoading(true);
+    resolveMapLocation(selected)
+      .then((location) => setMapPickerDraft((current) => current ? {
+        ...current,
+        address: location.address || "已选位置",
+      } : current))
+      .catch(() => undefined)
+      .finally(() => setMapPickerLoading(false));
+  };
+
+  const confirmMapPicker = () => {
+    if (!mapPickerDraft || typeof mapPickerDraft.latitude !== "number" || typeof mapPickerDraft.longitude !== "number") {
+      setMapPickerError("请先搜索地点或在地图上选点");
+      return;
+    }
+    updateMap({
+      ...mapPickerDraft,
+      locationMode: "picker",
+      coordinateType: "bd09ll",
+      query: mapPickerSearch.trim() || mapPickerDraft.query,
+      approximate: false,
+      statusMessage: "位置已确认",
+    });
+    setMapPickerOpen(false);
+    showToast("地图位置已更新", "success");
+  };
+
+  const locateWithBrowser = () => {
+    if (!navigator.geolocation) {
+      showToast("当前浏览器不支持位置授权", "error");
+      return;
+    }
+    showToast("正在请求浏览器位置授权", "info");
+    navigator.geolocation.getCurrentPosition((position) => {
+      updateMap({
+        locationMode: "browser",
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        coordinateType: "wgs84ll",
+        query: "",
+        address: undefined,
+        approximate: false,
+        statusMessage: "浏览器位置已获取，正在转换地图坐标",
+      });
+      showToast("已获取位置，地图正在刷新", "success");
+    }, (error) => {
+      const message = error.code === error.PERMISSION_DENIED
+        ? "位置权限被拒绝，可改用地图选点"
+        : "暂时无法获取浏览器位置，可改用地图选点";
+      showToast(message, "error");
+    }, {
+      enableHighAccuracy: true,
+      timeout: 12_000,
+      maximumAge: 60_000,
     });
   };
 
@@ -3573,13 +3967,17 @@ export default function InkStudio() {
                       <h2>屏幕预览</h2>
                       <p>
                         {previewDimensions.width} × {previewDimensions.height} · {previewStatus === "loading"
-                          ? "正在获取并转换图片素材"
+                          ? app.spec.kind === "map" ? "正在获取并转换静态地图" : "正在获取并转换图片素材"
                           : previewStatus === "fallback"
-                            ? app.spec.artwork?.layout === "fullscreen"
+                            ? app.spec.kind === "map"
+                              ? "地图暂不可用，请查看右侧设置"
+                              : app.spec.artwork?.layout === "fullscreen"
                               ? "图片暂不可用，已保持纯图片模式"
                               : "素材暂不可用，已使用图形排版"
                             : app.localImage
                               ? "本机图片已转换为实际六色"
+                              : app.spec.kind === "map"
+                                ? "百度静态地图已转换为实际六色"
                               : app.spec.artwork
                                 ? "图片已转换为实际六色"
                               : "实际六色色板"}
@@ -3587,15 +3985,17 @@ export default function InkStudio() {
                     </div>
                   </div>
                   <div className="preview-actions">
-                    <button
-                      className="regenerate-preview"
-                      type="button"
-                      onClick={regeneratePreviewArtwork}
-                      disabled={!app.spec.artwork || Boolean(app.localImage) || previewStatus === "loading"}
-                      title={app.localImage ? "当前使用的是你贴入的图片" : app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : "当前应用没有图片素材"}
-                    >
-                      ↻ 重新生成
-                    </button>
+                    {app.spec.kind !== "map" && (
+                      <button
+                        className="regenerate-preview"
+                        type="button"
+                        onClick={regeneratePreviewArtwork}
+                        disabled={!app.spec.artwork || Boolean(app.localImage) || previewStatus === "loading"}
+                        title={app.localImage ? "当前使用的是你贴入的图片" : app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : "当前应用没有图片素材"}
+                      >
+                        ↻ 重新生成
+                      </button>
+                    )}
                     <select
                       className="scale-chip"
                       value={previewScale}
@@ -3676,6 +4076,12 @@ export default function InkStudio() {
                     <span key={label}><i style={{ background: color }} />{label}</span>
                   ))}
                 </div>
+                {app.spec.kind === "map" && (
+                  <div className="preview-source-note map-source-note">
+                    <p><strong>地图来源</strong> 百度静态地图 · 服务端代理</p>
+                    <p>浏览器精确定位需你授权；IP 定位只用于城市级估算。</p>
+                  </div>
+                )}
                 {(app.spec.artwork || app.localImage) && (
                   <div className="preview-source-note">
                     {app.spec.artwork?.mode === "web" && (
@@ -3711,8 +4117,8 @@ export default function InkStudio() {
                 </div>
                 <div className="display-editor">
                   <div className="settings-subhead">
-                    <strong>画面元素</strong>
-                    <small>勾选后可在预览中拖拽</small>
+                    <strong>{app.spec.kind === "map" ? "地图画面" : "画面元素"}</strong>
+                    <small>{app.spec.kind === "map" ? "位置和样式都可在这里继续调整" : "勾选后可在预览中拖拽"}</small>
                   </div>
                   <div className="orientation-field">
                     <div>
@@ -3739,6 +4145,202 @@ export default function InkStudio() {
                       ))}
                     </div>
                   </div>
+                  {app.spec.kind === "map" && app.spec.map && (
+                    <div className="map-editor" aria-label="地图设置">
+                      <div className={`map-service-state ${mapServiceStatus}`} role="status">
+                        <i />
+                        <span>{mapServiceStatus === "checking"
+                          ? "正在检查地图服务"
+                          : mapServiceStatus === "ready"
+                            ? "百度静态地图服务已就绪"
+                            : mapServiceMessage || "地图服务尚未配置"}</span>
+                      </div>
+
+                      <div className="map-editor-group">
+                        <div className="map-editor-label">
+                          <strong>定位方式</strong>
+                          <small>优先地图选点；IP 仅为城市级估算</small>
+                        </div>
+                        <div className="map-location-options" role="group" aria-label="地图定位方式">
+                          <button
+                            type="button"
+                            className={app.spec.map.locationMode === "picker" ? "selected" : ""}
+                            onClick={() => void openMapPicker()}
+                          >
+                            <strong>地图选点</strong><small>推荐 · 最准确</small>
+                          </button>
+                          <button
+                            type="button"
+                            className={app.spec.map.locationMode === "browser" ? "selected" : ""}
+                            onClick={locateWithBrowser}
+                          >
+                            <strong>浏览器定位</strong><small>需要位置授权</small>
+                          </button>
+                          <button
+                            type="button"
+                            className={app.spec.map.locationMode === "ip" ? "selected" : ""}
+                            onClick={() => {
+                              updateMap({
+                                locationMode: "ip",
+                                query: "",
+                                latitude: undefined,
+                                longitude: undefined,
+                                coordinateType: "bd09ll",
+                                address: undefined,
+                                approximate: true,
+                                statusMessage: "正在按网络 IP 估算所在城市",
+                              });
+                            }}
+                          >
+                            <strong>IP 粗定位</strong><small>城市级兜底</small>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="map-editor-group">
+                        <div className="map-editor-label">
+                          <strong>地点与坐标</strong>
+                          <small>{app.spec.map.coordinateType === "wgs84ll" ? "浏览器 WGS84 · 预览时服务端转换" : "百度 BD-09 坐标"}</small>
+                        </div>
+                        <label className="map-place-field">
+                          <span>地点、地址或 POI</span>
+                          <div>
+                            <input
+                              key={`${app.id}:${app.spec.map.query}`}
+                              defaultValue={app.spec.map.query}
+                              maxLength={80}
+                              onBlur={(event) => {
+                                const query = event.currentTarget.value.trim();
+                                if (query === app.spec.map?.query) return;
+                                updateMap({
+                                  locationMode: "picker",
+                                  query,
+                                  latitude: undefined,
+                                  longitude: undefined,
+                                  coordinateType: "bd09ll",
+                                  address: undefined,
+                                  approximate: false,
+                                  statusMessage: query ? "正在查找地点" : "请在地图中选点",
+                                });
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.currentTarget.blur();
+                              }}
+                              placeholder="例如：上海市杨浦区公司北门"
+                            />
+                            <button type="button" onClick={() => void openMapPicker()}>在地图上选点</button>
+                          </div>
+                        </label>
+                        <div className="map-coordinate-grid">
+                          <label>
+                            <span>经度</span>
+                            <input
+                              type="number"
+                              min={-180}
+                              max={180}
+                              step="0.000001"
+                              value={app.spec.map.longitude ?? ""}
+                              onChange={(event) => updateMap({
+                                longitude: event.target.value === "" ? undefined : Number(event.target.value),
+                                locationMode: "picker",
+                                coordinateType: "bd09ll",
+                                approximate: false,
+                              })}
+                            />
+                          </label>
+                          <label>
+                            <span>纬度</span>
+                            <input
+                              type="number"
+                              min={-90}
+                              max={90}
+                              step="0.000001"
+                              value={app.spec.map.latitude ?? ""}
+                              onChange={(event) => updateMap({
+                                latitude: event.target.value === "" ? undefined : Number(event.target.value),
+                                locationMode: "picker",
+                                coordinateType: "bd09ll",
+                                approximate: false,
+                              })}
+                            />
+                          </label>
+                        </div>
+                        {app.spec.map.address && <p className="map-current-address">{app.spec.map.address}</p>}
+                      </div>
+
+                      <div className="map-editor-group map-zoom-group">
+                        <div className="map-editor-label">
+                          <strong>地图缩放</strong>
+                          <small>zoomLevel 3—19 · 修改后即时刷新预览</small>
+                        </div>
+                        <div className="map-zoom-control">
+                          <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel - 1 })} aria-label="缩小地图">−</button>
+                          <input
+                            type="range"
+                            min={3}
+                            max={19}
+                            step={1}
+                            value={app.spec.map.zoomLevel}
+                            onChange={(event) => updateMap({ zoomLevel: Number(event.target.value) })}
+                            aria-label="地图缩放级别"
+                          />
+                          <input
+                            type="number"
+                            min={3}
+                            max={19}
+                            step={1}
+                            value={app.spec.map.zoomLevel}
+                            onChange={(event) => updateMap({ zoomLevel: Number(event.target.value) || 3 })}
+                            aria-label="手动输入地图缩放级别"
+                          />
+                          <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel + 1 })} aria-label="放大地图">＋</button>
+                        </div>
+                      </div>
+
+                      <div className="map-editor-group">
+                        <div className="map-editor-label"><strong>电子纸地图风格</strong><small>优先保证道路和文字清晰</small></div>
+                        <div className="map-style-options" role="group" aria-label="地图画面风格">
+                          {([
+                            ["eink", "电子纸", "低噪点"],
+                            ["balanced", "均衡", "保留颜色"],
+                            ["detail", "细节", "增强道路"],
+                          ] as Array<[MapStyle, string, string]>).map(([value, label, detail]) => (
+                            <button
+                              type="button"
+                              key={value}
+                              className={app.spec.map?.style === value ? "selected" : ""}
+                              onClick={() => updateMap({ style: value })}
+                            >
+                              <strong>{label}</strong><small>{detail}</small>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="map-toggle-list">
+                        {([
+                          ["marker", "显示位置标记", "在地图中心标出目标位置"],
+                          ["showAddress", "显示地址", "在地图底部显示地点说明"],
+                          ["showCoordinates", "显示坐标", "显示 BD-09 经纬度"],
+                        ] as Array<["marker" | "showAddress" | "showCoordinates", string, string]>).map(([key, label, detail]) => (
+                          <label key={key}>
+                            <span><strong>{label}</strong><small>{detail}</small></span>
+                            <input
+                              type="checkbox"
+                              checked={app.spec.map?.[key] ?? false}
+                              onChange={(event) => updateMap({ [key]: event.target.checked })}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      <p className={`map-location-note${app.spec.map.approximate ? " approximate" : ""}`}>
+                        {app.spec.map.statusMessage || (app.spec.map.approximate
+                          ? "当前只是城市级估算，写入前建议改用地图选点。"
+                          : "地点信息只用于生成这张静态地图。")}
+                      </p>
+                    </div>
+                  )}
+                  {app.spec.kind !== "map" && (<>
                   <div className="component-list">
                     {screenElementOptions.map(({ key, label }) => (
                       <div className={`component-row${screenDisplay[key] ? " enabled" : ""}`} key={key}>
@@ -3997,6 +4599,7 @@ export default function InkStudio() {
                       </label>
                     )}
                   </div>
+                  </>)}
                 </div>
                 {app.spec.table?.type === "agenda" && (
                   <section className="agenda-editor" aria-label="智能日程布局与范围">
@@ -4424,6 +5027,113 @@ export default function InkStudio() {
           </section>
         )}
       </section>
+
+      {mapPickerOpen && app.spec.kind === "map" && app.spec.map && (
+        <div className="map-picker-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setMapPickerOpen(false);
+        }}>
+          <section className="map-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="map-picker-title">
+            <header>
+              <div>
+                <span className="eyebrow">BAIDU STATIC MAP · BD-09</span>
+                <h2 id="map-picker-title">在地图上选择位置</h2>
+                <p>搜索地点，或直接点击地图把目标移动到中心。</p>
+              </div>
+              <button type="button" onClick={() => setMapPickerOpen(false)} aria-label="关闭地图选点">×</button>
+            </header>
+            <div className="map-picker-search">
+              <input
+                value={mapPickerSearch}
+                onChange={(event) => setMapPickerSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void searchMapPicker();
+                  }
+                }}
+                placeholder="输入完整地址、地点或 POI"
+                autoFocus
+              />
+              <button type="button" onClick={() => void searchMapPicker()} disabled={mapPickerLoading}>
+                {mapPickerLoading ? "查找中" : "查找地点"}
+              </button>
+            </div>
+            <div className={`map-picker-body${screenOrientation(app.spec) === "landscape" ? " landscape" : ""}`}>
+              {mapPickerDraft && typeof mapPickerDraft.latitude === "number" && typeof mapPickerDraft.longitude === "number" ? (
+                <button
+                  type="button"
+                  className="map-picker-canvas"
+                  onPointerDown={selectPointOnStaticMap}
+                  disabled={mapPickerLoading}
+                  aria-label="点击地图选择位置"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element -- dynamic same-origin map proxy is rendered into Canvas */}
+                  <img
+                    src={mapImageUrl(mapPickerDraft, screenOrientation(app.spec))}
+                    alt="可点击选择位置的百度静态地图"
+                  />
+                  <span className="map-picker-crosshair" aria-hidden="true"><i /><b /></span>
+                  {mapPickerLoading && <em>正在更新地图…</em>}
+                </button>
+              ) : (
+                <div className="map-picker-empty">
+                  <span>◎</span>
+                  <strong>{mapPickerLoading ? "正在确定位置" : "先搜索一个地点"}</strong>
+                  <small>也可以关闭窗口并选择浏览器定位或 IP 粗定位</small>
+                </div>
+              )}
+              <aside className="map-picker-summary">
+                <div>
+                  <span>当前地点</span>
+                  <strong>{mapPickerDraft?.address || mapPickerDraft?.query || "尚未选择"}</strong>
+                </div>
+                <div>
+                  <span>BD-09 坐标</span>
+                  <code>{typeof mapPickerDraft?.longitude === "number" && typeof mapPickerDraft?.latitude === "number"
+                    ? `${mapPickerDraft.longitude.toFixed(6)}, ${mapPickerDraft.latitude.toFixed(6)}`
+                    : "—"}</code>
+                </div>
+                <div className="map-picker-zoom">
+                  <span>zoomLevel</span>
+                  <div>
+                    <button type="button" onClick={() => setMapPickerDraft((current) => current ? {
+                      ...current,
+                      zoomLevel: Math.max(3, current.zoomLevel - 1),
+                    } : current)}>−</button>
+                    <input
+                      type="number"
+                      min={3}
+                      max={19}
+                      value={mapPickerDraft?.zoomLevel ?? 17}
+                      onChange={(event) => setMapPickerDraft((current) => current ? {
+                        ...current,
+                        zoomLevel: Math.min(19, Math.max(3, Number(event.target.value) || 3)),
+                      } : current)}
+                    />
+                    <button type="button" onClick={() => setMapPickerDraft((current) => current ? {
+                      ...current,
+                      zoomLevel: Math.min(19, current.zoomLevel + 1),
+                    } : current)}>＋</button>
+                  </div>
+                </div>
+                <p>点击选点使用静态地图的像素坐标换算；确认前可继续放大并微调。</p>
+              </aside>
+            </div>
+            {mapPickerError && <p className="map-picker-error" role="alert">{mapPickerError}</p>}
+            <footer>
+              <button type="button" onClick={() => setMapPickerOpen(false)}>取消</button>
+              <button
+                type="button"
+                className="primary"
+                onClick={confirmMapPicker}
+                disabled={mapPickerLoading || typeof mapPickerDraft?.latitude !== "number" || typeof mapPickerDraft?.longitude !== "number"}
+              >
+                使用这个位置 <span>→</span>
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {guideOpen && (
         <div className="guide-backdrop" role="presentation" onMouseDown={(event) => {
