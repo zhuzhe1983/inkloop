@@ -189,7 +189,11 @@ ${EPAPER_DESIGN_GUIDE}`;
 type GatewayModel = { id?: unknown };
 type GatewayModels = { data?: GatewayModel[]; models?: GatewayModel[] };
 type ChatCompletion = {
-  choices?: Array<{ message?: { content?: unknown } }>;
+  choices?: Array<{
+    finish_reason?: unknown;
+    message?: { content?: unknown; reasoning_content?: unknown };
+  }>;
+  output_text?: unknown;
 };
 
 function trimText(value: unknown, fallback: string, max: number) {
@@ -710,6 +714,12 @@ function preferredModel(models: string[], excluded = "") {
 
 async function requestCompletion(baseUrl: string, apiKey: string, model: string, prompt: string, timeoutMs: number) {
   const systemPrompt = buildCompactSystemPrompt(prompt);
+  const complexRequest = wantsArtwork(prompt)
+    || wantsCard(prompt)
+    || wantsAgenda(prompt)
+    || wantsCalendar(prompt)
+    || wantsTimetable(prompt)
+    || wantsMap(prompt);
   console.info("Inkloop LLM request", {
     model,
     systemPromptBytes: new TextEncoder().encode(systemPrompt).byteLength,
@@ -729,15 +739,35 @@ async function requestCompletion(baseUrl: string, apiKey: string, model: string,
         { role: "user", content: prompt },
       ],
       temperature: 0.2,
-      max_tokens: 1800,
+      max_tokens: complexRequest ? 3000 : 1800,
       response_format: { type: "json_object" },
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`模型网关返回 ${response.status}`);
   const completion = (await response.json()) as ChatCompletion;
-  const content = completion.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("模型响应缺少内容");
+  const choice = completion.choices?.[0];
+  const message = choice?.message;
+  const asText = (value: unknown) => {
+    if (typeof value === "string") return value.trim();
+    if (!Array.isArray(value)) return "";
+    return value.map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      const candidate = part as { text?: unknown; content?: unknown };
+      return typeof candidate.text === "string"
+        ? candidate.text
+        : typeof candidate.content === "string"
+          ? candidate.content
+          : "";
+    }).join("\n").trim();
+  };
+  const content = asText(message?.content)
+    || asText(completion.output_text)
+    || asText(message?.reasoning_content);
+  if (!content) {
+    throw new Error(`模型响应缺少内容${typeof choice?.finish_reason === "string" ? `（${choice.finish_reason}）` : ""}`);
+  }
   return extractJson(content);
 }
 
@@ -772,9 +802,15 @@ export async function POST(request: Request) {
     const configuredModel = env.LLM_MODEL?.trim() || "";
     const models = configuredModel ? [] : await modelsPromise;
     let model = configuredModel || preferredModel(models);
+    const complexRequest = wantsArtwork(prompt)
+      || wantsCard(prompt)
+      || wantsAgenda(prompt)
+      || wantsCalendar(prompt)
+      || wantsTimetable(prompt)
+      || wantsMap(prompt);
     let generated: Record<string, unknown>;
     try {
-      generated = await requestCompletion(baseUrl, apiKey, model, prompt, 18_000);
+      generated = await requestCompletion(baseUrl, apiKey, model, prompt, complexRequest ? 34_000 : 22_000);
     } catch (primaryError) {
       const availableModels = models.length ? models : await modelsPromise;
       const fallbackModel = preferredModel(availableModels, model);
@@ -784,7 +820,7 @@ export async function POST(request: Request) {
         error: primaryError instanceof Error ? primaryError.message : String(primaryError),
       });
       try {
-        generated = await requestCompletion(baseUrl, apiKey, fallbackModel, prompt, 28_000);
+        generated = await requestCompletion(baseUrl, apiKey, fallbackModel, prompt, complexRequest ? 24_000 : 22_000);
         model = fallbackModel;
       } catch (fallbackError) {
         console.error("Inkloop fallback LLM failed", {
