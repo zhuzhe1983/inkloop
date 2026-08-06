@@ -65,11 +65,28 @@ async function fetchJson(url: URL, label: string) {
       cache: "no-store",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-  } catch {
-    throw new MapServiceError("MAP_UPSTREAM_UNAVAILABLE", 502, `${label}暂时不可用，请稍后重试。`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message.trim().slice(0, 160) : "网络请求失败";
+    throw new MapServiceError(
+      "MAP_UPSTREAM_UNAVAILABLE",
+      502,
+      `${label}暂时不可用${reason ? `：${reason}` : ""}。`,
+    );
   }
   if (!response.ok) {
-    throw new MapServiceError("MAP_UPSTREAM_UNAVAILABLE", 502, `${label}暂时不可用，请稍后重试。`);
+    const detail = await response.text().catch(() => "");
+    let upstreamMessage = "";
+    try {
+      const payload = JSON.parse(detail) as { message?: unknown };
+      upstreamMessage = typeof payload.message === "string" ? payload.message.trim().slice(0, 160) : "";
+    } catch {
+      upstreamMessage = detail.trim().slice(0, 160);
+    }
+    throw new MapServiceError(
+      "MAP_UPSTREAM_REJECTED",
+      502,
+      `${label}请求被拒绝（HTTP ${response.status}）${upstreamMessage ? `：${upstreamMessage}` : ""}。`,
+    );
   }
   const announcedSize = Number(response.headers.get("content-length") || 0);
   if (announcedSize > MAX_JSON_BYTES) {
