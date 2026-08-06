@@ -61,7 +61,7 @@ async function fetchJson(url: URL, label: string) {
   try {
     response = await fetch(url, {
       headers: { Accept: "application/json" },
-      redirect: "error",
+      redirect: "manual",
       cache: "no-store",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -304,7 +304,7 @@ export async function GET(request: Request) {
     try {
       response = await fetch(imageUrl, {
         headers: { Accept: "image/png,image/jpeg" },
-        redirect: "error",
+        redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
