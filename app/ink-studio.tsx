@@ -25,6 +25,8 @@ import {
   type AgendaEvent,
   type AgendaRangeMode,
   type AgendaView,
+  type CardRarity,
+  type CardSpec,
   type CalendarEvent,
   type InkApp,
   type MapLocationMode,
@@ -234,6 +236,7 @@ const samplePrompts = [
   "生成本月日历，8号项目发布，18号复盘",
   "生成周一到周五的课程表",
   "横版苹果日历风格，显示未来三天日程",
+  "做一张星穹机械守卫金卡，自动生成等级和攻防",
   "每 15 分钟更新会议室状态",
   "每小时显示本月销售目标进度",
 ];
@@ -747,6 +750,7 @@ function screenElementPosition(spec: ScreenSpec, element: ScreenElementKey) {
 }
 
 function screenOrientation(spec: ScreenSpec): ScreenOrientation {
+  if (spec.kind === "card") return "portrait";
   return spec.orientation === "landscape" ? "landscape" : "portrait";
 }
 
@@ -2232,6 +2236,235 @@ async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   }
 }
 
+const cardMaterialAssets: Record<CardRarity, string> = {
+  common: "/card-templates/common-paper.webp",
+  silver: "/card-templates/silver-foil.webp",
+  gold: "/card-templates/gold-foil.webp",
+  holo: "/card-templates/holo-prism.webp",
+};
+
+const cardRarityLabels: Record<CardRarity, string> = {
+  common: "STANDARD",
+  silver: "SILVER",
+  gold: "GOLD",
+  holo: "HOLOGRAPHIC",
+};
+
+function chamferedRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  corner = 12,
+) {
+  ctx.beginPath();
+  ctx.moveTo(x + corner, y);
+  ctx.lineTo(x + width - corner, y);
+  ctx.lineTo(x + width, y + corner);
+  ctx.lineTo(x + width, y + height - corner);
+  ctx.lineTo(x + width - corner, y + height);
+  ctx.lineTo(x + corner, y + height);
+  ctx.lineTo(x, y + height - corner);
+  ctx.lineTo(x, y + corner);
+  ctx.closePath();
+}
+
+function cardTextLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maximumLines: number) {
+  const characters = Array.from(text.trim());
+  const lines: string[] = [];
+  let line = "";
+  characters.forEach((character) => {
+    const candidate = `${line}${character}`;
+    if (line && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = character;
+    } else {
+      line = candidate;
+    }
+  });
+  if (line) lines.push(line);
+  if (lines.length <= maximumLines) return lines;
+  const visible = lines.slice(0, maximumLines);
+  visible[maximumLines - 1] = truncateCanvasText(ctx, `${visible[maximumLines - 1]}${lines.slice(maximumLines).join("")}`, maxWidth);
+  return visible;
+}
+
+function drawCardStar(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let index = 0; index < 8; index += 1) {
+    const angle = -Math.PI / 2 + index * Math.PI / 4;
+    const distance = index % 2 === 0 ? radius : radius * 0.28;
+    const px = Math.cos(angle) * distance;
+    const py = Math.sin(angle) * distance;
+    if (index === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+async function drawCardScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, localImage?: string) {
+  const card = spec.card;
+  if (!card) return false;
+  const family = screenFonts.sans;
+  const material = card.rarity;
+  const darkMaterial = material === "gold";
+  const ink = darkMaterial ? EPAPER_WHITE : "#151816";
+  const panel = darkMaterial ? "#151816" : EPAPER_WHITE;
+  const accent = material === "common"
+    ? accentColors.green
+    : material === "silver"
+      ? accentColors.blue
+      : material === "gold"
+        ? accentColors.yellow
+        : accentColors.red;
+  const outer = { x: 18, y: 18, width: 492, height: 756 };
+  const header = { x: 34, y: 34, width: 460, height: 92 };
+  const art = { x: 34, y: 140, width: 460, height: 390 };
+  const copy = { x: 34, y: 544, width: 460, height: 134 };
+  const stats = { x: 34, y: 692, width: 460, height: 64 };
+
+  ctx.save();
+  ctx.fillStyle = EPAPER_WHITE;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  try {
+    const texture = await loadArtwork(cardMaterialAssets[material]);
+    drawImageCover(ctx, texture, outer.x, outer.y, outer.width, outer.height, "inkloop-text");
+  } catch {
+    ctx.fillStyle = darkMaterial ? "#151816" : EPAPER_WHITE;
+    ctx.fillRect(outer.x, outer.y, outer.width, outer.height);
+  }
+
+  // One immutable geometry for every rarity. Material and ornament density are the only variables.
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = material === "common" ? 3 : 5;
+  chamferedRectPath(ctx, outer.x, outer.y, outer.width, outer.height, 18);
+  ctx.stroke();
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  chamferedRectPath(ctx, outer.x + 8, outer.y + 8, outer.width - 16, outer.height - 16, 13);
+  ctx.stroke();
+
+  [header, copy, stats].forEach((area) => {
+    ctx.fillStyle = panel;
+    chamferedRectPath(ctx, area.x, area.y, area.width, area.height, 10);
+    ctx.fill();
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  });
+
+  ctx.save();
+  chamferedRectPath(ctx, art.x, art.y, art.width, art.height, 12);
+  ctx.clip();
+  ctx.fillStyle = darkMaterial ? "#151816" : "#dfe4df";
+  ctx.fillRect(art.x, art.y, art.width, art.height);
+  let usedArtwork = false;
+  try {
+    const artwork = spec.artwork;
+    const source = localImage || (artwork ? artworkUrl(artwork, "portrait") : "");
+    if (source) {
+      const image = await loadArtwork(source);
+      const baseScale = Math.max(art.width / image.naturalWidth, art.height / image.naturalHeight);
+      const scale = baseScale * card.subjectScale;
+      const drawWidth = image.naturalWidth * scale;
+      const drawHeight = image.naturalHeight * scale;
+      const offsetX = card.subjectX / 100 * art.width * 0.42;
+      const offsetY = card.subjectY / 100 * art.height * 0.42;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(
+        image,
+        art.x + (art.width - drawWidth) / 2 + offsetX,
+        art.y + (art.height - drawHeight) / 2 + offsetY,
+        drawWidth,
+        drawHeight,
+      );
+      usedArtwork = true;
+    }
+  } catch {
+    usedArtwork = false;
+  }
+  if (!usedArtwork) {
+    ctx.fillStyle = accent;
+    ctx.fillRect(art.x, art.y, art.width, art.height);
+    ctx.fillStyle = darkMaterial ? EPAPER_WHITE : "#151816";
+    drawCardStar(ctx, art.x + art.width / 2, art.y + art.height / 2, 112, darkMaterial ? EPAPER_WHITE : "#151816");
+  }
+  ctx.restore();
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = 5;
+  chamferedRectPath(ctx, art.x, art.y, art.width, art.height, 12);
+  ctx.stroke();
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  chamferedRectPath(ctx, art.x + 7, art.y + 7, art.width - 14, art.height - 14, 8);
+  ctx.stroke();
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = ink;
+  ctx.font = `900 ${fitText(ctx, card.name, 330, 36, family)}px ${family}`;
+  ctx.fillText(card.name, header.x + 22, header.y + 43, 330);
+  ctx.font = `800 15px ${family}`;
+  ctx.fillText(`${card.type}  ·  ${cardRarityLabels[material]}`, header.x + 22, header.y + 72, 340);
+  ctx.textAlign = "right";
+  ctx.font = `900 22px ${screenFonts.mono}`;
+  ctx.fillText(`✦ ${card.level}`, header.x + header.width - 20, header.y + 49);
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = ink;
+  ctx.font = `900 15px ${family}`;
+  ctx.fillText("CARD EFFECT", copy.x + 20, copy.y + 28);
+  ctx.fillStyle = accent;
+  ctx.fillRect(copy.x + 20, copy.y + 38, 72, 5);
+  ctx.fillStyle = ink;
+  ctx.font = `700 18px ${family}`;
+  cardTextLines(ctx, card.description, copy.width - 40, 3).forEach((line, index) => {
+    ctx.fillText(line, copy.x + 20, copy.y + 70 + index * 23, copy.width - 40);
+  });
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = accent;
+  ctx.font = `900 18px ${family}`;
+  ctx.fillText("ATK", stats.x + 18, stats.y + 27);
+  ctx.fillStyle = ink;
+  ctx.font = `900 27px ${screenFonts.mono}`;
+  ctx.fillText(String(card.attack), stats.x + 72, stats.y + 31);
+  ctx.fillStyle = accent;
+  ctx.font = `900 18px ${family}`;
+  ctx.fillText("DEF", stats.x + 218, stats.y + 27);
+  ctx.fillStyle = ink;
+  ctx.font = `900 27px ${screenFonts.mono}`;
+  ctx.fillText(String(card.defense), stats.x + 272, stats.y + 31);
+  ctx.textAlign = "right";
+  ctx.font = `800 13px ${screenFonts.mono}`;
+  ctx.fillText(card.cardId, stats.x + stats.width - 18, stats.y + 50);
+  drawCardStar(ctx, stats.x + stats.width - 28, stats.y + 20, 9, accent);
+
+  if (material !== "common") {
+    drawCardStar(ctx, 36, 34, material === "holo" ? 13 : 9, accent);
+    drawCardStar(ctx, 492, 756, material === "holo" ? 13 : 9, accent);
+  }
+  if (material === "gold" || material === "holo") {
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(26, 132);
+    ctx.lineTo(26, 666);
+    ctx.moveTo(502, 132);
+    ctx.lineTo(502, 666);
+    ctx.stroke();
+  }
+  ctx.restore();
+  quantizeRegion(ctx, 0, 0, ctx.canvas.width, ctx.canvas.height, "official");
+  return usedArtwork;
+}
+
 async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
@@ -2247,6 +2480,9 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.fillRect(0, 0, width, height);
   if (spec.kind === "map") {
     return drawMapScreen(ctx, spec);
+  }
+  if (spec.kind === "card") {
+    return drawCardScreen(ctx, spec, localImage);
   }
   if (spec.table) {
     drawStructuredTable(ctx, spec);
@@ -3068,6 +3304,42 @@ export default function InkStudio() {
       return {
         ...current,
         spec: { ...current.spec, map: nextMap },
+      };
+    });
+  };
+
+  const updateCard = (patch: Partial<CardSpec>) => {
+    setApp((current) => {
+      if (current.spec.kind !== "card" || !current.spec.card) return current;
+      const card = {
+        ...current.spec.card,
+        ...patch,
+        level: patch.level === undefined ? current.spec.card.level : Math.min(12, Math.max(1, Math.round(patch.level))),
+        attack: patch.attack === undefined ? current.spec.card.attack : Math.min(9999, Math.max(0, Math.round(patch.attack))),
+        defense: patch.defense === undefined ? current.spec.card.defense : Math.min(9999, Math.max(0, Math.round(patch.defense))),
+        subjectScale: patch.subjectScale === undefined ? current.spec.card.subjectScale : Math.min(2.2, Math.max(0.7, patch.subjectScale)),
+        subjectX: patch.subjectX === undefined ? current.spec.card.subjectX : Math.min(100, Math.max(-100, Math.round(patch.subjectX))),
+        subjectY: patch.subjectY === undefined ? current.spec.card.subjectY : Math.min(100, Math.max(-100, Math.round(patch.subjectY))),
+      };
+      const accent = card.rarity === "gold" || card.rarity === "holo"
+        ? "yellow" as const
+        : card.rarity === "silver"
+          ? "blue" as const
+          : "green" as const;
+      return {
+        ...current,
+        title: card.name,
+        description: `${card.type} · ${card.level} 星 · ATK ${card.attack}`,
+        spec: {
+          ...current.spec,
+          orientation: "portrait",
+          title: card.name,
+          value: String(card.attack),
+          detail: card.description,
+          footer: card.cardId,
+          accent,
+          card,
+        },
       };
     });
   };
@@ -4117,10 +4389,19 @@ export default function InkStudio() {
                 </div>
                 <div className="display-editor">
                   <div className="settings-subhead">
-                    <strong>{app.spec.kind === "map" ? "地图画面" : "画面元素"}</strong>
-                    <small>{app.spec.kind === "map" ? "位置和样式都可在这里继续调整" : "勾选后可在预览中拖拽"}</small>
+                    <strong>{app.spec.kind === "map" ? "地图画面" : app.spec.kind === "card" ? "卡片设计" : "画面元素"}</strong>
+                    <small>{app.spec.kind === "map"
+                      ? "位置和样式都可在这里继续调整"
+                      : app.spec.kind === "card"
+                        ? "LLM 先生成数值与文案，你可以继续修改"
+                        : "勾选后可在预览中拖拽"}</small>
                   </div>
-                  <div className="orientation-field">
+                  {app.spec.kind === "card" ? (
+                    <div className="card-orientation-note">
+                      <strong>固定竖版 528×792</strong>
+                      <small>四种材质共用同一坐标网格，切换稀有度不会改变内容位置</small>
+                    </div>
+                  ) : <div className="orientation-field">
                     <div>
                       <strong>屏幕方向</strong>
                       <small>LLM 会先建议，你可以随时手动切换</small>
@@ -4144,7 +4425,7 @@ export default function InkStudio() {
                         </button>
                       ))}
                     </div>
-                  </div>
+                  </div>}
                   {app.spec.kind === "map" && app.spec.map && (
                     <div className="map-editor" aria-label="地图设置">
                       <div className={`map-service-state ${mapServiceStatus}`} role="status">
@@ -4340,7 +4621,90 @@ export default function InkStudio() {
                       </p>
                     </div>
                   )}
-                  {app.spec.kind !== "map" && (<>
+                  {app.spec.kind === "card" && app.spec.card && (
+                    <div className="card-editor" aria-label="卡片设计设置">
+                      <div className="card-rarity-options" role="group" aria-label="卡片稀有度">
+                        {([
+                          ["common", "普卡", "纸张"],
+                          ["silver", "银卡", "银箔"],
+                          ["gold", "金卡", "鎏金"],
+                          ["holo", "闪卡", "闪膜"],
+                        ] as Array<[CardRarity, string, string]>).map(([value, label, detail]) => (
+                          <button
+                            type="button"
+                            key={value}
+                            className={app.spec.card?.rarity === value ? `selected ${value}` : value}
+                            onClick={() => updateCard({ rarity: value })}
+                          >
+                            <strong>{label}</strong><small>{detail}</small>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="card-fields-grid">
+                        <label className="card-field card-name-field">
+                          <span>卡名</span>
+                          <input value={app.spec.card.name} maxLength={20} onChange={(event) => updateCard({ name: event.target.value })} />
+                        </label>
+                        <label className="card-field">
+                          <span>类型</span>
+                          <input value={app.spec.card.type} maxLength={24} onChange={(event) => updateCard({ type: event.target.value })} />
+                        </label>
+                        <label className="card-field compact">
+                          <span>等级</span>
+                          <input type="number" min={1} max={12} value={app.spec.card.level} onChange={(event) => updateCard({ level: Number(event.target.value) || 1 })} />
+                        </label>
+                        <label className="card-field compact">
+                          <span>ATK</span>
+                          <input type="number" min={0} max={9999} value={app.spec.card.attack} onChange={(event) => updateCard({ attack: Number(event.target.value) || 0 })} />
+                        </label>
+                        <label className="card-field compact">
+                          <span>DEF</span>
+                          <input type="number" min={0} max={9999} value={app.spec.card.defense} onChange={(event) => updateCard({ defense: Number(event.target.value) || 0 })} />
+                        </label>
+                        <label className="card-field compact">
+                          <span>编号</span>
+                          <input value={app.spec.card.cardId} maxLength={18} onChange={(event) => updateCard({ cardId: event.target.value })} />
+                        </label>
+                        <label className="card-field card-description-field">
+                          <span>效果描述</span>
+                          <textarea value={app.spec.card.description} maxLength={120} rows={3} onChange={(event) => updateCard({ description: event.target.value })} />
+                        </label>
+                      </div>
+
+                      <div className="card-subject-editor">
+                        <div className="card-editor-heading">
+                          <div><strong>主角画面</strong><small>保持卡框不动，只调整中间主角</small></div>
+                          <div className="card-subject-actions">
+                            <label>
+                              上传图片
+                              <input type="file" accept="image/*" onChange={(event) => void attachLocalImage(event.target.files?.[0])} />
+                            </label>
+                            <button type="button" onClick={regeneratePreviewArtwork} disabled={!app.spec.artwork || Boolean(app.localImage)}>随机主角</button>
+                            {app.localImage && <button type="button" onClick={() => setApp((current) => ({ ...current, localImage: undefined }))}>恢复网络图</button>}
+                          </div>
+                        </div>
+                        <label className="card-range-field">
+                          <span>主体大小</span>
+                          <input type="range" min={0.7} max={2.2} step={0.05} value={app.spec.card.subjectScale} onChange={(event) => updateCard({ subjectScale: Number(event.target.value) })} />
+                          <input type="number" min={70} max={220} value={Math.round(app.spec.card.subjectScale * 100)} onChange={(event) => updateCard({ subjectScale: (Number(event.target.value) || 100) / 100 })} />
+                          <em>%</em>
+                        </label>
+                        <label className="card-range-field">
+                          <span>水平位置</span>
+                          <input type="range" min={-100} max={100} value={app.spec.card.subjectX} onChange={(event) => updateCard({ subjectX: Number(event.target.value) })} />
+                          <input type="number" min={-100} max={100} value={app.spec.card.subjectX} onChange={(event) => updateCard({ subjectX: Number(event.target.value) || 0 })} />
+                        </label>
+                        <label className="card-range-field">
+                          <span>垂直位置</span>
+                          <input type="range" min={-100} max={100} value={app.spec.card.subjectY} onChange={(event) => updateCard({ subjectY: Number(event.target.value) })} />
+                          <input type="number" min={-100} max={100} value={app.spec.card.subjectY} onChange={(event) => updateCard({ subjectY: Number(event.target.value) || 0 })} />
+                        </label>
+                        <button type="button" className="card-subject-reset" onClick={() => updateCard({ subjectScale: 1, subjectX: 0, subjectY: 0 })}>主角位置复位</button>
+                      </div>
+                    </div>
+                  )}
+                  {app.spec.kind !== "map" && app.spec.kind !== "card" && (<>
                   <div className="component-list">
                     {screenElementOptions.map(({ key, label }) => (
                       <div className={`component-row${screenDisplay[key] ? " enabled" : ""}`} key={key}>

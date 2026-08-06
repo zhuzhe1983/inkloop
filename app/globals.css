@@ -4252,3 +4252,240 @@ input:focus-visible {
     grid-template-columns: 34px minmax(0, 1fr) 46px 34px;
   }
 }
+
+.card-orientation-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #f0f1ec;
+}
+
+.card-orientation-note strong {
+  font-size: 13px;
+}
+
+.card-orientation-note small {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.card-editor {
+  display: grid;
+  gap: 16px;
+}
+
+.card-rarity-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.card-rarity-options button {
+  min-height: 62px;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: #eef0eb;
+  color: var(--ink);
+  display: grid;
+  gap: 3px;
+  place-content: center;
+  cursor: pointer;
+}
+
+.card-rarity-options button strong {
+  font-size: 13px;
+}
+
+.card-rarity-options button small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.card-rarity-options button.selected {
+  color: white;
+  background: var(--ink);
+  box-shadow: inset 0 -4px 0 var(--blue);
+}
+
+.card-rarity-options button.selected.silver {
+  box-shadow: inset 0 -4px 0 #adb9c8;
+}
+
+.card-rarity-options button.selected.gold {
+  color: var(--ink);
+  background: #f3d74c;
+  box-shadow: inset 0 -4px 0 #bd8c00;
+}
+
+.card-rarity-options button.selected.holo {
+  background: linear-gradient(120deg, #2756c7, #087c4e 48%, #dc3f2f);
+  box-shadow: inset 0 -4px 0 #e5c900;
+}
+
+.card-rarity-options button.selected small {
+  color: inherit;
+  opacity: 0.7;
+}
+
+.card-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.card-field {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f0f1ec;
+}
+
+.card-field span,
+.card-range-field > span {
+  color: #707871;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+}
+
+.card-field input,
+.card-field textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 800 12px/1.5 inherit;
+}
+
+.card-field textarea {
+  resize: vertical;
+}
+
+.card-name-field {
+  grid-column: span 2;
+}
+
+.card-description-field {
+  grid-column: 1 / -1;
+}
+
+.card-subject-editor {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #eef2ff;
+}
+
+.card-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.card-editor-heading > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.card-editor-heading strong {
+  font-size: 12px;
+}
+
+.card-editor-heading small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.card-subject-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.card-subject-actions button,
+.card-subject-actions label,
+.card-subject-reset {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: white;
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 900;
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+}
+
+.card-subject-actions label input {
+  display: none;
+}
+
+.card-subject-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.card-range-field {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 54px 14px;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-range-field > input[type="number"] {
+  width: 54px;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: white;
+  color: var(--ink);
+  text-align: center;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.card-range-field > em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.card-subject-reset {
+  justify-self: end;
+}
+
+@media (max-width: 640px) {
+  .card-rarity-options,
+  .card-fields-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .card-description-field {
+    grid-column: 1 / -1;
+  }
+
+  .card-editor-heading,
+  .card-orientation-note {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .card-orientation-note small {
+    text-align: left;
+  }
+}

@@ -3,10 +3,12 @@ import {
   displaySettings,
   generateInkApp,
   inferWeatherCity,
+  resolveCardSpec,
   type ArtworkSpec,
   type AgendaRangeMode,
   type AgendaView,
   type ClockSpec,
+  type CardSpec,
   type InkApp,
   type MapLocationMode,
   type MapSpec,
@@ -26,7 +28,7 @@ const MODEL_PREFERENCES = [
   "qwen3-32b",
 ];
 
-const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric", "calendar", "timetable", "agenda", "map"]);
+const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric", "calendar", "timetable", "agenda", "map", "card"]);
 const ALLOWED_ACCENTS = new Set<ScreenSpec["accent"]>(["red", "blue", "green", "yellow"]);
 const ALLOWED_ARTWORK_MODES = new Set<ArtworkSpec["mode"] | "none">(["none", "generated", "web"]);
 const ALLOWED_ARTWORK_MOTIFS = new Set<ArtworkSpec["motif"]>([
@@ -65,7 +67,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
   "title": "应用名，最多20个汉字",
   "description": "一句用途说明",
   "spec": {
-    "kind": "weather|focus|countdown|meeting|metric|calendar|timetable|agenda|map",
+    "kind": "weather|focus|countdown|meeting|metric|calendar|timetable|agenda|map|card",
     "orientation": "portrait|landscape",
     "city": "天气应用填写城市，其他应用省略",
     "eyebrow": "屏幕顶部短标签",
@@ -96,6 +98,19 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
       "marker": true,
       "showAddress": true,
       "showCoordinates": false
+    },
+    "card": {
+      "rarity": "common|silver|gold|holo",
+      "name": "卡名",
+      "type": "类型 · 阵营",
+      "level": 6,
+      "description": "简短、有趣、可读的卡片效果描述",
+      "attack": 2600,
+      "defense": 2100,
+      "cardId": "INK-026",
+      "subjectScale": 1,
+      "subjectX": 0,
+      "subjectY": 0
     },
     "display": {
       "quote": false,
@@ -166,6 +181,7 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
 22. 用户要求课程表、课表或周时间表时使用 kind=timetable，table.type=timetable；columns 为 2—7 个列标题，rows 为 1—8 个时间段，每个 cells 长度与 columns 一致，每格最多 8 个汉字。表格数据只表达语义，不包含坐标、HTML、CSS 或绘图代码。
 23. 用户要求苹果日历、日程安排、议程、未来几天安排或带起止时间的周日历时使用 kind=agenda，table.type=agenda。默认 orientation=landscape、view=three-day、rangeMode=rolling、rangeHours=72；用户要求五天时使用 view=workweek、rangeHours=120。eventWidth 控制日程块宽度，密集五日视图可设为 70—85；showEndTime 和 showLocation 可按用户希望的简洁程度关闭。只需要生成 3—8 条明显为预览数据的事件，真实事件会由 iCal 在运行时注入。不要把日程当成固定课表，不要为没有事件的小时生成空行。
 24. 用户要求地图、附近位置、入口位置或周边导览时使用 kind=map 并填写 map。优先使用 locationMode=picker，让用户在右侧确认准确位置；只有明确要求浏览器定位时用 browser，明确要求 IP 粗定位时用 ip。不要编造经纬度，也不要把密钥或地图 URL 写进 spec。zoomLevel 为 3—19，街区/入口通常 17—19，城市概览通常 10—13。marker、地址、坐标显示按用户要求设置，之后都允许在右侧手动修改。
+25. 用户要求卡片、卡牌、桌游卡、普卡、银卡、金卡或闪卡时使用 kind=card 并填写 card。你可以根据主题有趣地生成卡名、类型、1—12 星等级、0—9999 的 ATK/DEF 和简短效果描述；稀有度可在 common、silver、gold、holo 中推断。用户明确指定的卡名、稀有度、等级、攻击、防御、类型或描述必须原样优先，不能被你的建议覆盖。默认创造原创角色和机制；artwork 使用 web、layout=hero，query 描述卡片主体而不是整张卡框。四种稀有度共用同一套星盘机械布局，只改变材质和装饰密度，禁止要求模型改变字段坐标。
 
 六色电子纸视觉规范（生成任何应用时都必须遵守）：
 ${EPAPER_DESIGN_GUIDE}`;
@@ -224,6 +240,10 @@ function wantsTimetable(prompt: string) {
 
 function wantsMap(prompt: string) {
   return /地图|位置图|路线图|导航图|周边图|附近位置|入口位置/.test(prompt);
+}
+
+function wantsCard(prompt: string) {
+  return /卡片|卡牌|桌游卡|收藏卡|对战卡|普卡|银卡|金卡|闪卡|全息卡|游戏王/i.test(prompt);
 }
 
 function namedArtworkQuery(prompt: string) {
@@ -533,6 +553,8 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
   const schedule = resolveSchedule(prompt, fallback, rawMinutes, rawTime);
   const normalizedKind = wantsMap(prompt)
     ? "map"
+    : wantsCard(prompt)
+      ? "card"
     : wantsWeather(prompt)
     ? "weather"
     : wantsAgenda(prompt)
@@ -541,7 +563,7 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
       ? "calendar"
       : wantsTimetable(prompt)
         ? "timetable"
-        : ALLOWED_KINDS.has(candidateKind) && !["weather", "calendar", "timetable", "agenda", "map"].includes(candidateKind)
+        : ALLOWED_KINDS.has(candidateKind) && !["weather", "calendar", "timetable", "agenda", "map", "card"].includes(candidateKind)
           ? candidateKind
           : fallback.spec.kind;
 
@@ -553,7 +575,9 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
     prompt,
     spec: {
       kind: normalizedKind,
-      orientation: /横版|横屏/.test(prompt)
+      orientation: normalizedKind === "card"
+        ? "portrait"
+        : /横版|横屏/.test(prompt)
         ? "landscape"
         : /竖版|竖屏/.test(prompt)
           ? "portrait"
@@ -574,6 +598,13 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
       clock: normalizeClock(candidateSpec.clock, fallback.spec.clock),
       display: normalizeDisplay(candidateSpec.display, fallback, prompt),
       map: normalizedKind === "map" ? normalizeMap(candidateSpec.map, fallback.spec.map, prompt) : undefined,
+      card: normalizedKind === "card"
+        ? resolveCardSpec(
+            prompt,
+            candidateSpec.card && typeof candidateSpec.card === "object" ? candidateSpec.card as Partial<CardSpec> : {},
+            fallback.spec.card,
+          )
+        : undefined,
       table: normalizeTable(candidateSpec.table, fallback.spec.table, normalizedKind),
     },
     code: trimText(value.code, fallback.code, 8000),

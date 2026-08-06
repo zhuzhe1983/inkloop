@@ -1,4 +1,4 @@
-export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda" | "map";
+export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda" | "map" | "card";
 
 export type ScreenOrientation = "portrait" | "landscape";
 
@@ -41,6 +41,22 @@ export type MapSpec = {
   address?: string;
   approximate?: boolean;
   statusMessage?: string;
+};
+
+export type CardRarity = "common" | "silver" | "gold" | "holo";
+
+export type CardSpec = {
+  rarity: CardRarity;
+  name: string;
+  type: string;
+  level: number;
+  description: string;
+  attack: number;
+  defense: number;
+  cardId: string;
+  subjectScale: number;
+  subjectX: number;
+  subjectY: number;
 };
 
 export type ScreenElementKey = "quote" | "logo" | "date" | "time" | "timeLarge" | "weather" | "weatherLarge" | "qr";
@@ -170,6 +186,7 @@ export type ScreenSpec = {
   weatherDetail?: string;
   weatherAccent?: "red" | "blue" | "green" | "yellow";
   map?: MapSpec;
+  card?: CardSpec;
   table?: ScreenTable;
 };
 
@@ -503,6 +520,130 @@ function shouldShowMapCoordinates(source: string) {
   return includesAny(source, ["坐标", "经纬度"]);
 }
 
+function wantsTradingCard(source: string) {
+  return /卡片|卡牌|桌游卡|收藏卡|对战卡|普卡|银卡|金卡|闪卡|全息卡|游戏王/i.test(source);
+}
+
+function explicitCardRarity(source: string): CardRarity | undefined {
+  if (/闪卡|全息卡|镭射卡|holo/i.test(source)) return "holo";
+  if (/金卡|黄金卡|gold\s*card/i.test(source)) return "gold";
+  if (/银卡|白银卡|silver\s*card/i.test(source)) return "silver";
+  if (/普卡|普通卡|common\s*card/i.test(source)) return "common";
+  return undefined;
+}
+
+function cardSubjectQuery(source: string) {
+  if (/边牧|边境牧羊犬/.test(source)) return "border collie fantasy hero portrait";
+  if (/猫|猫咪|小猫/.test(source)) return "cat fantasy guardian portrait";
+  if (/狗|宠物/.test(source)) return "dog fantasy guardian portrait";
+  if (/龙|巨龙/.test(source)) return "celestial dragon fantasy concept art";
+  if (/机甲|机械|机器人/.test(source)) return "celestial mechanical guardian concept art";
+  if (/骑士|战士/.test(source)) return "astral knight fantasy concept art";
+  if (/魔法|法师|巫师/.test(source)) return "astral mage fantasy concept art";
+  if (/女性|美女|女人|女孩/.test(source)) return "woman fantasy hero portrait concept art";
+  return "original celestial guardian fantasy concept art";
+}
+
+function explicitText(source: string, labels: string[], max: number) {
+  const label = labels.map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const match = source.match(new RegExp(`(?:${label})\\s*[：:=]\\s*[「“\"]?([^，。；;\\n」”\"]{1,${max}})`, "i"));
+  return match?.[1]?.trim();
+}
+
+function explicitCardDescription(source: string) {
+  const match = source.match(/(?:效果描述|卡片描述|描述|效果)\s*[：:=]\s*/i);
+  if (!match || match.index === undefined) return undefined;
+  const remainder = source.slice(match.index + match[0].length);
+  const nextField = remainder.search(/[，,；;\n]\s*(?:卡名|名称|名字|类型|种族|等级|Lv\.?|ATK|攻击(?:力)?|DEF|防御(?:力)?|卡号|编号|ID)\s*[：:=]/i);
+  const value = (nextField >= 0 ? remainder.slice(0, nextField) : remainder)
+    .trim()
+    .replace(/[。；;\s]+$/, "");
+  return value ? value.slice(0, 120) : undefined;
+}
+
+function clampInteger(value: unknown, minimum: number, maximum: number, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, Math.round(parsed))) : fallback;
+}
+
+function clampCardOffset(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(100, Math.max(-100, Math.round(parsed))) : 0;
+}
+
+function localCardRarity(source: string, seed: number): CardRarity {
+  const explicit = explicitCardRarity(source);
+  if (explicit) return explicit;
+  if (/神话|传说|限定|终极|宇宙级/.test(source)) return "holo";
+  if (/王者|史诗|至尊|稀有/.test(source)) return "gold";
+  const roll = seed % 100;
+  return roll < 8 ? "holo" : roll < 24 ? "gold" : roll < 48 ? "silver" : "common";
+}
+
+function localCardType(source: string) {
+  if (/龙|巨龙/.test(source)) return "龙族 · 星辉";
+  if (/机甲|机械|机器人/.test(source)) return "机械 · 守护";
+  if (/骑士|战士/.test(source)) return "战士 · 星辉";
+  if (/魔法|法师|巫师/.test(source)) return "法术 · 秘仪";
+  if (/猫|狗|宠物|边牧/.test(source)) return "灵兽 · 同伴";
+  return "星辉 · 守护";
+}
+
+function localCardName(source: string) {
+  const explicit = explicitText(source, ["卡名", "名称", "名字"], 20)
+    || source.match(/(?:叫做|叫作|名为)\s*[「“\"]?([^，。；;\n」”\"]{1,20})/)?.[1]?.trim()
+    || source.match(/[「“]([^」”]{1,20})[」”]/)?.[1]?.trim();
+  if (explicit) return explicit;
+  if (/边牧|边境牧羊犬/.test(source)) return "星野边牧";
+  if (/猫|猫咪|小猫/.test(source)) return "月影灵猫";
+  if (/龙|巨龙/.test(source)) return "星穹曜龙";
+  if (/机甲|机械|机器人/.test(source)) return "星穹守望者";
+  if (/骑士|战士/.test(source)) return "暮光誓约骑士";
+  if (/魔法|法师|巫师/.test(source)) return "流光秘术师";
+  return "星穹守望者";
+}
+
+export function resolveCardSpec(
+  source: string,
+  candidate: Partial<CardSpec> = {},
+  fallback?: CardSpec,
+): CardSpec {
+  const seed = promptSeed(source);
+  const rarity = explicitCardRarity(source)
+    ?? (candidate.rarity === "common" || candidate.rarity === "silver" || candidate.rarity === "gold" || candidate.rarity === "holo"
+      ? candidate.rarity
+      : fallback?.rarity ?? localCardRarity(source, seed));
+  const statBase = rarity === "holo" ? 3000 : rarity === "gold" ? 2400 : rarity === "silver" ? 1700 : 1000;
+  const defaultAttack = statBase + seed % (rarity === "common" ? 800 : 1100);
+  const defaultDefense = statBase - 200 + Math.floor(seed / 7) % (rarity === "common" ? 800 : 1000);
+  const explicitLevel = source.match(/(?:等级\s*[：:=]?\s*|Lv\.?\s*|LV\.?\s*)(\d{1,2})|(?:^|\D)(\d{1,2})\s*(?:星|级)/i);
+  const explicitAttack = source.match(/(?:ATK|攻击(?:力)?)\s*[：:=]?\s*(\d{1,5})/i)?.[1];
+  const explicitDefense = source.match(/(?:DEF|防御(?:力)?)\s*[：:=]?\s*(\d{1,5})/i)?.[1];
+  const explicitDescription = explicitCardDescription(source);
+  const explicitType = explicitText(source, ["卡片类型", "类型", "种族"], 24);
+  const explicitId = explicitText(source, ["卡号", "编号", "ID"], 18);
+  const defaultDescription = /边牧|狗/.test(source)
+    ? "入场时标记最需要守护的目标；每完成一次刷新，获得 1 层默契并提升守护值。"
+    : /猫/.test(source)
+      ? "在安静回合中积蓄月光；当画面更新时，有概率复制上一张卡的微光效果。"
+      : "每当设备完成一次刷新，获得 1 层星辉。积满 3 层时清除错误状态，并强化下一次写入。";
+  const requestedScale = source.match(/(?:主体|角色|人物|图片)(?:大小|缩放)?\s*[：:=]?\s*(\d{1,3})\s*%/)?.[1];
+
+  return {
+    rarity,
+    name: (explicitText(source, ["卡名", "名称", "名字"], 20) || candidate.name || fallback?.name || localCardName(source)).trim().slice(0, 20),
+    type: (explicitType || candidate.type || fallback?.type || localCardType(source)).trim().slice(0, 24),
+    level: clampInteger(explicitLevel?.[1] || explicitLevel?.[2] || candidate.level, 1, 12, fallback?.level ?? (3 + seed % 7)),
+    description: (explicitDescription || candidate.description || fallback?.description || defaultDescription).trim().slice(0, 120),
+    attack: clampInteger(explicitAttack || candidate.attack, 0, 9999, fallback?.attack ?? defaultAttack),
+    defense: clampInteger(explicitDefense || candidate.defense, 0, 9999, fallback?.defense ?? defaultDefense),
+    cardId: (explicitId || candidate.cardId || fallback?.cardId || `INK-${String(seed % 1000).padStart(3, "0")}`).trim().slice(0, 18),
+    subjectScale: Math.min(2.2, Math.max(0.7, Number(requestedScale ? Number(requestedScale) / 100 : candidate.subjectScale ?? fallback?.subjectScale ?? 1) || 1)),
+    subjectX: clampCardOffset(candidate.subjectX ?? fallback?.subjectX),
+    subjectY: clampCardOffset(candidate.subjectY ?? fallback?.subjectY),
+  };
+}
+
 export function generateInkApp(prompt: string, stableId?: string): InkApp {
   const source = prompt.trim() || starterPrompt;
   const promptHour = source.match(/(\d{1,2})\s*[点:时]/)?.[1];
@@ -576,6 +717,73 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
       code: `export async function render(ctx) {
   const location = await ctx.map.resolve({ mode: "picker", query: ${JSON.stringify(query)} });
   return { type: "map", location, zoomLevel: ${inferMapZoomLevel(source)}, marker: true };
+}`,
+    };
+  }
+
+  if (wantsTradingCard(source)) {
+    const card = resolveCardSpec(source);
+    const cardArtwork = artwork ?? {
+      mode: "web" as const,
+      motif: "grid" as const,
+      query: cardSubjectQuery(source),
+      style: "original astral mechanical trading card character concept art",
+      layout: "hero" as const,
+      seed: promptSeed(`${source}:card-subject`),
+      rotateOnRefresh: false,
+    };
+    return {
+      ...base,
+      title: card.name,
+      description: `${card.type} · ${card.level} 星 · ATK ${card.attack}`,
+      scheduleMode: "once",
+      spec: {
+        kind: "card",
+        orientation: "portrait",
+        eyebrow: "",
+        title: card.name,
+        value: String(card.attack),
+        unit: "ATK",
+        detail: card.description,
+        footer: card.cardId,
+        accent: card.rarity === "gold" || card.rarity === "holo" ? "yellow" : card.rarity === "silver" ? "blue" : "green",
+        artwork: cardArtwork,
+        card,
+        display: {
+          ...displaySettings({
+            kind: "card",
+            orientation: "portrait",
+            eyebrow: "",
+            title: card.name,
+            value: String(card.attack),
+            unit: "ATK",
+            detail: card.description,
+            footer: card.cardId,
+            accent: "yellow",
+          }),
+          quote: false,
+          logo: false,
+          date: false,
+          time: false,
+          timeLarge: false,
+          weather: false,
+          weatherLarge: false,
+          qr: false,
+          border: false,
+          renderMode: "official",
+          renderModeExplicit: true,
+        },
+      },
+      code: `export function render(ctx) {
+  return {
+    type: "card",
+    name: ${JSON.stringify(card.name)},
+    rarity: ${JSON.stringify(card.rarity)},
+    level: ${card.level},
+    attack: ${card.attack},
+    defense: ${card.defense},
+    description: ${JSON.stringify(card.description)}
+  };
 }`,
     };
   }
