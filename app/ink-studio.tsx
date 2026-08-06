@@ -157,6 +157,7 @@ function mapApiParams(map: MapSpec, mode: "resolve" | "image", orientation?: Scr
   });
   if (typeof map.latitude === "number") params.set("lat", String(map.latitude));
   if (typeof map.longitude === "number") params.set("lng", String(map.longitude));
+  if (map.approximate) params.set("approximate", "true");
   if (orientation) params.set("orientation", orientation);
   return params;
 }

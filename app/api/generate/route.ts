@@ -382,17 +382,39 @@ function normalizeMap(value: unknown, fallback: MapSpec | undefined, prompt: str
   const requestedMode = candidate.locationMode as MapLocationMode;
   const requestedStyle = candidate.style as MapStyle;
   const query = trimText(candidate.query, fallbackMap.query, 80);
+  const candidateLatitude = Number(candidate.latitude);
+  const candidateLongitude = Number(candidate.longitude);
+  const hasApproximateCoordinates = requestedMode !== "browser"
+    && requestedMode !== "ip"
+    && candidate.latitude !== undefined
+    && candidate.latitude !== null
+    && candidate.longitude !== undefined
+    && candidate.longitude !== null
+    && Number.isFinite(candidateLatitude)
+    && Number.isFinite(candidateLongitude)
+    && candidateLatitude >= -90
+    && candidateLatitude <= 90
+    && candidateLongitude >= -180
+    && candidateLongitude <= 180
+    && (Math.abs(candidateLatitude) > 0.0001 || Math.abs(candidateLongitude) > 0.0001);
   const hidesCoordinates = /(?:不|不要|无需|隐藏)(?:显示)?(?:地图)?(?:坐标|经纬度)/.test(prompt);
   return {
     locationMode: requestedMode === "browser" || requestedMode === "ip" ? requestedMode : "picker",
     query,
-    coordinateType: "bd09ll",
+    latitude: hasApproximateCoordinates ? candidateLatitude : undefined,
+    longitude: hasApproximateCoordinates ? candidateLongitude : undefined,
+    coordinateType: hasApproximateCoordinates ? "wgs84ll" : "bd09ll",
     zoomLevel: Math.min(19, Math.max(3, Math.round(Number(candidate.zoomLevel) || fallbackMap.zoomLevel))),
     style: requestedStyle === "balanced" || requestedStyle === "detail" ? requestedStyle : "eink",
     marker: candidate.marker !== false,
     showAddress: candidate.showAddress !== false,
     showCoordinates: !hidesCoordinates && (candidate.showCoordinates === true || /坐标|经纬度/.test(prompt)),
-    statusMessage: query ? "正在查找地点；可在右侧重新选点" : "请在右侧地图中选点",
+    approximate: hasApproximateCoordinates || undefined,
+    statusMessage: hasApproximateCoordinates
+      ? "当前为模型估算位置；可在右侧选点提高精度"
+      : query
+        ? "正在查找地点；可在右侧重新选点"
+        : "请在右侧地图中选点",
   };
 }
 
@@ -563,8 +585,8 @@ function buildCompactSystemPrompt(prompt: string) {
   }
   if (wantsMap(prompt)) {
     sections.push(`地图：
-"map":{"locationMode":"picker|browser|ip","query":"地点或POI","zoomLevel":17,"style":"eink|balanced|detail","marker":true,"showAddress":true,"showCoordinates":false}
-默认 picker，不编造经纬度；zoomLevel 3—19，入口 17—19，城市 10—13。`);
+"map":{"locationMode":"picker|browser|ip","query":"地点或POI","latitude":30.2741,"longitude":120.1551,"coordinateType":"wgs84ll","approximate":true,"zoomLevel":17,"style":"eink|balanced|detail","marker":true,"showAddress":true,"showCoordinates":false}
+默认 picker。已知城市、区域或著名地标时可以给出常识范围内的大致 WGS84 经纬度，并必须设置 coordinateType=wgs84ll、approximate=true；不确定时省略 latitude/longitude，绝不能声称是精确坐标。zoomLevel 3—19，入口 17—19，城市 10—13。`);
   }
   if (wantsCard(prompt)) {
     sections.push(`卡片：kind=card、orientation=portrait、artwork.layout=hero，并返回：
@@ -594,7 +616,7 @@ function buildCompactSystemPrompt(prompt: string) {
 {"title":"应用名","description":"一句用途","spec":{"kind":"${kind}","orientation":"portrait|landscape","city":"仅天气需要","eyebrow":"短标签","title":"屏幕标题","value":"主值","unit":"单位","detail":"一行详情","footer":"一行补充","accent":"red|blue|green|yellow","display":{"quote":false,"logo":false,"date":false,"time":false,"timeLarge":false,"weather":false,"weatherLarge":false,"qr":false,"border":false,"font":"sans|serif|rounded|mono|handwritten"}},"code":"安全的 JavaScript render(ctx) 业务逻辑源码","scheduleMode":"once|hourly|daily|custom","customMinutes":30,"dailyTime":"08:00"}
 
 通用规则：
-- 用户明确要求优先；不编造个人数据、密码、坐标或真实日程。
+- 用户明确要求优先；不编造个人数据、密码或真实日程。地图只能提供明确标为 approximate 的大致 WGS84 坐标，不能伪装成精确定位。
 - 没有明确刷新周期时 scheduleMode=once；自定义周期最短1分钟。
 - 竖版528×792，横版792×528，只用纸白、墨黑、黄、红、蓝、绿。纸白和墨黑为主，通常只用一个强调色。
 - 文本必须短、清晰、高对比；不要品牌签名、设备型号、水印、伪按钮、厚重发光或无意义脚注。

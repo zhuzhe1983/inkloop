@@ -213,6 +213,7 @@ async function resolveLocation(request: Request, url: URL, ak: string, includeAd
   const latitude = coordinate(url.searchParams.get("lat"), -90, 90);
   const longitude = coordinate(url.searchParams.get("lng"), -180, 180);
   if (latitude !== undefined && longitude !== undefined) {
+    const approximate = url.searchParams.get("approximate") === "true";
     const converted = url.searchParams.get("coordtype") === "wgs84ll"
       ? await convertWgs84(longitude, latitude, ak)
       : { longitude, latitude };
@@ -225,7 +226,7 @@ async function resolveLocation(request: Request, url: URL, ak: string, includeAd
     return {
       ...converted,
       ...address,
-      approximate: false,
+      approximate,
       source: mode === "browser" ? "browser" : "picker",
     };
   }
