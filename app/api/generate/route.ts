@@ -730,6 +730,7 @@ async function requestCompletion(baseUrl: string, apiKey: string, model: string,
       ],
       temperature: 0.2,
       max_tokens: 1800,
+      response_format: { type: "json_object" },
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -737,7 +738,7 @@ async function requestCompletion(baseUrl: string, apiKey: string, model: string,
   const completion = (await response.json()) as ChatCompletion;
   const content = completion.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error("模型响应缺少内容");
-  return content;
+  return extractJson(content);
 }
 
 export function GET() {
@@ -771,9 +772,9 @@ export async function POST(request: Request) {
     const configuredModel = env.LLM_MODEL?.trim() || "";
     const models = configuredModel ? [] : await modelsPromise;
     let model = configuredModel || preferredModel(models);
-    let content: string;
+    let generated: Record<string, unknown>;
     try {
-      content = await requestCompletion(baseUrl, apiKey, model, prompt, 18_000);
+      generated = await requestCompletion(baseUrl, apiKey, model, prompt, 18_000);
     } catch (primaryError) {
       const availableModels = models.length ? models : await modelsPromise;
       const fallbackModel = preferredModel(availableModels, model);
@@ -783,7 +784,7 @@ export async function POST(request: Request) {
         error: primaryError instanceof Error ? primaryError.message : String(primaryError),
       });
       try {
-        content = await requestCompletion(baseUrl, apiKey, fallbackModel, prompt, 28_000);
+        generated = await requestCompletion(baseUrl, apiKey, fallbackModel, prompt, 28_000);
         model = fallbackModel;
       } catch (fallbackError) {
         console.error("Inkloop fallback LLM failed", {
@@ -793,7 +794,7 @@ export async function POST(request: Request) {
         throw fallbackError;
       }
     }
-    const app = normalizeApp(extractJson(content), prompt);
+    const app = normalizeApp(generated, prompt);
     return Response.json({ app, mode: "llm", model });
   } catch (error) {
     if (!prompt) {
