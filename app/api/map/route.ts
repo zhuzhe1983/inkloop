@@ -47,6 +47,7 @@ function validNumber(value: unknown): value is number {
 }
 
 function coordinate(value: string | null, minimum: number, maximum: number) {
+  if (value === null || !value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : undefined;
 }
@@ -87,7 +88,14 @@ async function fetchJson(url: URL, label: string) {
 
 function baiduStatus(payload: Record<string, unknown>, label: string) {
   const status = Number(payload.status);
-  if (status !== 0) throw new MapServiceError("MAP_UPSTREAM_REJECTED", 502, `${label}没有返回可用结果。`);
+  if (status !== 0) {
+    const upstreamMessage = typeof payload.message === "string" ? payload.message.trim().slice(0, 160) : "";
+    throw new MapServiceError(
+      "MAP_UPSTREAM_REJECTED",
+      502,
+      `${label}没有返回可用结果${upstreamMessage ? `：${upstreamMessage}` : ""}。`,
+    );
+  }
 }
 
 async function locateByIp(request: Request, ak: string): Promise<MapPoint> {
@@ -286,7 +294,19 @@ export async function GET(request: Request) {
     }
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok || !contentType.startsWith("image/")) {
-      throw new MapServiceError("MAP_IMAGE_UNAVAILABLE", 502, "静态地图暂时无法获取，请稍后重试。");
+      const detail = await response.text().catch(() => "");
+      let upstreamMessage = "";
+      try {
+        const payload = JSON.parse(detail) as { message?: unknown };
+        upstreamMessage = typeof payload.message === "string" ? payload.message.trim().slice(0, 160) : "";
+      } catch {
+        upstreamMessage = detail.trim().slice(0, 160);
+      }
+      throw new MapServiceError(
+        "MAP_IMAGE_UNAVAILABLE",
+        502,
+        `静态地图请求被拒绝${upstreamMessage ? `：${upstreamMessage}` : ""}。`,
+      );
     }
     const declaredSize = Number(response.headers.get("content-length") || 0);
     if (declaredSize > MAX_IMAGE_BYTES) {

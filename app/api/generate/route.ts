@@ -653,6 +653,8 @@ function normalizeApp(value: Record<string, unknown>, prompt: string): InkApp {
         ? "landscape"
         : /竖版|竖屏/.test(prompt)
           ? "portrait"
+          : normalizedKind === "map"
+            ? "portrait"
           : candidateSpec.orientation === "landscape" || candidateSpec.orientation === "portrait"
             ? candidateSpec.orientation
             : fallback.spec.orientation || (normalizedKind === "agenda" || normalizedKind === "timetable" ? "landscape" : "portrait"),
