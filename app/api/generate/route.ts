@@ -533,6 +533,74 @@ function resolveApiKey() {
   return env.LLM_API_KEY?.trim() || "";
 }
 
+function buildCompactSystemPrompt(prompt: string) {
+  const sections: string[] = [];
+  const kind = wantsMap(prompt)
+    ? "map"
+    : wantsCard(prompt)
+      ? "card"
+      : wantsWeather(prompt)
+        ? "weather"
+        : wantsAgenda(prompt)
+          ? "agenda"
+          : wantsCalendar(prompt)
+            ? "calendar"
+            : wantsTimetable(prompt)
+              ? "timetable"
+              : "focus|countdown|meeting|metric";
+
+  if (wantsArtwork(prompt) || wantsCard(prompt)) {
+    sections.push(`artwork 仅在用户要求图片时返回：
+"artwork":{"mode":"generated|web","query":"2—6个准确英文主体词","style":"2—5个英文风格词","layout":"background|hero|fullscreen","rotateOnRefresh":false}
+人物、动物、城市和产品用 web；抽象图形用 generated。卡片主体用 hero。全屏纯图用 fullscreen；图片背景用 background。保留 Marvel、Spider-Man、边牧等明确主题，不要泛化。女性只能用成年 woman。`);
+  }
+  if (wantsWeather(prompt)) {
+    sections.push(`天气：kind=weather，填写 city；display.weatherLarge=true、weather=false。天气数据由运行时注入，不要输出 {{weather.*}}。`);
+  }
+  if (wantsMap(prompt)) {
+    sections.push(`地图：
+"map":{"locationMode":"picker|browser|ip","query":"地点或POI","zoomLevel":17,"style":"eink|balanced|detail","marker":true,"showAddress":true,"showCoordinates":false}
+默认 picker，不编造经纬度；zoomLevel 3—19，入口 17—19，城市 10—13。`);
+  }
+  if (wantsCard(prompt)) {
+    sections.push(`卡片：kind=card、orientation=portrait、artwork.layout=hero，并返回：
+"card":{"rarity":"common|silver|gold|holo","name":"卡名","type":"类型 · 阵营","level":6,"description":"简短有趣的效果","attack":2600,"defense":2100,"cardId":"INK-026","subjectScale":1,"subjectX":0,"subjectY":0}
+可以自动生成有趣数值，但用户明确指定的卡名、稀有度、等级、ATK、DEF、类型和描述必须原样优先。四种稀有度坐标相同，只改变材质。`);
+  }
+  if (wantsAgenda(prompt)) {
+    sections.push(`苹果日历/日程：kind=agenda、orientation=landscape，并返回：
+"table":{"type":"agenda","view":"agenda|three-day|workweek","rangeMode":"rolling|today|custom","rangeHours":72,"customStart":"","customEnd":"","eventWidth":85,"showEndTime":true,"showLocation":true,"events":[{"uid":"preview-1","title":"预览日程","start":"ISO时间","end":"ISO时间","location":"","allDay":false}]}
+默认未来三天；五天用 workweek、120小时。只给3—8条明显的预览事件，真实事件由 iCal 注入。`);
+  } else if (wantsCalendar(prompt)) {
+    sections.push(`月历：kind=calendar，并返回：
+"table":{"type":"calendar","year":2026,"month":8,"weekStartsOn":"monday|sunday","lunar":false,"events":[{"day":8,"text":"事件"}]}
+农历仅在用户要求时为 true；最多12条简短事件。`);
+  } else if (wantsTimetable(prompt)) {
+    sections.push(`课程表：kind=timetable、orientation=landscape，并返回：
+"table":{"type":"timetable","columns":["周一","周二"],"rows":[{"label":"08:00","cells":["语文","数学"]}]}
+2—7列、1—8行，每格最多8个汉字。`);
+  }
+  if (/时钟|时间|日期|二维码|QR|Wi-?Fi|WPA/i.test(prompt)) {
+    sections.push(`可选组件放在 display：time 是小时间，timeLarge 是主视觉大时间；border 仅控制全屏外框且默认 false。二维码只有用户明确要求时 qr=true；Wi-Fi 二维码用 qrMode=wifi，不要编造密码。时钟可返回 "clock":{"enabled":true,"board":true,"font":"sans|serif|rounded|mono|handwritten|random"}。`);
+  }
+
+  return `你是 Inkloop 六色电子墨水屏应用编程助手。只返回一个 JSON 对象，不要 Markdown、解释或代码围栏。
+
+返回结构：
+{"title":"应用名","description":"一句用途","spec":{"kind":"${kind}","orientation":"portrait|landscape","city":"仅天气需要","eyebrow":"短标签","title":"屏幕标题","value":"主值","unit":"单位","detail":"一行详情","footer":"一行补充","accent":"red|blue|green|yellow","display":{"quote":false,"logo":false,"date":false,"time":false,"timeLarge":false,"weather":false,"weatherLarge":false,"qr":false,"border":false,"font":"sans|serif|rounded|mono|handwritten"}},"code":"安全的 JavaScript render(ctx) 业务逻辑源码","scheduleMode":"once|hourly|daily|custom","customMinutes":30,"dailyTime":"08:00"}
+
+通用规则：
+- 用户明确要求优先；不编造个人数据、密码、坐标或真实日程。
+- 没有明确刷新周期时 scheduleMode=once；自定义周期最短1分钟。
+- 竖版528×792，横版792×528，只用纸白、墨黑、黄、红、蓝、绿。纸白和墨黑为主，通常只用一个强调色。
+- 文本必须短、清晰、高对比；不要品牌签名、设备型号、水印、伪按钮、厚重发光或无意义脚注。
+- 运行时变量只允许 {{date}}、{{year}}、{{month}}、{{day}}、{{weekday}}、{{hour}}、{{minute}}、{{time}}。
+- code 只用于审阅，不使用 eval、不含密钥、不直接调用蓝牙；外部数据使用 ctx.weather、ctx.calendar 或 ctx.data。
+- 未要求的复杂对象可以省略，系统会补默认值。
+
+${sections.join("\n\n")}`;
+}
+
 function extractJson(content: string) {
   const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   const start = cleaned.indexOf("{");
@@ -641,6 +709,12 @@ function preferredModel(models: string[], excluded = "") {
 }
 
 async function requestCompletion(baseUrl: string, apiKey: string, model: string, prompt: string, timeoutMs: number) {
+  const systemPrompt = buildCompactSystemPrompt(prompt);
+  console.info("Inkloop LLM request", {
+    model,
+    systemPromptBytes: new TextEncoder().encode(systemPrompt).byteLength,
+    userPromptBytes: new TextEncoder().encode(prompt).byteLength,
+  });
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -651,7 +725,7 @@ async function requestCompletion(baseUrl: string, apiKey: string, model: string,
     body: JSON.stringify({
       model,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         { role: "user", content: prompt },
       ],
       temperature: 0.2,
