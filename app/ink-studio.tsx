@@ -2926,11 +2926,9 @@ export default function InkStudio() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [expandedDeviceIds, setExpandedDeviceIds] = useState<Set<string>>(() => new Set());
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
-  const [taskPanelDeviceId, setTaskPanelDeviceId] = useState<string | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"idle" | "ready" | "writing" | "scheduled" | "error">("idle");
   const [progress, setProgress] = useState<TodooProgress | null>(null);
   const [deviceTasks, setDeviceTasks] = useState<DeviceTask[]>([]);
-  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
   const [calibrationDeviceId, setCalibrationDeviceId] = useState<string | null>(null);
   const [calibrationStep, setCalibrationStep] = useState<1 | 2 | 3>(1);
   const [calibrationBusy, setCalibrationBusy] = useState(false);
@@ -3055,6 +3053,22 @@ export default function InkStudio() {
     const driver = deviceDriversRef.current.get(profile.id);
     if (driver) driverRef.current = driver;
   }, []);
+
+  const openDeviceCenter = useCallback((profile: DeviceProfile) => {
+    activateDevice(profile);
+    setExpandedDeviceIds((current) => {
+      if (current.has(profile.id)) return current;
+      const next = new Set(current);
+      next.add(profile.id);
+      return next;
+    });
+    navigateToTab("device");
+    window.setTimeout(() => {
+      const deviceCard = document.getElementById(`device-card-${profile.id}`);
+      deviceCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+      deviceCard?.querySelector<HTMLButtonElement>(".device-registry-summary")?.focus({ preventScroll: true });
+    }, 0);
+  }, [activateDevice, navigateToTab]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((current) => {
@@ -3191,15 +3205,6 @@ export default function InkStudio() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [calibrationBusy, calibrationDeviceId]);
-
-  useEffect(() => {
-    if (!taskPanelOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setTaskPanelOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [taskPanelOpen]);
 
   useEffect(() => {
     if (app.spec.kind !== "map") return;
@@ -4293,8 +4298,6 @@ export default function InkStudio() {
       const wrote = await runTransfer(app, resolvedDeviceId, taskId, { reusePreview: true });
       const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
       scheduleDeviceTask(taskId, wrote ? undefined : retryDelayForFailures(afterRun?.consecutiveFailures ?? 1));
-      setTaskPanelDeviceId(resolvedDeviceId);
-      setTaskPanelOpen(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "没有选择设备";
       showToast(message, "error");
@@ -4326,10 +4329,6 @@ export default function InkStudio() {
       status: hasError ? "error" : isWriting ? "writing" : tasks.length ? "scheduled" : authorized ? "ready" : "idle",
     };
   });
-  const panelDevice = devices.find((device) => device.id === taskPanelDeviceId) ?? activeDevice;
-  const panelTasks = panelDevice
-    ? deviceTasks.filter((task) => task.deviceId === panelDevice.id)
-    : [];
   const currentTask = deviceTasks.find((task) => task.app.id === app.id
     && (!activeDevice?.id || task.deviceId === activeDevice.id));
   const scheduleActive = Boolean(currentTask);
@@ -4374,13 +4373,9 @@ export default function InkStudio() {
               type="button"
               key={device.id}
               className={`sidebar-device${device.tasks.length ? " has-tasks" : ""}${device.hasError ? " has-error" : ""}${activeDevice?.id === device.id ? " active" : ""}`}
-              onClick={() => {
-                activateDevice(device);
-                setTaskPanelDeviceId(device.id);
-                setTaskPanelOpen((open) => taskPanelDeviceId === device.id ? !open : true);
-              }}
-              aria-expanded={taskPanelOpen && panelDevice?.id === device.id}
-              aria-controls="device-task-panel"
+              onClick={() => openDeviceCenter(device)}
+              aria-expanded={tab === "device" && expandedDeviceIds.has(device.id)}
+              aria-controls={`device-card-${device.id}`}
               title={sidebarCollapsed ? `${device.name} · ${device.tasks.length} 个刷新任务` : undefined}
             >
               <span className={`status-dot ${device.status}`} />
@@ -4390,7 +4385,7 @@ export default function InkStudio() {
               </div>
               {device.tasks.length > 0 && <span className="task-count" aria-label={`${device.tasks.length} 个任务`}>{device.tasks.length}</span>}
               {device.hasError && <span className="task-alert" aria-label="任务出现错误">!</span>}
-              <span className="task-chevron" aria-hidden="true">{taskPanelOpen && panelDevice?.id === device.id ? "‹" : "›"}</span>
+              <span className="task-chevron" aria-hidden="true">›</span>
             </button>
           )) : (
             <div className="sidebar-device empty">
@@ -4406,38 +4401,6 @@ export default function InkStudio() {
           <span className="product-link-label">产品信息</span><span aria-hidden="true">↗</span>
         </a>
       </aside>
-
-      {taskPanelOpen && (
-        <section className="device-task-panel" id="device-task-panel" aria-label="设备定时任务" aria-live="polite">
-          <header>
-            <div>
-              <span>DEVICE SCHEDULES</span>
-              <h2>{panelDevice?.name ?? "TodooCard"}</h2>
-            </div>
-            <button type="button" onClick={() => setTaskPanelOpen(false)} aria-label="关闭任务管理">×</button>
-          </header>
-          {panelTasks.length ? (
-            <div className="device-task-list">
-              {panelTasks.map((task) => (
-                <DeviceTaskCard
-                  key={task.id}
-                  task={task}
-                  now={secondTick}
-                  onRetry={retryDeviceTask}
-                  onStop={stopDeviceTask}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="device-task-empty">
-              <span>⌁</span>
-              <h3>还没有定时任务</h3>
-              <p>选择非“单次写入”的刷新计划，再点击开始写入。</p>
-            </div>
-          )}
-          <footer>断联时会先静默重建连接并立即补写一次；仍未恢复时，再按 15 秒、30 秒、60 秒逐步后台重试。</footer>
-        </section>
-      )}
 
       <section className="workspace">
         <header className="topbar">
@@ -5694,7 +5657,11 @@ export default function InkStudio() {
                             ? "浏览器已授权"
                             : "历史设备";
                     return (
-                      <article className={`device-registry-item ${device.status}`} key={device.id}>
+                      <article
+                        className={`device-registry-item ${device.status}`}
+                        id={`device-card-${device.id}`}
+                        key={device.id}
+                      >
                         <button
                           type="button"
                           className="device-registry-summary"

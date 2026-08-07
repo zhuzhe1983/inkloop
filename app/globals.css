@@ -342,61 +342,6 @@ input:focus-visible {
   line-height: 1;
 }
 
-.device-task-panel {
-  width: min(390px, calc(100vw - 270px));
-  max-height: calc(100vh - 36px);
-  position: fixed;
-  left: 244px;
-  bottom: 18px;
-  z-index: 45;
-  padding: 18px;
-  border: 1px solid #cfd4ce;
-  border-radius: 14px;
-  background: rgba(255, 254, 250, 0.98);
-  box-shadow: 0 22px 70px rgba(21, 26, 23, 0.24);
-  overflow: hidden;
-  animation: task-panel-in 180ms ease-out;
-}
-
-.device-task-panel > header {
-  padding-bottom: 14px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.device-task-panel > header span {
-  color: #7c847e;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 1.4px;
-}
-
-.device-task-panel > header h2 {
-  margin: 4px 0 0;
-  font-size: 20px;
-}
-
-.device-task-panel > header button {
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 10px;
-  background: #eff1ec;
-  color: var(--ink);
-  font-size: 24px;
-  cursor: pointer;
-}
-
-.device-task-list {
-  max-height: calc(100vh - 170px);
-  padding-right: 4px;
-  display: grid;
-  gap: 10px;
-  overflow: auto;
-}
-
 .device-task {
   padding: 14px;
   border-radius: 11px;
@@ -614,40 +559,6 @@ input:focus-visible {
   padding: 12px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.66);
-}
-
-.device-task-empty {
-  min-height: 220px;
-  display: grid;
-  place-content: center;
-  text-align: center;
-}
-
-.device-task-empty > span {
-  font-size: 34px;
-}
-
-.device-task-empty h3 {
-  margin: 10px 0 4px;
-}
-
-.device-task-empty p {
-  max-width: 260px;
-  margin: 0;
-  color: #747c75;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.device-task-panel > footer {
-  margin-top: 12px;
-  color: #7c847e;
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-@keyframes task-panel-in {
-  from { opacity: 0; transform: translateX(-8px) scale(0.985); }
 }
 
 .status-dot {
@@ -4103,11 +4014,6 @@ input:focus-visible {
     width: 190px;
   }
 
-  .device-task-panel {
-    left: 206px;
-    width: min(390px, calc(100vw - 224px));
-  }
-
   .studio-grid {
     grid-template-columns: minmax(250px, 0.82fr) minmax(360px, 1.12fr);
   }
@@ -4285,16 +4191,6 @@ input:focus-visible {
 
   .next-run-summary {
     flex-wrap: wrap;
-  }
-
-  .device-task-panel {
-    width: auto;
-    max-height: calc(100vh - 96px);
-    inset: auto 12px 80px;
-  }
-
-  .device-task-list {
-    max-height: calc(100vh - 230px);
   }
 
   .run-actions {
@@ -5361,10 +5257,6 @@ input:focus-visible {
     align-items: center;
   }
 
-  .sidebar-collapsed .device-task-panel {
-    left: 92px;
-    width: min(390px, calc(100vw - 110px));
-  }
 }
 
 @media (max-width: 820px) {
@@ -5535,8 +5427,7 @@ input:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .sidebar,
-  .app-shell,
-  .device-task-panel {
+  .app-shell {
     animation: none;
     transition: none;
   }
