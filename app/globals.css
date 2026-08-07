@@ -3399,6 +3399,17 @@ input:focus-visible {
   color: var(--ink);
 }
 
+.calibration-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.calibration-step-actions .calibration-secondary {
+  margin-left: 0;
+}
+
 .calibration-primary:disabled,
 .calibration-secondary:disabled {
   opacity: 0.5;
@@ -5398,6 +5409,17 @@ input:focus-visible {
 
   .calibration-result-actions .calibration-secondary,
   .calibration-result-actions .calibration-primary {
+    width: 100%;
+    margin: 0;
+  }
+
+  .calibration-step-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .calibration-step-actions .calibration-primary,
+  .calibration-step-actions .calibration-secondary {
     width: 100%;
     margin: 0;
   }

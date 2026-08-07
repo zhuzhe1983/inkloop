@@ -5831,9 +5831,21 @@ export default function InkStudio() {
                     <li>使用协议原生六色色带，不受当前应用与校色 Profile 影响。</li>
                     <li>写入约需 1 分钟，电子纸继续显色可能再等几分钟。</li>
                   </ul>
-                  <button type="button" className="calibration-primary" onClick={() => void writeCalibrationCard()} disabled={calibrationBusy}>
-                    {calibrationBusy ? progress?.message || "正在写入标准色卡" : "写入标准色卡"}
-                  </button>
+                  <div className="calibration-step-actions">
+                    <button type="button" className="calibration-primary" onClick={() => void writeCalibrationCard()} disabled={calibrationBusy}>
+                      {calibrationBusy ? progress?.message || "正在写入标准色卡" : "写入标准色卡"}
+                    </button>
+                    <button
+                      type="button"
+                      className="calibration-secondary"
+                      aria-label="色卡已写入，跳过写入并进入拍照步骤"
+                      onClick={() => {
+                        setCalibrationError(null);
+                        setCalibrationStep(2);
+                      }}
+                      disabled={calibrationBusy}
+                    >已写入</button>
+                  </div>
                 </div>
               </div>
             )}
