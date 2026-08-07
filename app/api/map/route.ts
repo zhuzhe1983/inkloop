@@ -161,7 +161,7 @@ async function geocode(query: string, ak: string): Promise<MapPoint> {
   const longitude = Number(location.lng);
   const latitude = Number(location.lat);
   if (!validNumber(longitude) || !validNumber(latitude)) {
-    throw new MapServiceError("MAP_LOCATION_UNAVAILABLE", 404, `没有找到“${query}”，请换个完整地址或在地图上选点。`);
+    throw new MapServiceError("MAP_LOCATION_UNAVAILABLE", 404, `没有找到“${query}”，请换个完整地址或输入坐标。`);
   }
   return { latitude, longitude, address: query, approximate: false, source: "picker" };
 }
@@ -239,7 +239,7 @@ async function resolveLocation(request: Request, url: URL, ak: string, includeAd
   const fallback = await locateByIp(request, ak);
   return {
     ...fallback,
-    address: `${fallback.address}（尚未选点）`,
+    address: `${fallback.address}（尚未确认位置）`,
   };
 }
 

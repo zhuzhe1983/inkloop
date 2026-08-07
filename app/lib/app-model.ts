@@ -25,7 +25,7 @@ export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 export type ScreenRenderMode = "official" | "inkloop-text";
 
 export type MapLocationMode = "picker" | "browser" | "ip";
-export type MapStyle = "eink" | "balanced" | "detail";
+export type MapStyle = "balanced";
 
 export type MapSpec = {
   locationMode: MapLocationMode;
@@ -38,6 +38,7 @@ export type MapSpec = {
   marker: boolean;
   showAddress: boolean;
   showCoordinates: boolean;
+  displayName?: string;
   address?: string;
   approximate?: boolean;
   statusMessage?: string;
@@ -683,11 +684,11 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
           query,
           coordinateType: "bd09ll",
           zoomLevel: inferMapZoomLevel(source),
-          style: "eink",
+          style: "balanced",
           marker: !includesAny(source, ["不要标记", "无标记", "隐藏标记"]),
           showAddress: true,
           showCoordinates: shouldShowMapCoordinates(source),
-          statusMessage: query ? "正在查找地点；可在右侧重新选点" : "请在右侧地图中选点",
+          statusMessage: query ? "正在查找地点；可在预览上拖拽微调" : "请先输入地点或使用定位",
         },
         display: {
           ...displaySettings({

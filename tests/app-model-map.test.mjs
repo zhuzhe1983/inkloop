@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 
 import { generateInkApp } from "../app/lib/app-model.ts";
 
-test("地图需求生成独立地图应用，并把精确操作留给右侧选点", () => {
+test("地图需求生成独立地图应用，并把精确操作留给预览拖拽", () => {
   const app = generateInkApp("显示公司附近地图，标出入口");
   assert.equal(app.spec.kind, "map");
   assert.equal(app.spec.map.locationMode, "picker");
   assert.equal(app.spec.map.query, "公司");
   assert.equal(app.spec.map.zoomLevel, 19);
+  assert.equal(app.spec.map.style, "balanced");
   assert.equal(app.spec.map.marker, true);
   assert.equal(app.spec.map.showAddress, true);
   assert.equal(app.spec.map.coordinateType, "bd09ll");

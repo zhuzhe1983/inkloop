@@ -12,7 +12,6 @@ import {
   type InkApp,
   type MapLocationMode,
   type MapSpec,
-  type MapStyle,
   type ScreenKind,
   type ScreenFont,
   type ScreenDisplay,
@@ -92,9 +91,9 @@ const SYSTEM_PROMPT = `你是 Inkloop 的电子墨水屏应用编程助手，同
     },
     "map": {
       "locationMode": "picker|browser|ip",
-      "query": "地点、地址或 POI；不确定时留空，交给用户选点",
+      "query": "地点、地址或 POI；不确定时留空，交给用户输入或拖拽微调",
       "zoomLevel": 17,
-      "style": "eink|balanced|detail",
+      "style": "balanced",
       "marker": true,
       "showAddress": true,
       "showCoordinates": false
@@ -374,13 +373,12 @@ function normalizeMap(value: unknown, fallback: MapSpec | undefined, prompt: str
     query: "",
     coordinateType: "bd09ll" as const,
     zoomLevel: 17,
-    style: "eink" as const,
+    style: "balanced" as const,
     marker: true,
     showAddress: true,
     showCoordinates: false,
   };
   const requestedMode = candidate.locationMode as MapLocationMode;
-  const requestedStyle = candidate.style as MapStyle;
   const query = trimText(candidate.query, fallbackMap.query, 80);
   const candidateLatitude = Number(candidate.latitude);
   const candidateLongitude = Number(candidate.longitude);
@@ -405,16 +403,17 @@ function normalizeMap(value: unknown, fallback: MapSpec | undefined, prompt: str
     longitude: hasApproximateCoordinates ? candidateLongitude : undefined,
     coordinateType: hasApproximateCoordinates ? "wgs84ll" : "bd09ll",
     zoomLevel: Math.min(19, Math.max(3, Math.round(Number(candidate.zoomLevel) || fallbackMap.zoomLevel))),
-    style: requestedStyle === "balanced" || requestedStyle === "detail" ? requestedStyle : "eink",
+    style: "balanced",
     marker: candidate.marker !== false,
     showAddress: candidate.showAddress !== false,
     showCoordinates: !hidesCoordinates && (candidate.showCoordinates === true || /坐标|经纬度/.test(prompt)),
+    displayName: trimText(candidate.displayName, fallbackMap.displayName || "", 30) || undefined,
     approximate: hasApproximateCoordinates || undefined,
     statusMessage: hasApproximateCoordinates
-      ? "当前为模型估算位置；可在右侧选点提高精度"
+      ? "当前为模型估算位置；可在预览上拖拽微调"
       : query
-        ? "正在查找地点；可在右侧重新选点"
-        : "请在右侧地图中选点",
+        ? "正在查找地点；可在预览上拖拽微调"
+        : "请先输入地点或使用定位",
   };
 }
 
@@ -585,7 +584,7 @@ function buildCompactSystemPrompt(prompt: string) {
   }
   if (wantsMap(prompt)) {
     sections.push(`地图：
-"map":{"locationMode":"picker|browser|ip","query":"地点或POI","latitude":30.2741,"longitude":120.1551,"coordinateType":"wgs84ll","approximate":true,"zoomLevel":17,"style":"eink|balanced|detail","marker":true,"showAddress":true,"showCoordinates":false}
+"map":{"locationMode":"picker|browser|ip","query":"地点或POI","latitude":30.2741,"longitude":120.1551,"coordinateType":"wgs84ll","approximate":true,"zoomLevel":17,"style":"balanced","marker":true,"showAddress":true,"showCoordinates":false}
 默认 picker。已知城市、区域或著名地标时可以给出常识范围内的大致 WGS84 经纬度，并必须设置 coordinateType=wgs84ll、approximate=true；不确定时省略 latitude/longitude，绝不能声称是精确坐标。zoomLevel 3—19，入口 17—19，城市 10—13。`);
   }
   if (wantsCard(prompt)) {
