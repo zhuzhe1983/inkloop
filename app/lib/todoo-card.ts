@@ -22,6 +22,7 @@ type ProgressHandler = (progress: TodooProgress) => void;
 type AuthorizedBluetoothDevice = { id: string; name?: string | null };
 type WriteCanvasOptions = {
   palette?: Array<[number, number, number] | null>;
+  dither?: boolean;
 };
 
 const stateProgress: Record<string, TodooProgress> = {
@@ -143,7 +144,9 @@ export class TodooCard {
       {
         disconnectAfterWrite,
         palette: options.palette,
-        dither: true,
+        // The UI canvas is already rendered to the physical six-colour palette.
+        // A second error-diffusion pass creates visible bands and worm patterns.
+        dither: options.dither ?? false,
       },
     );
   }

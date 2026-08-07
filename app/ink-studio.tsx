@@ -11,6 +11,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { create as createQrCode } from "qrcode";
+import { stochasticSixColorDither } from "./lib/six-color-dither";
 import {
   DEFAULT_ELEMENT_POSITIONS,
   DEFAULT_ELEMENT_SIZES,
@@ -308,7 +309,7 @@ const renderModeOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "official", label: "Official Skill", description: "完整抖动，适合照片、渐变和丰富细节" },
+  { value: "official", label: "Official Skill", description: "稳定随机网点，保留照片渐变并减少条纹与撕裂" },
   { value: "inkloop-text", label: "Inkloop text", description: "低噪点，适合课程表、日历和纯文字画面" },
 ];
 
@@ -864,15 +865,6 @@ const ePaperPalette = [
   [8, 124, 78],
 ] as const;
 
-const nativeEPaperPalette = [
-  [0, 0, 0],
-  [255, 255, 255],
-  [255, 255, 0],
-  [255, 0, 0],
-  [0, 0, 255],
-  [0, 255, 0],
-] as const;
-
 function artworkUrl(artwork: ArtworkSpec, orientation: ScreenOrientation = "portrait") {
   const params = new URLSearchParams({
     v: "8",
@@ -1027,83 +1019,7 @@ function quantizeNativeRegion(
   protectNeutral: boolean,
 ) {
   const image = ctx.getImageData(x, y, width, height);
-  let currentRed = new Float32Array(width);
-  let currentGreen = new Float32Array(width);
-  let currentBlue = new Float32Array(width);
-  let nextRed = new Float32Array(width);
-  let nextGreen = new Float32Array(width);
-  let nextBlue = new Float32Array(width);
-  const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
-  const errorStrength = protectNeutral ? 0.46 : 1;
-
-  for (let pixelY = 0; pixelY < height; pixelY += 1) {
-    for (let pixelX = 0; pixelX < width; pixelX += 1) {
-      const pixel = (pixelY * width + pixelX) * 4;
-      const sourceRed = image.data[pixel];
-      const sourceGreen = image.data[pixel + 1];
-      const sourceBlue = image.data[pixel + 2];
-      const sourceMaximum = Math.max(sourceRed, sourceGreen, sourceBlue);
-      const sourceChroma = sourceMaximum - Math.min(sourceRed, sourceGreen, sourceBlue);
-      const sourceSaturation = sourceChroma / Math.max(1, sourceMaximum);
-      const isNeutral = protectNeutral && (sourceChroma < 30 || sourceSaturation < 0.22);
-      const red = clamp(sourceRed + currentRed[pixelX], 0, 255);
-      const green = clamp(sourceGreen + currentGreen[pixelX], 0, 255);
-      const blue = clamp(sourceBlue + currentBlue[pixelX], 0, 255);
-      let bestIndex = 0;
-      let bestDistance = Number.POSITIVE_INFINITY;
-      const availablePalette = isNeutral ? nativeEPaperPalette.slice(0, 2) : nativeEPaperPalette;
-      availablePalette.forEach((color, index) => {
-        const dr = red - color[0];
-        const dg = green - color[1];
-        const db = blue - color[2];
-        const distance = dr * dr + dg * dg + db * db;
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = index;
-        }
-      });
-      const selectedNative = nativeEPaperPalette[bestIndex];
-      const selectedPreview = ePaperPalette[bestIndex];
-      image.data[pixel] = selectedPreview[0];
-      image.data[pixel + 1] = selectedPreview[1];
-      image.data[pixel + 2] = selectedPreview[2];
-      image.data[pixel + 3] = 255;
-
-      const luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
-      const neutralError = (luminance - selectedNative[0]) * errorStrength;
-      const errors = isNeutral
-        ? [neutralError, neutralError, neutralError]
-        : [
-            (red - selectedNative[0]) * errorStrength,
-            (green - selectedNative[1]) * errorStrength,
-            (blue - selectedNative[2]) * errorStrength,
-          ];
-      if (pixelX + 1 < width) {
-        currentRed[pixelX + 1] += errors[0] * (7 / 16);
-        currentGreen[pixelX + 1] += errors[1] * (7 / 16);
-        currentBlue[pixelX + 1] += errors[2] * (7 / 16);
-      }
-      if (pixelX > 0) {
-        nextRed[pixelX - 1] += errors[0] * (3 / 16);
-        nextGreen[pixelX - 1] += errors[1] * (3 / 16);
-        nextBlue[pixelX - 1] += errors[2] * (3 / 16);
-      }
-      nextRed[pixelX] += errors[0] * (5 / 16);
-      nextGreen[pixelX] += errors[1] * (5 / 16);
-      nextBlue[pixelX] += errors[2] * (5 / 16);
-      if (pixelX + 1 < width) {
-        nextRed[pixelX + 1] += errors[0] * (1 / 16);
-        nextGreen[pixelX + 1] += errors[1] * (1 / 16);
-        nextBlue[pixelX + 1] += errors[2] * (1 / 16);
-      }
-    }
-    [currentRed, nextRed] = [nextRed, currentRed];
-    [currentGreen, nextGreen] = [nextGreen, currentGreen];
-    [currentBlue, nextBlue] = [nextBlue, currentBlue];
-    nextRed.fill(0);
-    nextGreen.fill(0);
-    nextBlue.fill(0);
-  }
+  image.data.set(stochasticSixColorDither(image.data, width, height, { protectNeutral }));
   ctx.putImageData(image, x, y);
 }
 
