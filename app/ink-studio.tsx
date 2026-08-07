@@ -43,7 +43,7 @@ import {
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
 import {
   CALIBRATION_SWATCHES,
-  analyzeCalibrationImage,
+  analyzeCalibrationCapture,
   validCalibration,
   type DeviceColorCalibration,
 } from "./lib/device-calibration";
@@ -951,39 +951,47 @@ async function analyzeCalibrationPhoto(file: File) {
     reader.readAsDataURL(file);
   });
   const image = await loadArtwork(source);
-  const canvas = document.createElement("canvas");
-  canvas.width = 528;
-  canvas.height = 792;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("浏览器无法分析这张照片");
-  const targetAspect = canvas.width / canvas.height;
-  const sourceAspect = image.naturalWidth / image.naturalHeight;
-  let sourceX = 0;
-  let sourceY = 0;
-  let sourceWidth = image.naturalWidth;
-  let sourceHeight = image.naturalHeight;
-  if (sourceAspect > targetAspect) {
-    sourceWidth = image.naturalHeight * targetAspect;
-    sourceX = (image.naturalWidth - sourceWidth) / 2;
+  const analysisCanvas = document.createElement("canvas");
+  const analysisScale = Math.min(1, 900 / Math.max(image.naturalWidth, image.naturalHeight));
+  analysisCanvas.width = Math.max(120, Math.round(image.naturalWidth * analysisScale));
+  analysisCanvas.height = Math.max(120, Math.round(image.naturalHeight * analysisScale));
+  const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: true });
+  if (!analysisContext) throw new Error("浏览器无法分析这张照片");
+  analysisContext.drawImage(image, 0, 0, analysisCanvas.width, analysisCanvas.height);
+  const imageData = analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height);
+  const analyzed = analyzeCalibrationCapture(imageData.data, imageData.width, imageData.height);
+  const { bounds, rotation } = analyzed.detection;
+  const sourceX = bounds.x * image.naturalWidth;
+  const sourceY = bounds.y * image.naturalHeight;
+  const sourceWidth = bounds.width * image.naturalWidth;
+  const sourceHeight = bounds.height * image.naturalHeight;
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = 528;
+  previewCanvas.height = 792;
+  const previewContext = previewCanvas.getContext("2d");
+  if (!previewContext) throw new Error("浏览器无法生成校色预览");
+  previewContext.fillStyle = "#f7f4e8";
+  previewContext.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+  previewContext.save();
+  if (rotation === 90) {
+    previewContext.translate(previewCanvas.width, 0);
+    previewContext.rotate(Math.PI / 2);
+    previewContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, previewCanvas.height, previewCanvas.width);
+  } else if (rotation === 270) {
+    previewContext.translate(0, previewCanvas.height);
+    previewContext.rotate(-Math.PI / 2);
+    previewContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, previewCanvas.height, previewCanvas.width);
+  } else if (rotation === 180) {
+    previewContext.translate(previewCanvas.width, previewCanvas.height);
+    previewContext.rotate(Math.PI);
+    previewContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, previewCanvas.width, previewCanvas.height);
   } else {
-    sourceHeight = image.naturalWidth / targetAspect;
-    sourceY = (image.naturalHeight - sourceHeight) / 2;
+    previewContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, previewCanvas.width, previewCanvas.height);
   }
-  context.drawImage(
-    image,
-    sourceX,
-    sourceY,
-    sourceWidth,
-    sourceHeight,
-    0,
-    0,
-    canvas.width,
-    canvas.height,
-  );
-  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  previewContext.restore();
   return {
-    profile: analyzeCalibrationImage(imageData.data, imageData.width, imageData.height),
-    preview: canvas.toDataURL("image/jpeg", 0.8),
+    profile: analyzed.profile,
+    preview: previewCanvas.toDataURL("image/jpeg", 0.84),
   };
 }
 
@@ -5864,8 +5872,9 @@ export default function InkStudio() {
                 <div className="calibration-instructions">
                   <span className="calibration-step-number">步骤 2</span>
                   <h3>正对屏幕拍一张照片</h3>
-                  <p>让屏幕竖直填满画面中央，避免灯光反射；关闭美颜、滤镜与夜景模式。</p>
+                  <p>让屏幕完整出现在画面中央，避免灯光反射；横拍、竖拍都可以，系统会自动找边缘并旋转。</p>
                   <ul>
+                    <li>自动裁掉屏幕外区域，并把检测到的画面缩放到标准尺寸。</li>
                     <li>系统会用黑、白色带抵消曝光和相机白平衡。</li>
                     <li>照片只在当前浏览器分析，不上传也不保存。</li>
                   </ul>
@@ -5891,8 +5900,12 @@ export default function InkStudio() {
             {calibrationStep === 3 && calibrationDraft && (
               <div className="calibration-step calibration-result-step">
                 <figure className="calibration-photo-preview">
-                  {calibrationPhoto && <img src={calibrationPhoto} alt="用于生成设备校色 Profile 的居中裁切照片" />}
-                  <figcaption>自动按屏幕比例居中裁切</figcaption>
+                  {calibrationPhoto && <img src={calibrationPhoto} alt="自动检测边缘、裁切和旋转后的设备校色色卡" />}
+                  <figcaption>
+                    已自动检测边缘 · {calibrationDraft.capture?.axis === "vertical" ? "纵向色带" : "横向色带"}
+                    {calibrationDraft.capture?.rotation ? ` · 已旋转 ${calibrationDraft.capture.rotation}°` : ""}
+                    {calibrationDraft.capture?.confidence ? ` · 置信度 ${calibrationDraft.capture.confidence}%` : ""}
+                  </figcaption>
                 </figure>
                 <div className="calibration-result">
                   <span className="calibration-step-number">步骤 3</span>
