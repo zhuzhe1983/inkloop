@@ -41,6 +41,7 @@ import {
   type ScreenSpec,
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
+import { isRecoverableBluetoothError, writeWithBluetoothRecovery } from "./lib/bluetooth-recovery";
 import {
   CALIBRATION_SWATCHES,
   analyzeCalibrationCapture,
@@ -4103,16 +4104,24 @@ export default function InkStudio() {
         if (renderInPreview) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       }
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
-      if (options.reconnect) await driver.reconnect();
       const deviceProfile = deviceProfilesRef.current.find((profile) => profile.id === deviceId);
       const calibrationPalette = deviceProfile?.colorCorrectionEnabled !== false
         ? deviceProfile?.calibration?.palette
         : undefined;
-      await driver.writeCanvas(
-        canvasForDevice(outputCanvas, screenOrientation(transferApp.spec)),
-        true,
-        { palette: calibrationPalette },
-      );
+      const deviceCanvas = canvasForDevice(outputCanvas, screenOrientation(transferApp.spec));
+      await writeWithBluetoothRecovery({
+        forceReconnect: options.reconnect,
+        reconnect: () => driver.reconnect(),
+        write: () => driver.writeCanvas(deviceCanvas, true, { palette: calibrationPalette }),
+        onRecovering: () => {
+          if (!taskId) setProgress({ phase: "connecting", percent: 2, message: "连接中断，正在自动重连…" });
+          if (taskId) {
+            commitDeviceTasks((current) => current.map((task) => task.id === taskId
+              ? { ...task, status: "writing", lastError: "连接中断，正在自动重连…" }
+              : task));
+          }
+        },
+      });
       if (nextSeed !== null && renderInPreview) {
         setApp((current) => current.spec.artwork
           ? { ...current, spec: { ...current.spec, artwork: { ...current.spec.artwork, seed: nextSeed } } }
@@ -4132,17 +4141,20 @@ export default function InkStudio() {
           : task));
       }
       setDeviceStatus(taskId ? "scheduled" : "ready");
-      showToast("帧已发送，墨水屏可能还会显色几分钟", "success");
+      if (!taskId) showToast("帧已发送，墨水屏可能还会显色几分钟", "success");
       return true;
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "写入失败";
-      const message = /no longer in range|GATT.*断开|设备.*范围|connection failed/i.test(rawMessage)
-        ? "设备已离开蓝牙范围；旧连接已清理，靠近设备后会重新发现服务并重试"
+      const recoverable = isRecoverableBluetoothError(error);
+      const message = recoverable
+        ? taskId
+          ? "设备暂时离线，自动重连未成功；稍后将继续后台重试"
+          : "设备暂时离线，自动重连未成功；请靠近设备后重试"
         : rawMessage;
       driver.disconnect();
       markTaskFailure(message, lastCanvas);
       setDeviceStatus("error");
-      showToast(message, "error");
+      if (!taskId) showToast(message, "error");
       return false;
     } finally {
       transferLocksRef.current.delete(deviceId);
@@ -4423,7 +4435,7 @@ export default function InkStudio() {
               <p>选择非“单次写入”的刷新计划，再点击开始写入。</p>
             </div>
           )}
-          <footer>断联后会清理旧连接，并按 15 秒、30 秒、60 秒逐步重试；设备回到范围内后也可点“立即重试”。</footer>
+          <footer>断联时会先静默重建连接并立即补写一次；仍未恢复时，再按 15 秒、30 秒、60 秒逐步后台重试。</footer>
         </section>
       )}
 
