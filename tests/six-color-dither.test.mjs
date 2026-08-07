@@ -64,3 +64,30 @@ test("设备原生纯色不会被随机化", () => {
     }
   }
 });
+
+test("高饱和品红使用红蓝网点，不会退化成蓝白网点", () => {
+  const output = stochasticSixColorDither(solidImage(128, 64, [128, 0, 255]), 128, 64);
+  const counts = new Map(INKLOOP_PREVIEW_PALETTE.map((color) => [color.join(","), 0]));
+  for (let offset = 0; offset < output.length; offset += 4) {
+    const key = `${output[offset]},${output[offset + 1]},${output[offset + 2]}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  assert.ok(counts.get(INKLOOP_PREVIEW_PALETTE[3].join(",")) > 0, "缺少红色网点");
+  assert.ok(counts.get(INKLOOP_PREVIEW_PALETTE[4].join(",")) > 0, "缺少蓝色网点");
+  assert.equal(counts.get(INKLOOP_PREVIEW_PALETTE[1].join(",")), 0, "不应使用白色替代红色");
+});
+
+test("高饱和青色使用蓝绿网点，不会退化成蓝白网点", () => {
+  const output = stochasticSixColorDither(solidImage(128, 64, [0, 128, 255]), 128, 64);
+  const colors = new Set();
+  for (let offset = 0; offset < output.length; offset += 4) {
+    colors.add(`${output[offset]},${output[offset + 1]},${output[offset + 2]}`);
+  }
+  assert.deepEqual(
+    colors,
+    new Set([
+      INKLOOP_PREVIEW_PALETTE[4].join(","),
+      INKLOOP_PREVIEW_PALETTE[5].join(","),
+    ]),
+  );
+});

@@ -55,6 +55,8 @@ function makePalettePairs(indices: readonly number[]) {
 
 const FULL_PALETTE_PAIRS = makePalettePairs([0, 1, 2, 3, 4, 5]);
 const NEUTRAL_PALETTE_PAIRS = makePalettePairs([0, 1]);
+const MAGENTA_PALETTE_PAIRS = makePalettePairs([3, 4]);
+const CYAN_PALETTE_PAIRS = makePalettePairs([4, 5]);
 
 function sourceSeed(data: Uint8ClampedArray, width: number, height: number) {
   let seed = (0x811c9dc5 ^ width ^ Math.imul(height, 0x9e3779b1)) >>> 0;
@@ -112,9 +114,15 @@ export function stochasticSixColorDither(
       const maximum = Math.max(red, green, blue);
       const chroma = maximum - Math.min(red, green, blue);
       const saturation = chroma / Math.max(1, maximum);
+      const saturatedMagenta = saturation > 0.5 && Math.min(red, blue) - green > 24;
+      const saturatedCyan = saturation > 0.5 && Math.min(green, blue) - red > 24;
       const pairs = protectNeutral && (chroma < 30 || saturation < 0.22)
         ? NEUTRAL_PALETTE_PAIRS
-        : FULL_PALETTE_PAIRS;
+        : saturatedMagenta
+          ? MAGENTA_PALETTE_PAIRS
+          : saturatedCyan
+            ? CYAN_PALETTE_PAIRS
+            : FULL_PALETTE_PAIRS;
       let bestPair = pairs[0];
       let bestMix = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
