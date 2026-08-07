@@ -41,6 +41,12 @@ import {
   type ScreenSpec,
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
+import {
+  CALIBRATION_SWATCHES,
+  analyzeCalibrationImage,
+  validCalibration,
+  type DeviceColorCalibration,
+} from "./lib/device-calibration";
 
 type Tab = "studio" | "mine" | "explore" | "device";
 type Toast = { tone: "success" | "error" | "info"; message: string } | null;
@@ -107,6 +113,8 @@ function agendaWindow(table: Extract<NonNullable<ScreenSpec["table"]>, { type: "
 type DeviceProfile = {
   id: string;
   name: string;
+  colorCorrectionEnabled: boolean;
+  calibration?: DeviceColorCalibration;
 };
 
 type AuthorizedBluetoothDevice = {
@@ -147,6 +155,24 @@ const DEFAULT_CALENDAR_PREFERENCES: CalendarPreferences = {
 };
 const GALLERY_PREVIEW_DATE = new Date("2026-08-01T12:34:00+08:00");
 const EPAPER_WHITE = "#fafaf8";
+
+function normalizeDeviceProfile(value: unknown): DeviceProfile | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<DeviceProfile>;
+  if (typeof candidate.id !== "string" || !candidate.id || typeof candidate.name !== "string" || !candidate.name) return null;
+  return {
+    id: candidate.id,
+    name: candidate.name,
+    colorCorrectionEnabled: candidate.colorCorrectionEnabled !== false,
+    calibration: validCalibration(candidate.calibration) ? candidate.calibration : undefined,
+  };
+}
+
+function calibrationQualityLabel(profile: DeviceColorCalibration) {
+  if (profile.quality === "excellent") return "校色质量优秀";
+  if (profile.quality === "good") return "校色质量良好";
+  return "色差较大，建议避开反光后重拍";
+}
 
 function mapApiParams(map: MapSpec, mode: "resolve" | "image", orientation?: ScreenOrientation) {
   const params = new URLSearchParams({
@@ -913,6 +939,52 @@ async function prepareLocalImage(file: File) {
   const height = image.naturalHeight * scale;
   context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
   return canvas.toDataURL("image/jpeg", 0.78);
+}
+
+async function analyzeCalibrationPhoto(file: File) {
+  if (!file.type.startsWith("image/")) throw new Error("请选择拍摄的图片文件");
+  if (file.size > 20 * 1024 * 1024) throw new Error("照片请控制在 20MB 以内");
+  const source = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("读取照片失败"));
+    reader.readAsDataURL(file);
+  });
+  const image = await loadArtwork(source);
+  const canvas = document.createElement("canvas");
+  canvas.width = 528;
+  canvas.height = 792;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("浏览器无法分析这张照片");
+  const targetAspect = canvas.width / canvas.height;
+  const sourceAspect = image.naturalWidth / image.naturalHeight;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = image.naturalWidth;
+  let sourceHeight = image.naturalHeight;
+  if (sourceAspect > targetAspect) {
+    sourceWidth = image.naturalHeight * targetAspect;
+    sourceX = (image.naturalWidth - sourceWidth) / 2;
+  } else {
+    sourceHeight = image.naturalWidth / targetAspect;
+    sourceY = (image.naturalHeight - sourceHeight) / 2;
+  }
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  return {
+    profile: analyzeCalibrationImage(imageData.data, imageData.width, imageData.height),
+    preview: canvas.toDataURL("image/jpeg", 0.8),
+  };
 }
 
 function drawImageCover(
@@ -2850,14 +2922,22 @@ export default function InkStudio() {
   const [progress, setProgress] = useState<TodooProgress | null>(null);
   const [deviceTasks, setDeviceTasks] = useState<DeviceTask[]>([]);
   const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [calibrationDeviceId, setCalibrationDeviceId] = useState<string | null>(null);
+  const [calibrationStep, setCalibrationStep] = useState<1 | 2 | 3>(1);
+  const [calibrationBusy, setCalibrationBusy] = useState(false);
+  const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [calibrationDraft, setCalibrationDraft] = useState<DeviceColorCalibration | null>(null);
+  const [calibrationPhoto, setCalibrationPhoto] = useState<string | null>(null);
   const [secondTick, setSecondTick] = useState(() => Date.now());
   const [bluetoothSupported, setBluetoothSupported] = useState(false);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [elementSizeDrafts, setElementSizeDrafts] = useState<Partial<Record<ScreenElementKey, string>>>({});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const calibrationFileInputRef = useRef<HTMLInputElement>(null);
   const previewVersionRef = useRef(0);
   const currentAppRef = useRef(app);
+  const deviceProfilesRef = useRef<DeviceProfile[]>([]);
   const calendarPreferencesRef = useRef(calendarPreferences);
   const driverRef = useRef<TodooCard | null>(null);
   const deviceDriversRef = useRef(new Map<string, TodooCard>());
@@ -2930,26 +3010,35 @@ export default function InkStudio() {
     setDeviceTasks(next);
   }, []);
 
+  const commitDeviceProfiles = useCallback((updater: (current: DeviceProfile[]) => DeviceProfile[]) => {
+    const next = updater(deviceProfilesRef.current);
+    deviceProfilesRef.current = next;
+    setDevices(next);
+    try {
+      localStorage.setItem(DEVICE_PROFILES_KEY, JSON.stringify(next));
+    } catch {
+      // Calibration remains active in this tab if browser storage is unavailable.
+    }
+  }, []);
+
   const rememberDevice = useCallback((driver: TodooCard, device: AuthorizedBluetoothDevice) => {
-    const profile = { id: device.id, name: device.name ?? "TodooCard" };
+    const existing = deviceProfilesRef.current.find((item) => item.id === device.id);
+    const profile: DeviceProfile = {
+      ...existing,
+      id: device.id,
+      name: device.name ?? existing?.name ?? "TodooCard",
+      colorCorrectionEnabled: existing?.colorCorrectionEnabled !== false,
+    };
     const previousDriver = deviceDriversRef.current.get(profile.id);
     if (previousDriver && previousDriver !== driver) previousDriver.disconnect();
     deviceDriversRef.current.set(profile.id, driver);
     driverRef.current = driver;
-    setDevices((current) => {
-      const next = [profile, ...current.filter((item) => item.id !== profile.id)];
-      try {
-        localStorage.setItem(DEVICE_PROFILES_KEY, JSON.stringify(next));
-      } catch {
-        // Device history is a convenience only; Bluetooth authorization remains the source of truth.
-      }
-      return next;
-    });
+    commitDeviceProfiles((current) => [profile, ...current.filter((item) => item.id !== profile.id)]);
     setActiveDeviceId(profile.id);
     setDeviceName(profile.name);
     setDeviceStatus("ready");
     return profile;
-  }, []);
+  }, [commitDeviceProfiles]);
 
   const activateDevice = useCallback((profile: DeviceProfile) => {
     setActiveDeviceId(profile.id);
@@ -2984,6 +3073,10 @@ export default function InkStudio() {
   }, [app]);
 
   useEffect(() => {
+    deviceProfilesRef.current = devices;
+  }, [devices]);
+
+  useEffect(() => {
     calendarPreferencesRef.current = calendarPreferences;
   }, [calendarPreferences]);
 
@@ -3012,13 +3105,12 @@ export default function InkStudio() {
       if (Array.isArray(stored)) setLocalApps(stored.map(upgradeLegacyApp));
       const storedDevices = JSON.parse(localStorage.getItem(DEVICE_PROFILES_KEY) ?? "[]") as DeviceProfile[];
       if (Array.isArray(storedDevices)) {
-        setDevices(storedDevices.filter((device) => Boolean(
-          device
-          && typeof device.id === "string"
-          && device.id
-          && typeof device.name === "string"
-          && device.name,
-        )).slice(0, 12));
+        const normalizedDevices = storedDevices
+          .map(normalizeDeviceProfile)
+          .filter((device): device is DeviceProfile => Boolean(device))
+          .slice(0, 12);
+        deviceProfilesRef.current = normalizedDevices;
+        setDevices(normalizedDevices);
       }
       setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
       const storedCity = localStorage.getItem(WEATHER_CITY_KEY)?.trim();
@@ -3076,6 +3168,20 @@ export default function InkStudio() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [guideOpen]);
+
+  useEffect(() => {
+    if (!calibrationDeviceId) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !calibrationBusy) setCalibrationDeviceId(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [calibrationBusy, calibrationDeviceId]);
 
   useEffect(() => {
     if (!taskPanelOpen) return;
@@ -3178,18 +3284,18 @@ export default function InkStudio() {
           const deviceDriver = index === 0 ? driver : new TodooCard(setProgress);
           deviceDriver.useAuthorizedDevice(device);
           deviceDriversRef.current.set(device.id, deviceDriver);
-          return { id: device.id, name: device.name ?? "TodooCard" };
+          const existing = deviceProfilesRef.current.find((profile) => profile.id === device.id);
+          return {
+            ...existing,
+            id: device.id,
+            name: device.name ?? existing?.name ?? "TodooCard",
+            colorCorrectionEnabled: existing?.colorCorrectionEnabled !== false,
+          } satisfies DeviceProfile;
         });
         driverRef.current = deviceDriversRef.current.get(profiles[0].id) ?? driver;
-        setDevices((current) => {
+        commitDeviceProfiles((current) => {
           const authorizedIds = new Set(profiles.map((profile) => profile.id));
-          const next = [...profiles, ...current.filter((profile) => !authorizedIds.has(profile.id))].slice(0, 12);
-          try {
-            localStorage.setItem(DEVICE_PROFILES_KEY, JSON.stringify(next));
-          } catch {
-            // Keep authorized devices available for this session.
-          }
-          return next;
+          return [...profiles, ...current.filter((profile) => !authorizedIds.has(profile.id))].slice(0, 12);
         });
         setActiveDeviceId(profiles[0].id);
         setDeviceName(profiles[0].name);
@@ -3202,7 +3308,7 @@ export default function InkStudio() {
       knownDrivers.forEach((knownDriver) => knownDriver.disconnect());
       deviceDriversRef.current.clear();
     };
-  }, []);
+  }, [commitDeviceProfiles]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setSecondTick(Date.now()), 1000);
@@ -3795,6 +3901,106 @@ export default function InkStudio() {
     }
   }, [rememberDevice, showToast]);
 
+  const openDeviceCalibration = useCallback((deviceId: string) => {
+    setCalibrationDeviceId(deviceId);
+    setCalibrationStep(1);
+    setCalibrationBusy(false);
+    setCalibrationError(null);
+    setCalibrationDraft(null);
+    setCalibrationPhoto(null);
+  }, []);
+
+  const closeDeviceCalibration = useCallback(() => {
+    if (calibrationBusy) return;
+    setCalibrationDeviceId(null);
+    setCalibrationError(null);
+    setCalibrationDraft(null);
+    setCalibrationPhoto(null);
+  }, [calibrationBusy]);
+
+  const calibrationDriverFor = useCallback(async (device: DeviceProfile) => {
+    const existing = deviceDriversRef.current.get(device.id);
+    if (existing) return existing;
+    const driver = new TodooCard(setProgress);
+    if (!driver.supported) throw new Error("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站");
+    const authorized = await driver.listAuthorizedDevices();
+    const restored = authorized.find((item) => item.id === device.id);
+    if (restored) {
+      driver.useAuthorizedDevice(restored);
+      rememberDevice(driver, restored);
+      return driver;
+    }
+    const selected = await driver.requestDevice();
+    if (selected.id !== device.id) {
+      driver.disconnect();
+      throw new Error(`请选择设备“${device.name}”；刚才选择的是另一台设备`);
+    }
+    rememberDevice(driver, selected);
+    return driver;
+  }, [rememberDevice]);
+
+  const writeCalibrationCard = useCallback(async () => {
+    const device = deviceProfilesRef.current.find((item) => item.id === calibrationDeviceId);
+    if (!device) return;
+    if (transferLocksRef.current.has(device.id)) {
+      setCalibrationError("这台设备正在写入，请等待当前任务完成后再校色");
+      return;
+    }
+    setCalibrationBusy(true);
+    setCalibrationError(null);
+    transferLocksRef.current.add(device.id);
+    setDeviceStatus("writing");
+    try {
+      const driver = await calibrationDriverFor(device);
+      await driver.writeCalibration(true);
+      setCalibrationStep(2);
+      setDeviceStatus(deviceTasksRef.current.some((task) => task.deviceId === device.id) ? "scheduled" : "ready");
+      showToast("标准六色色卡已写入；颜色稳定后请拍照", "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "标准色卡写入失败";
+      setCalibrationError(message);
+      setDeviceStatus("error");
+    } finally {
+      transferLocksRef.current.delete(device.id);
+      setCalibrationBusy(false);
+    }
+  }, [calibrationDeviceId, calibrationDriverFor, showToast]);
+
+  const handleCalibrationPhoto = useCallback(async (file: File | undefined) => {
+    if (!file) return;
+    setCalibrationBusy(true);
+    setCalibrationError(null);
+    try {
+      const analyzed = await analyzeCalibrationPhoto(file);
+      setCalibrationDraft(analyzed.profile);
+      setCalibrationPhoto(analyzed.preview);
+      setCalibrationStep(3);
+    } catch (error) {
+      setCalibrationError(error instanceof Error ? error.message : "照片分析失败，请重新拍摄");
+    } finally {
+      setCalibrationBusy(false);
+      if (calibrationFileInputRef.current) calibrationFileInputRef.current.value = "";
+    }
+  }, []);
+
+  const saveDeviceCalibration = useCallback(() => {
+    if (!calibrationDeviceId || !calibrationDraft) return;
+    commitDeviceProfiles((current) => current.map((device) => device.id === calibrationDeviceId
+      ? { ...device, colorCorrectionEnabled: true, calibration: calibrationDraft }
+      : device));
+    setCalibrationDeviceId(null);
+    setCalibrationDraft(null);
+    setCalibrationPhoto(null);
+    showToast("设备校色 Profile 已保存并启用", "success");
+  }, [calibrationDeviceId, calibrationDraft, commitDeviceProfiles, showToast]);
+
+  const toggleDeviceColorCorrection = useCallback((deviceId: string, enabled: boolean) => {
+    commitDeviceProfiles((current) => current.map((device) => device.id === deviceId
+      ? { ...device, colorCorrectionEnabled: enabled }
+      : device));
+    showToast(enabled ? "已开启设备色差纠正" : "已关闭设备色差纠正", "info");
+  }, [commitDeviceProfiles, showToast]);
+
   const stopDeviceTask = useCallback((taskId: string, notify = true) => {
     const timer = taskTimersRef.current.get(taskId);
     if (timer) clearTimeout(timer);
@@ -3890,7 +4096,15 @@ export default function InkStudio() {
       }
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
       if (options.reconnect) await driver.reconnect();
-      await driver.writeCanvas(canvasForDevice(outputCanvas, screenOrientation(transferApp.spec)), true);
+      const deviceProfile = deviceProfilesRef.current.find((profile) => profile.id === deviceId);
+      const calibrationPalette = deviceProfile?.colorCorrectionEnabled !== false
+        ? deviceProfile?.calibration?.palette
+        : undefined;
+      await driver.writeCanvas(
+        canvasForDevice(outputCanvas, screenOrientation(transferApp.spec)),
+        true,
+        { palette: calibrationPalette },
+      );
       if (nextSeed !== null && renderInPreview) {
         setApp((current) => current.spec.artwork
           ? { ...current, spec: { ...current.spec, artwork: { ...current.spec.artwork, seed: nextSeed } } }
@@ -4078,6 +4292,7 @@ export default function InkStudio() {
   const previewFrameWidth = previewLandscape ? 486 : 288;
   const previewFrameHeight = previewLandscape ? 288 : 486;
   const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
+  const calibrationDevice = devices.find((device) => device.id === calibrationDeviceId) ?? null;
   const deviceSummaries = devices.map((device) => {
     const tasks = deviceTasks.filter((task) => task.deviceId === device.id);
     const hasError = tasks.some((task) => task.status === "error");
@@ -5484,6 +5699,46 @@ export default function InkStudio() {
                         </button>
                         {expanded && (
                           <div className="device-registry-tasks" id={`device-history-${device.id}`}>
+                            <section className={`device-calibration-panel${device.calibration ? " calibrated" : ""}`} aria-label={`${device.name} 设备校色`}>
+                              <div className="device-calibration-copy">
+                                <span className="device-calibration-mark" aria-hidden="true">C</span>
+                                <div>
+                                  <span className="device-calibration-title">
+                                    <strong>设备色差纠正</strong>
+                                    {device.calibration
+                                      ? <b>ΔE {device.calibration.averageDeltaE}</b>
+                                      : <b>待校色</b>}
+                                  </span>
+                                  <small>{device.calibration
+                                    ? `${calibrationQualityLabel(device.calibration)} · ${new Date(device.calibration.createdAt).toLocaleDateString("zh-CN")}`
+                                    : "写入标准六色色卡并上传照片，建立这台设备专属的颜色 Profile。"}</small>
+                                </div>
+                              </div>
+                              {device.calibration && (
+                                <div className="device-calibration-swatches" aria-label="校色后测得的六色色板">
+                                  {device.calibration.samples.map((sample) => (
+                                    <span
+                                      key={sample.key}
+                                      title={`${sample.label} · ΔE ${sample.deltaE}`}
+                                      style={{ background: `rgb(${sample.measured.join(",")})` }}
+                                    ><i>{sample.label}</i></span>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="device-calibration-actions">
+                                <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={device.colorCorrectionEnabled}
+                                  className={`switch ${device.colorCorrectionEnabled ? "on" : ""}`}
+                                  onClick={() => toggleDeviceColorCorrection(device.id, !device.colorCorrectionEnabled)}
+                                  title={device.colorCorrectionEnabled ? "关闭设备色差纠正" : "开启设备色差纠正"}
+                                ><span /></button>
+                                <button type="button" onClick={() => openDeviceCalibration(device.id)}>
+                                  {device.calibration ? "重新校色" : "开始校色"}
+                                </button>
+                              </div>
+                            </section>
                             {device.tasks.length ? (
                               <div className="device-history-task-list">
                                 {device.tasks.map((task) => (
@@ -5546,6 +5801,134 @@ export default function InkStudio() {
           </section>
         )}
       </section>
+
+      {calibrationDevice && (
+        <div className="calibration-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeDeviceCalibration();
+        }}>
+          <section className="calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="calibration-title">
+            <header className="calibration-header">
+              <div>
+                <span className="eyebrow">DEVICE COLOR PROFILE</span>
+                <h2 id="calibration-title">校准 {calibrationDevice.name}</h2>
+                <p>用一次标准色卡测量这台屏幕，再为后续写入自动修正六色量化。</p>
+              </div>
+              <button type="button" onClick={closeDeviceCalibration} disabled={calibrationBusy} aria-label="关闭设备校色">×</button>
+            </header>
+
+            <ol className="calibration-progress" aria-label={`校色进度：第 ${calibrationStep} 步，共 3 步`}>
+              {["写入色卡", "拍照上传", "确认 Profile"].map((label, index) => {
+                const step = (index + 1) as 1 | 2 | 3;
+                return <li key={label} className={calibrationStep === step ? "current" : calibrationStep > step ? "complete" : ""}>
+                  <b>{String(step).padStart(2, "0")}</b><span>{label}</span>
+                </li>;
+              })}
+            </ol>
+
+            {calibrationStep === 1 && (
+              <div className="calibration-step calibration-write-step">
+                <div className="calibration-card-preview" aria-label="标准六色色卡预览">
+                  {CALIBRATION_SWATCHES.map((swatch) => (
+                    <div
+                      key={swatch.key}
+                      className={swatch.key === "black" || swatch.key === "blue" ? "dark" : ""}
+                      style={{ background: `rgb(${swatch.expected.join(",")})` }}
+                    ><strong>{swatch.label}</strong><small>{swatch.key.toUpperCase()}</small></div>
+                  ))}
+                </div>
+                <div className="calibration-instructions">
+                  <span className="calibration-step-number">步骤 1</span>
+                  <h3>先把标准色卡写入屏幕</h3>
+                  <p>保持设备在电脑附近。写入完成后，等待屏幕颜色完全稳定，再进入拍照步骤。</p>
+                  <ul>
+                    <li>使用协议原生六色色带，不受当前应用与校色 Profile 影响。</li>
+                    <li>写入约需 1 分钟，电子纸继续显色可能再等几分钟。</li>
+                  </ul>
+                  <button type="button" className="calibration-primary" onClick={() => void writeCalibrationCard()} disabled={calibrationBusy}>
+                    {calibrationBusy ? progress?.message || "正在写入标准色卡" : "写入标准色卡"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {calibrationStep === 2 && (
+              <div className="calibration-step calibration-photo-step">
+                <div className="calibration-camera-guide" aria-hidden="true">
+                  <div className="calibration-camera-frame">
+                    {CALIBRATION_SWATCHES.map((swatch) => (
+                      <i key={swatch.key} style={{ background: `rgb(${swatch.expected.join(",")})` }} />
+                    ))}
+                  </div>
+                  <span>让屏幕边缘贴近取景框</span>
+                </div>
+                <div className="calibration-instructions">
+                  <span className="calibration-step-number">步骤 2</span>
+                  <h3>正对屏幕拍一张照片</h3>
+                  <p>让屏幕竖直填满画面中央，避免灯光反射；关闭美颜、滤镜与夜景模式。</p>
+                  <ul>
+                    <li>系统会用黑、白色带抵消曝光和相机白平衡。</li>
+                    <li>照片只在当前浏览器分析，不上传也不保存。</li>
+                  </ul>
+                  <input
+                    ref={calibrationFileInputRef}
+                    className="visually-hidden"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={(event) => void handleCalibrationPhoto(event.target.files?.[0])}
+                  />
+                  <button
+                    type="button"
+                    className="calibration-primary"
+                    onClick={() => calibrationFileInputRef.current?.click()}
+                    disabled={calibrationBusy}
+                  >{calibrationBusy ? "正在分析照片" : "拍照或选择照片"}</button>
+                  <button type="button" className="calibration-secondary" onClick={() => setCalibrationStep(1)} disabled={calibrationBusy}>重新写入色卡</button>
+                </div>
+              </div>
+            )}
+
+            {calibrationStep === 3 && calibrationDraft && (
+              <div className="calibration-step calibration-result-step">
+                <figure className="calibration-photo-preview">
+                  {calibrationPhoto && <img src={calibrationPhoto} alt="用于生成设备校色 Profile 的居中裁切照片" />}
+                  <figcaption>自动按屏幕比例居中裁切</figcaption>
+                </figure>
+                <div className="calibration-result">
+                  <span className="calibration-step-number">步骤 3</span>
+                  <div className="calibration-score">
+                    <div><small>平均色差</small><strong>ΔE {calibrationDraft.averageDeltaE}</strong></div>
+                    <b className={calibrationDraft.quality}>{calibrationQualityLabel(calibrationDraft)}</b>
+                  </div>
+                  <div className="calibration-comparison" aria-label="标准颜色与照片测量颜色对比">
+                    {calibrationDraft.samples.map((sample) => (
+                      <div key={sample.key}>
+                        <span>
+                          <i style={{ background: `rgb(${sample.expected.join(",")})` }} title={`${sample.label}标准色`} />
+                          <i style={{ background: `rgb(${sample.measured.join(",")})` }} title={`${sample.label}测量色`} />
+                        </span>
+                        <strong>{sample.label}</strong>
+                        <small>ΔE {sample.deltaE}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <p>保存后，这台设备的图片会按照实测六色重新分配颜色；纯色颜料本身不会被软件改变。</p>
+                  <div className="calibration-result-actions">
+                    <button type="button" className="calibration-secondary" onClick={() => {
+                      setCalibrationStep(2);
+                      setCalibrationDraft(null);
+                      setCalibrationPhoto(null);
+                    }}>重新拍照</button>
+                    <button type="button" className="calibration-primary" onClick={saveDeviceCalibration}>保存并启用</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {calibrationError && <p className="calibration-error" role="alert"><b>!</b><span>{calibrationError}</span></p>}
+          </section>
+        </div>
+      )}
 
       {guideOpen && (
         <div className="guide-backdrop" role="presentation" onMouseDown={(event) => {

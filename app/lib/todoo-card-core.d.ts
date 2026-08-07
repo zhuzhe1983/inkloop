@@ -2,7 +2,7 @@ export type CoreEvent<T = Record<string, unknown>> = { detail: T };
 
 export type CoreBluetoothDevice = {
   id: string;
-  name?: string;
+  name?: string | null;
   gatt?: { connected: boolean };
 };
 
@@ -24,5 +24,6 @@ export default class CoreTodooCard {
   connect(options?: Record<string, unknown>): Promise<unknown>;
   disconnect(): void;
   writeImageData(imageData: ImageData, options?: Record<string, unknown>): Promise<unknown>;
+  writeCalibration(options?: Record<string, unknown>): Promise<unknown>;
   static encodeImageData(imageData: ImageData, options?: Record<string, unknown>): Uint8Array;
 }

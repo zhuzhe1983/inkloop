@@ -3147,10 +3147,526 @@ input:focus-visible {
   background: #f2f4ee;
 }
 
+.device-calibration-panel {
+  margin-bottom: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  background: white;
+  box-shadow: 0 1px 0 rgba(21, 26, 23, 0.08);
+}
+
+.device-calibration-panel.calibrated {
+  background: #f5fbf6;
+}
+
+.device-calibration-copy {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.device-calibration-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--ink);
+  color: white;
+  font: 900 15px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.device-calibration-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.device-calibration-title strong {
+  font-size: 14px;
+}
+
+.device-calibration-title b {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #e8ede7;
+  color: #59625a;
+  font: 900 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.device-calibration-panel.calibrated .device-calibration-title b {
+  background: #d9f1df;
+  color: #25643d;
+}
+
+.device-calibration-copy small {
+  margin-top: 5px;
+  display: block;
+  color: #6b746d;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.device-calibration-swatches {
+  display: flex;
+  gap: 4px;
+}
+
+.device-calibration-swatches > span {
+  width: 25px;
+  height: 32px;
+  border-radius: 6px;
+  display: grid;
+  place-items: end center;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(20, 24, 21, 0.14);
+}
+
+.device-calibration-swatches i {
+  width: 100%;
+  padding: 2px 0;
+  background: rgba(255, 255, 255, 0.82);
+  color: #141815;
+  text-align: center;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.device-calibration-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-calibration-actions .switch {
+  width: 48px;
+  height: 28px;
+  padding: 4px;
+  border-radius: 16px;
+  flex: none;
+}
+
+.device-calibration-actions .switch span {
+  width: 20px;
+  height: 20px;
+}
+
+.device-calibration-actions .switch.on span {
+  transform: translateX(20px);
+}
+
+.device-calibration-actions > button:last-child {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--ink);
+  color: white;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
 .device-history-task-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
   gap: 12px;
+}
+
+.visually-hidden {
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  position: absolute !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.calibration-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  padding: 28px;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 14, 11, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.calibration-dialog {
+  width: min(920px, 100%);
+  max-height: calc(100dvh - 56px);
+  overflow: auto;
+  padding: 24px;
+  border-radius: 18px;
+  background: #fffefa;
+  color: var(--ink);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
+}
+
+.calibration-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.calibration-header h2 {
+  margin: 5px 0 6px;
+  font-size: 28px;
+  letter-spacing: -0.8px;
+}
+
+.calibration-header p {
+  max-width: 620px;
+  margin: 0;
+  color: #687169;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.calibration-header > button {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  flex: none;
+  background: #edf0eb;
+  color: var(--ink);
+  font-size: 25px;
+  cursor: pointer;
+}
+
+.calibration-header > button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.calibration-progress {
+  margin: 22px 0 18px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  list-style: none;
+}
+
+.calibration-progress li {
+  min-height: 52px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: #f0f2ed;
+  color: #707870;
+}
+
+.calibration-progress li b {
+  font: 900 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.calibration-progress li span {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.calibration-progress li.current {
+  background: var(--blue);
+  color: white;
+}
+
+.calibration-progress li.complete {
+  background: #def2e3;
+  color: #24603a;
+}
+
+.calibration-step {
+  min-height: 430px;
+  padding: 22px;
+  border-radius: 14px;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.82fr) minmax(0, 1.18fr);
+  align-items: center;
+  gap: 34px;
+  background: #f2f4ee;
+}
+
+.calibration-card-preview {
+  width: min(250px, 100%);
+  aspect-ratio: 2 / 3;
+  margin: 0 auto;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: repeat(6, 1fr);
+  background: white;
+  box-shadow: 0 14px 32px rgba(21, 26, 23, 0.18), 0 0 0 10px white;
+}
+
+.calibration-card-preview > div {
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #101410;
+}
+
+.calibration-card-preview > div.dark {
+  color: white;
+}
+
+.calibration-card-preview strong {
+  font-size: 16px;
+}
+
+.calibration-card-preview small {
+  font: 900 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.74;
+}
+
+.calibration-instructions {
+  max-width: 450px;
+}
+
+.calibration-step-number {
+  color: var(--blue);
+  font: 900 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.6px;
+}
+
+.calibration-instructions h3 {
+  margin: 9px 0 10px;
+  font-size: 24px;
+  letter-spacing: -0.5px;
+}
+
+.calibration-instructions p,
+.calibration-result > p {
+  margin: 0;
+  color: #59625b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.calibration-instructions ul {
+  margin: 15px 0 20px;
+  padding-left: 20px;
+  color: #5d665f;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.calibration-primary,
+.calibration-secondary {
+  min-height: 46px;
+  padding: 0 17px;
+  border: 0;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.calibration-primary {
+  background: var(--lime);
+  color: var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.calibration-secondary {
+  margin-left: 8px;
+  background: white;
+  color: var(--ink);
+}
+
+.calibration-primary:disabled,
+.calibration-secondary:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.calibration-camera-guide {
+  min-height: 380px;
+  padding: 24px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 16px;
+  background: #111713;
+  color: white;
+}
+
+.calibration-camera-frame {
+  width: min(220px, 82%);
+  aspect-ratio: 2 / 3;
+  padding: 6px;
+  display: grid;
+  grid-template-rows: repeat(6, 1fr);
+  gap: 2px;
+  outline: 2px solid rgba(255, 255, 255, 0.88);
+  outline-offset: 7px;
+}
+
+.calibration-camera-frame i {
+  display: block;
+}
+
+.calibration-camera-guide > span {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.calibration-photo-preview {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.calibration-photo-preview img {
+  width: min(250px, 100%);
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  background: #dde1da;
+  box-shadow: 0 12px 28px rgba(21, 26, 23, 0.18);
+}
+
+.calibration-photo-preview figcaption {
+  color: #717a72;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.calibration-result {
+  min-width: 0;
+}
+
+.calibration-score {
+  margin: 10px 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.calibration-score > div {
+  display: grid;
+  gap: 3px;
+}
+
+.calibration-score small {
+  color: #6e776f;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.calibration-score strong {
+  font: 900 27px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.calibration-score > b {
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: #fff0bc;
+  color: #6a5400;
+  font-size: 10px;
+}
+
+.calibration-score > b.excellent,
+.calibration-score > b.good {
+  background: #dcefe1;
+  color: #205f38;
+}
+
+.calibration-comparison {
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.calibration-comparison > div {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  background: white;
+}
+
+.calibration-comparison > div > span {
+  display: flex;
+}
+
+.calibration-comparison i {
+  width: 18px;
+  height: 28px;
+  display: block;
+  box-shadow: inset 0 0 0 1px rgba(20, 24, 21, 0.14);
+}
+
+.calibration-comparison i:first-child {
+  border-radius: 5px 0 0 5px;
+}
+
+.calibration-comparison i:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
+.calibration-comparison strong {
+  font-size: 11px;
+}
+
+.calibration-comparison small {
+  color: #6f776f;
+  font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.calibration-result-actions {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.calibration-result-actions .calibration-secondary {
+  margin-left: 0;
+  margin-right: 8px;
+}
+
+.calibration-error {
+  margin: 14px 0 0;
+  padding: 11px 13px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: #ffe7e2;
+  color: #7c2c22;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.calibration-error b {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--red);
+  color: white;
 }
 
 .device-history-task-list .device-task {
@@ -4890,6 +5406,30 @@ input:focus-visible {
     padding: 0 12px 14px;
   }
 
+  .device-calibration-panel {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .device-calibration-swatches {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .calibration-backdrop {
+    padding: 12px;
+  }
+
+  .calibration-dialog {
+    max-height: calc(100dvh - 24px);
+    padding: 18px;
+  }
+
+  .calibration-step {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
   .device-registry-empty {
     grid-template-columns: auto minmax(0, 1fr);
   }
@@ -4901,6 +5441,75 @@ input:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .device-calibration-panel {
+    padding: 14px;
+    display: flex;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .device-calibration-actions {
+    justify-content: space-between;
+  }
+
+  .device-calibration-actions > button:last-child {
+    min-width: 126px;
+  }
+
+  .calibration-header h2 {
+    font-size: 23px;
+  }
+
+  .calibration-header p {
+    font-size: 12px;
+  }
+
+  .calibration-progress li {
+    padding: 8px;
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    text-align: center;
+  }
+
+  .calibration-progress li span {
+    font-size: 9px;
+  }
+
+  .calibration-step {
+    padding: 18px 14px;
+  }
+
+  .calibration-card-preview,
+  .calibration-photo-preview img {
+    width: 210px;
+  }
+
+  .calibration-camera-guide {
+    min-height: 330px;
+  }
+
+  .calibration-comparison {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .calibration-score {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .calibration-result-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .calibration-result-actions .calibration-secondary,
+  .calibration-result-actions .calibration-primary {
+    width: 100%;
+    margin: 0;
+  }
+
   .device-task-heading {
     display: grid;
   }

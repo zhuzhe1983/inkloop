@@ -20,6 +20,9 @@ export type TodooProgress = {
 
 type ProgressHandler = (progress: TodooProgress) => void;
 type AuthorizedBluetoothDevice = { id: string; name?: string | null };
+type WriteCanvasOptions = {
+  palette?: Array<[number, number, number] | null>;
+};
 
 const stateProgress: Record<string, TodooProgress> = {
   connecting: { phase: "connecting", percent: 4, message: "正在连接 TodooCard…" },
@@ -131,13 +134,22 @@ export class TodooCard {
     return CoreTodooCard.encodeImageData(imageData);
   }
 
-  async writeCanvas(canvas: HTMLCanvasElement, disconnectAfterWrite = true) {
+  async writeCanvas(canvas: HTMLCanvasElement, disconnectAfterWrite = true, options: WriteCanvasOptions = {}) {
     this.onProgress?.({ phase: "encoding", percent: 8, message: "正在转换为六色电子纸帧…" });
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("无法读取预览画布");
     return this.core.writeImageData(
       context.getImageData(0, 0, TODOO_PROTOCOL.width, TODOO_PROTOCOL.height),
-      { disconnectAfterWrite },
+      {
+        disconnectAfterWrite,
+        palette: options.palette,
+        dither: true,
+      },
     );
+  }
+
+  async writeCalibration(disconnectAfterWrite = true) {
+    this.onProgress?.({ phase: "encoding", percent: 8, message: "正在生成标准六色色卡…" });
+    return this.core.writeCalibration({ disconnectAfterWrite });
   }
 }
