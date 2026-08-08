@@ -18,45 +18,13 @@ export const INKLOOP_PREVIEW_PALETTE: readonly SixColorRgb[] = [
   [8, 124, 78],
 ] as const;
 
-type PalettePair = {
-  start: number;
-  end: number;
-  startColor: SixColorRgb;
-  deltaRed: number;
-  deltaGreen: number;
-  deltaBlue: number;
-  denominator: number;
-};
-
-function makePalettePairs(indices: readonly number[]) {
-  const pairs: PalettePair[] = [];
-  for (let left = 0; left < indices.length; left += 1) {
-    for (let right = left + 1; right < indices.length; right += 1) {
-      const start = indices[left];
-      const end = indices[right];
-      const startColor = TODOO_NATIVE_PALETTE[start];
-      const endColor = TODOO_NATIVE_PALETTE[end];
-      const deltaRed = endColor[0] - startColor[0];
-      const deltaGreen = endColor[1] - startColor[1];
-      const deltaBlue = endColor[2] - startColor[2];
-      pairs.push({
-        start,
-        end,
-        startColor,
-        deltaRed,
-        deltaGreen,
-        deltaBlue,
-        denominator: deltaRed * deltaRed + deltaGreen * deltaGreen + deltaBlue * deltaBlue,
-      });
-    }
-  }
-  return pairs;
-}
-
-const FULL_PALETTE_PAIRS = makePalettePairs([0, 1, 2, 3, 4, 5]);
-const NEUTRAL_PALETTE_PAIRS = makePalettePairs([0, 1]);
-const MAGENTA_PALETTE_PAIRS = makePalettePairs([3, 4]);
-const CYAN_PALETTE_PAIRS = makePalettePairs([4, 5]);
+const HUE_STOPS = [
+  { degrees: 0, paletteIndex: 3 },
+  { degrees: 60, paletteIndex: 2 },
+  { degrees: 120, paletteIndex: 5 },
+  { degrees: 240, paletteIndex: 4 },
+  { degrees: 360, paletteIndex: 3 },
+] as const;
 
 function sourceSeed(data: Uint8ClampedArray, width: number, height: number) {
   let seed = (0x811c9dc5 ^ width ^ Math.imul(height, 0x9e3779b1)) >>> 0;
@@ -84,13 +52,25 @@ function deterministicUnit(seed: number, x: number, y: number) {
   return (value >>> 0) / 4294967296;
 }
 
+function sourceHue(red: number, green: number, blue: number, maximum: number, chroma: number) {
+  if (chroma === 0) return 0;
+  let sector = maximum === red
+    ? (green - blue) / chroma
+    : maximum === green
+      ? (blue - red) / chroma + 2
+      : (red - green) / chroma + 4;
+  if (sector < 0) sector += 6;
+  return sector * 60;
+}
+
 /**
  * Deterministic stochastic halftoning for Todoo's six native pigments.
  *
- * Each source colour is projected onto the best line segment between two
- * native pigments. A stable image-seeded random threshold then chooses one of
- * those two pigments. This preserves the local average while avoiding the long
- * directional feedback loops produced by raster Floyd-Steinberg on gradients.
+ * Brightness is decomposed into black/white weights, while chroma is spread
+ * continuously across the neighbouring native hue pigments. A stable
+ * image-seeded threshold then selects a pigment for each pixel. This keeps
+ * cyan as a blue/green mix and magenta as a blue/red mix without hard
+ * thresholds or Floyd-Steinberg's directional feedback loops.
  */
 export function stochasticSixColorDither(
   source: Uint8ClampedArray,
@@ -112,47 +92,43 @@ export function stochasticSixColorDither(
       const green = source[offset + 1];
       const blue = source[offset + 2];
       const maximum = Math.max(red, green, blue);
-      const chroma = maximum - Math.min(red, green, blue);
+      const minimum = Math.min(red, green, blue);
+      const chroma = maximum - minimum;
       const saturation = chroma / Math.max(1, maximum);
-      const saturatedMagenta = saturation > 0.5 && Math.min(red, blue) - green > 24;
-      const saturatedCyan = saturation > 0.5 && Math.min(green, blue) - red > 24;
-      const pairs = protectNeutral && (chroma < 30 || saturation < 0.22)
-        ? NEUTRAL_PALETTE_PAIRS
-        : saturatedMagenta
-          ? MAGENTA_PALETTE_PAIRS
-          : saturatedCyan
-            ? CYAN_PALETTE_PAIRS
-            : FULL_PALETTE_PAIRS;
-      let bestPair = pairs[0];
-      let bestMix = 0;
-      let bestDistance = Number.POSITIVE_INFINITY;
+      const weights = new Float32Array(TODOO_NATIVE_PALETTE.length);
 
-      for (const pair of pairs) {
-        const relativeRed = red - pair.startColor[0];
-        const relativeGreen = green - pair.startColor[1];
-        const relativeBlue = blue - pair.startColor[2];
-        const mix = Math.min(1, Math.max(0, (
-          relativeRed * pair.deltaRed
-          + relativeGreen * pair.deltaGreen
-          + relativeBlue * pair.deltaBlue
-        ) / pair.denominator));
-        const projectedRed = pair.startColor[0] + pair.deltaRed * mix;
-        const projectedGreen = pair.startColor[1] + pair.deltaGreen * mix;
-        const projectedBlue = pair.startColor[2] + pair.deltaBlue * mix;
-        const deltaRed = red - projectedRed;
-        const deltaGreen = green - projectedGreen;
-        const deltaBlue = blue - projectedBlue;
-        const distance = deltaRed * deltaRed + deltaGreen * deltaGreen + deltaBlue * deltaBlue;
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestPair = pair;
-          bestMix = mix;
+      if (protectNeutral && (chroma < 30 || saturation < 0.22)) {
+        const luminance = (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255;
+        weights[0] = 1 - luminance;
+        weights[1] = luminance;
+      } else {
+        weights[0] = 1 - maximum / 255;
+        weights[1] = minimum / 255;
+        const chromaWeight = chroma / 255;
+        if (chromaWeight > 0) {
+          const hue = sourceHue(red, green, blue, maximum, chroma);
+          for (let index = 0; index < HUE_STOPS.length - 1; index += 1) {
+            const start = HUE_STOPS[index];
+            const end = HUE_STOPS[index + 1];
+            if (hue < start.degrees || hue > end.degrees) continue;
+            const mix = (hue - start.degrees) / (end.degrees - start.degrees);
+            weights[start.paletteIndex] += chromaWeight * (1 - mix);
+            weights[end.paletteIndex] += chromaWeight * mix;
+            break;
+          }
         }
       }
 
-      const selectedIndex = deterministicUnit(seed, pixelX, pixelY) < bestMix
-        ? bestPair.end
-        : bestPair.start;
+      const threshold = deterministicUnit(seed, pixelX, pixelY);
+      let cumulative = 0;
+      let selectedIndex = 0;
+      for (let paletteIndex = 0; paletteIndex < weights.length; paletteIndex += 1) {
+        cumulative += weights[paletteIndex];
+        if (threshold < cumulative || paletteIndex === weights.length - 1) {
+          selectedIndex = paletteIndex;
+          break;
+        }
+      }
       const selected = INKLOOP_PREVIEW_PALETTE[selectedIndex];
       output[offset] = selected[0];
       output[offset + 1] = selected[1];

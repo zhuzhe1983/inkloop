@@ -91,3 +91,20 @@ test("高饱和青色使用蓝绿网点，不会退化成蓝白网点", () => {
     ]),
   );
 });
+
+test("青色过渡连续增加绿色网点，不会在阈值处突变", () => {
+  const greenRatios = [64, 128, 192].map((green) => {
+    const output = stochasticSixColorDither(solidImage(256, 96, [0, green, 255]), 256, 96);
+    let greenPixels = 0;
+    for (let offset = 0; offset < output.length; offset += 4) {
+      if (
+        output[offset] === INKLOOP_PREVIEW_PALETTE[5][0]
+        && output[offset + 1] === INKLOOP_PREVIEW_PALETTE[5][1]
+        && output[offset + 2] === INKLOOP_PREVIEW_PALETTE[5][2]
+      ) greenPixels += 1;
+    }
+    return greenPixels / (256 * 96);
+  });
+  assert.ok(greenRatios[0] < greenRatios[1]);
+  assert.ok(greenRatios[1] < greenRatios[2]);
+});

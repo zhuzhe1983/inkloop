@@ -22,3 +22,5 @@ npm test
 ```
 
 完整的架构、环境变量、蓝牙协议、数据源、测试和发布说明见 [HANDOFF.md](./HANDOFF.md)。
+
+ChatGPT Sites 与 Synology Docker 的双端发布、环境变量、健康检查和回滚说明见 [DEPLOYMENT.md](./DEPLOYMENT.md)。默认发布会同时更新两个环境。

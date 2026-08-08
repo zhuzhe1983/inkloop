@@ -40,5 +40,8 @@ next-env.d.ts
 *.tsbuildinfo
 /dist/
 /.wrangler/
+/.docker-data/
 /outputs/
 /work/
+/config/.dev.vars
+/data/

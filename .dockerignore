@@ -1,0 +1,15 @@
+.git
+.next
+.vinext
+dist
+node_modules
+.wrangler
+.docker-data
+.env*
+config/.dev.vars
+data
+coverage
+outputs
+work
+npm-debug.log*
+.DS_Store
