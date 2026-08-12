@@ -1,4 +1,25 @@
 services:
+  llm-proxy:
+    image: node:22-bookworm-slim
+    container_name: inkloop-llm-proxy
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      LLM_PROXY_UPSTREAM: ${LLM_PROXY_UPSTREAM:-https://hub.tsingfly.com}
+      LLM_PROXY_PORT: "8788"
+    volumes:
+      - ./docker/llm-proxy.mjs:/app/llm-proxy.mjs:ro
+    command: ["node", "/app/llm-proxy.mjs"]
+    expose:
+      - "8788"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
   inkloop:
     build:
       context: .
@@ -7,6 +28,7 @@ services:
     container_name: inkloop
     restart: unless-stopped
     init: true
+    command: ["./node_modules/.bin/wrangler", "dev", "--config", "dist/server/wrangler.json", "--env-file", "/app/.dev.vars", "--ip", "0.0.0.0", "--port", "3000", "--persist-to", "/data", "--log-level", "info", "--show-interactive-dev-session=false"]
     ports:
       - "${INKLOOP_PORT:-38080}:3000"
     volumes:
@@ -14,6 +36,9 @@ services:
       - ./config/.dev.vars:/app/.dev.vars:ro
     environment:
       TZ: Asia/Shanghai
+    depends_on:
+      llm-proxy:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s

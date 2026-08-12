@@ -150,6 +150,7 @@ const DEVICE_PROFILES_KEY = "inkloop-device-profiles-v1";
 const SIDEBAR_COLLAPSED_KEY = "inkloop-sidebar-collapsed-v1";
 const WEATHER_CITY_KEY = "inkloop-weather-city-v1";
 const CALENDAR_PREFERENCES_KEY = "inkloop-calendar-sources-v1";
+const GENERATOR_MODEL_KEY = "inkloop-generator-model-v1";
 const DEFAULT_CALENDAR_PREFERENCES: CalendarPreferences = {
   sources: [],
   chinaHolidays: false,
@@ -2821,6 +2822,7 @@ export default function InkStudio() {
   const [generating, setGenerating] = useState(false);
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
+  const [generatorModels, setGeneratorModels] = useState<string[]>([]);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
   const [previewScale, setPreviewScale] = useState<35 | 50 | 75 | 100>(50);
   const [artworkCredit, setArtworkCredit] = useState<ArtworkCredit | null>(null);
@@ -3153,11 +3155,20 @@ export default function InkStudio() {
     fetch("/api/generate")
       .then(async (response) => {
         if (!response.ok) throw new Error("generator unavailable");
-        return (await response.json()) as { configured?: boolean; model?: string };
+        return (await response.json()) as { configured?: boolean; model?: string; models?: string[] };
       })
       .then((data) => {
         setGeneratorStatus(data.configured ? "online" : "local");
-        setGeneratorModel(data.model || "auto");
+        const models = Array.isArray(data.models)
+          ? [...new Set(data.models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))]
+          : [];
+        const defaultModel = data.model?.trim() || "auto";
+        const availableModels = defaultModel === "auto" || models.includes(defaultModel)
+          ? models
+          : [defaultModel, ...models];
+        setGeneratorModels(availableModels);
+        const storedModel = localStorage.getItem(GENERATOR_MODEL_KEY)?.trim() || "";
+        setGeneratorModel(storedModel === "auto" || availableModels.includes(storedModel) ? storedModel : defaultModel);
       })
       .catch(() => setGeneratorStatus("local"));
   }, []);
@@ -3323,28 +3334,28 @@ export default function InkStudio() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, model: generatorModel }),
       });
-      if (!response.ok) throw new Error("生成服务暂时不可用");
       const result = (await response.json()) as {
         app?: InkApp;
         mode?: "llm" | "local";
         model?: string | null;
         warning?: string;
+        error?: string;
       };
+      if (!response.ok) throw new Error(result.error || "生成服务暂时不可用");
       if (!result.app) throw new Error("生成结果不完整");
       setApp({ ...applyPreferredCityToGeneratedApp(result.app, prompt, preferredWeatherCity), localImage: app.localImage });
       if (result.mode === "llm") {
         setGeneratorStatus("online");
-        setGeneratorModel(result.model || "auto");
         showToast(`已由 ${result.model || "在线模型"} 生成应用`, "success");
       } else {
-        setGeneratorStatus("local");
+        setGeneratorStatus(generatorModels.length ? "online" : "local");
         showToast(result.warning || "已使用本地模板生成", "info");
       }
     } catch (error) {
       setApp({ ...applyPreferredCityToGeneratedApp(generateInkApp(prompt), prompt, preferredWeatherCity), localImage: app.localImage });
-      setGeneratorStatus("local");
+      setGeneratorStatus(generatorModels.length ? "online" : "local");
       showToast(error instanceof Error ? `${error.message}，已使用本地模板` : "已使用本地模板", "info");
     } finally {
       setGenerating(false);
@@ -4403,13 +4414,30 @@ export default function InkStudio() {
                 </button>
                 <div className="generator-note">
                   <span className={generatorStatus === "online" ? "online" : ""}>LLM</span>
-                  <p>
-                    {generatorStatus === "checking"
-                      ? "正在检查在线编码服务…"
-                      : generatorStatus === "online"
-                        ? `在线编码已就绪 · ${generatorModel === "auto" ? "自动选择模型" : generatorModel}`
-                        : "等待配置 LLM_API_KEY · 当前自动使用本地模板"}
-                  </p>
+                  {generatorStatus === "online" ? (
+                    <p className="generator-ready">
+                      <span>在线编码已就绪 ·</span>
+                      <select
+                        className="generator-model-select"
+                        value={generatorModel}
+                        onChange={(event) => {
+                          const nextModel = event.target.value;
+                          setGeneratorModel(nextModel);
+                          localStorage.setItem(GENERATOR_MODEL_KEY, nextModel);
+                        }}
+                        disabled={generating}
+                        aria-label="选择在线编码模型"
+                        title={generatorModel === "auto" ? "由服务自动选择模型" : generatorModel}
+                      >
+                        <option value="auto">自动选择模型</option>
+                        {generatorModels.map((model) => (
+                          <option value={model} key={model}>{model}</option>
+                        ))}
+                      </select>
+                    </p>
+                  ) : (
+                    <p>{generatorStatus === "checking" ? "正在检查在线编码服务…" : "等待配置 LLM_API_KEY · 当前自动使用本地模板"}</p>
+                  )}
                 </div>
               </section>
 

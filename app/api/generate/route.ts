@@ -26,6 +26,9 @@ const MODEL_PREFERENCES = [
   "deepseek-v4-flash",
   "qwen3-32b",
 ];
+const AUTO_MODEL = "auto";
+const MAX_MODEL_OPTIONS = 200;
+const MAX_MODEL_ID_LENGTH = 256;
 
 const ALLOWED_KINDS = new Set<ScreenKind>(["weather", "focus", "countdown", "meeting", "metric", "calendar", "timetable", "agenda", "map", "card"]);
 const ALLOWED_ACCENTS = new Set<ScreenSpec["accent"]>(["red", "blue", "green", "yellow"]);
@@ -720,9 +723,11 @@ async function listGatewayModels(baseUrl: string, apiKey: string) {
     });
     if (!response.ok) return [];
     const payload = (await response.json()) as GatewayModels;
-    return (payload.data ?? payload.models ?? [])
+    return [...new Set((payload.data ?? payload.models ?? [])
       .map((model) => (typeof model.id === "string" ? model.id : ""))
-      .filter(Boolean);
+      .map((model) => model.trim())
+      .filter((model) => Boolean(model) && model.length <= MAX_MODEL_ID_LENGTH))]
+      .slice(0, MAX_MODEL_OPTIONS);
   } catch {
     return [];
   }
@@ -764,6 +769,9 @@ async function requestCompletion(baseUrl: string, apiKey: string, model: string,
       temperature: 0.2,
       max_tokens: complexRequest ? 3000 : 1800,
       response_format: { type: "json_object" },
+      ...(model.startsWith("Qwen/")
+        ? { chat_template_kwargs: { enable_thinking: false } }
+        : {}),
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -794,20 +802,32 @@ async function requestCompletion(baseUrl: string, apiKey: string, model: string,
   return extractJson(content);
 }
 
-export function GET() {
+export async function GET() {
+  const apiKey = resolveApiKey();
+  const baseUrl = normalizeBaseUrl(env.LLM_BASE_URL);
+  const defaultModel = env.LLM_MODEL?.trim() || AUTO_MODEL;
+  const gatewayModels = apiKey ? await listGatewayModels(baseUrl, apiKey) : [];
+  const models = [...new Set([
+    ...(defaultModel === AUTO_MODEL ? [] : [defaultModel]),
+    ...gatewayModels,
+  ])];
   return Response.json({
-    configured: Boolean(resolveApiKey()),
+    configured: Boolean(apiKey),
     provider: "LLM Gateway",
-    endpoint: normalizeBaseUrl(env.LLM_BASE_URL),
-    model: env.LLM_MODEL?.trim() || "auto",
+    endpoint: baseUrl,
+    model: defaultModel,
+    models,
   });
 }
 
 export async function POST(request: Request) {
   let prompt = "";
   try {
-    const body = (await request.json()) as { prompt?: unknown };
+    const body = (await request.json()) as { prompt?: unknown; model?: unknown };
     prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 1000) : "";
+    const requestedModel = typeof body.model === "string"
+      ? body.model.trim().slice(0, MAX_MODEL_ID_LENGTH)
+      : AUTO_MODEL;
     if (!prompt) return Response.json({ error: "请先描述应用需求" }, { status: 400 });
 
     const apiKey = resolveApiKey();
@@ -823,8 +843,17 @@ export async function POST(request: Request) {
     const baseUrl = normalizeBaseUrl(env.LLM_BASE_URL);
     const modelsPromise = listGatewayModels(baseUrl, apiKey);
     const configuredModel = env.LLM_MODEL?.trim() || "";
-    const models = configuredModel ? [] : await modelsPromise;
-    let model = configuredModel || preferredModel(models);
+    const manuallySelectedModel = requestedModel && requestedModel !== AUTO_MODEL ? requestedModel : "";
+    const models = configuredModel && !manuallySelectedModel ? [] : await modelsPromise;
+    if (manuallySelectedModel && manuallySelectedModel !== configuredModel) {
+      if (!models.length) {
+        return Response.json({ error: "暂时无法确认可用模型，请稍后重试" }, { status: 503 });
+      }
+      if (!models.includes(manuallySelectedModel)) {
+        return Response.json({ error: "所选模型已不可用，请重新选择" }, { status: 400 });
+      }
+    }
+    let model = manuallySelectedModel || configuredModel || preferredModel(models);
     const complexRequest = wantsArtwork(prompt)
       || wantsCard(prompt)
       || wantsAgenda(prompt)
@@ -835,6 +864,7 @@ export async function POST(request: Request) {
     try {
       generated = await requestCompletion(baseUrl, apiKey, model, prompt, complexRequest ? 34_000 : 22_000);
     } catch (primaryError) {
+      if (manuallySelectedModel) throw primaryError;
       const availableModels = models.length ? models : await modelsPromise;
       const fallbackModel = preferredModel(availableModels, model);
       console.warn("Inkloop primary LLM failed; retrying with fallback", {

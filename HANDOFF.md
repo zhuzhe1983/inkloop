@@ -70,7 +70,7 @@ npm run lint
 | --- | --- | --- |
 | `LLM_API_KEY` | 线上生成需要 | LLM 网关 App Key。未配置时自动使用本地模板。 |
 | `LLM_BASE_URL` | 否 | OpenAI 兼容网关根地址；默认使用项目内置网关。不要以 `/` 结尾。 |
-| `LLM_MODEL` | 否 | 固定模型 ID；为空时先请求 `/models` 并自动选择。 |
+| `LLM_MODEL` | 否 | 界面默认模型 ID；用户可从 `/models` 返回的列表中切换，为空时默认自动选择。 |
 | `BAIDU_MAP_AK` | 地图功能需要 | 百度地图 Web 服务端 AK。只允许配置在服务端，未配置时地图编辑器会给出可恢复提示。 |
 
 本地密钥只写入 `.env`，不要提交。线上变量通过 Sites 运行环境维护；不要把密钥写入 `.openai/hosting.json` 或前端代码。
@@ -165,7 +165,7 @@ Open-Meteo 优先，wttr.in 备用；常见中国城市使用内置坐标以减�
 
 ## 9. LLM 生成契约
 
-`/api/generate` 使用 OpenAI 兼容的 `/chat/completions` 和 `/models`。LLM 只负责返回受约束的结构化应用 JSON；服务端会重新校验 kind、方向、元素、表格、文字长度和刷新周期，不能直接执行模型返回的任意代码。
+`/api/generate` 使用 OpenAI 兼容的 `/chat/completions` 和 `/models`。GET 会向前端返回可选模型 ID，用户选择保存在浏览器中，POST 会再次校验所选模型仍在网关列表中。LLM 只负责返回受约束的结构化应用 JSON；服务端会重新校验 kind、方向、元素、表格、文字长度和刷新周期，不能直接执行模型返回的任意代码。
 
 提示词和规范的重点：
 
