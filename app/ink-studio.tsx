@@ -257,8 +257,8 @@ function calendarSourceName(url: string, position: number) {
 
 const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
   { id: "studio", label: "创作台", glyph: "✦" },
-  { id: "mine", label: "我的应用", glyph: "▦" },
-  { id: "explore", label: "发现", glyph: "◎" },
+  { id: "mine", label: "我的模版", glyph: "▦" },
+  { id: "explore", label: "模板市场", glyph: "◎" },
   { id: "device", label: "设备中心", glyph: "⌁" },
 ];
 
@@ -2744,7 +2744,7 @@ function AppCard({
             </a>
           )}
           <button type="button" onClick={onUse} aria-label={`立即使用${app.title}`}>
-            <span className="app-card-cta-label"><i>✦</i> 立即使用此应用</span>
+            <span className="app-card-cta-label"><i>✦</i> 立即使用此模版</span>
             <span className="app-card-cta-arrow" aria-hidden="true">→</span>
           </button>
         </div>
@@ -2915,7 +2915,7 @@ export default function InkStudio() {
     const url = new URL(publicAppHref(appId), window.location.origin);
     try {
       await navigator.clipboard.writeText(url.toString());
-      showToast("公开应用链接已复制", "success");
+      showToast("公开模板链接已复制", "success");
     } catch {
       showToast("复制失败，请从浏览器地址栏复制", "error");
     }
@@ -3789,12 +3789,12 @@ export default function InkStudio() {
         if (!response.ok) throw new Error("publish failed");
         const data = (await response.json()) as { app: InkApp };
         setPublicApps((items) => [data.app, ...items.filter((item) => item.id !== data.app.id)]);
-        showToast("已保存到本机，并发布到发现页", "success");
+        showToast("已保存到本机，并发布到模板市场", "success");
       } catch {
         showToast("已保存到本机；公开发布暂时不可用", "info");
       }
     } else {
-      showToast("应用已保存在这台设备上", "success");
+      showToast("模版已保存在这台设备上", "success");
     }
   };
 
@@ -4232,7 +4232,7 @@ export default function InkStudio() {
     }
   };
 
-  const contentTitle = tab === "mine" ? "我的应用" : tab === "explore" ? "发现灵感" : tab === "device" ? "设备中心" : null;
+  const contentTitle = tab === "mine" ? "我的模版" : tab === "explore" ? "模板市场" : tab === "device" ? "设备中心" : null;
   const selectedPublicApp = selectedPublicAppId
     ? publicApps.find((item) => item.id === selectedPublicAppId) ?? null
     : null;
@@ -4344,7 +4344,7 @@ export default function InkStudio() {
             </span>
             {tab === "studio" && (
               <button type="button" className="save-button" onClick={saveApp}>
-                保存应用
+                保存模版
               </button>
             )}
           </div>
@@ -4515,9 +4515,6 @@ export default function InkStudio() {
                             width={previewDimensions.width}
                             height={previewDimensions.height}
                             aria-label="电子墨水屏预览"
-                            style={mapPanPreview ? {
-                              transform: `translate(${mapPanPreview.x}px, ${mapPanPreview.y}px) scale(1.05)`,
-                            } : undefined}
                           />
                           {app.spec.kind !== "map" && <div className="screen-drag-layer" aria-label="拖拽画面元素调整位置">
                             {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
@@ -4553,7 +4550,7 @@ export default function InkStudio() {
                               className={`map-preview-interaction${mapPanPreview ? " dragging" : ""}`}
                               role="application"
                               tabIndex={0}
-                              aria-label="地图预览：拖拽移动，滚轮缩放；方向键移动，加减键缩放"
+                              aria-label="地图预览：按住拖动并在松开后更新位置，滚轮缩放；方向键移动，加减键缩放"
                               onPointerDown={handleMapPointerDown}
                               onPointerMove={handleMapPointerMove}
                               onPointerUp={finishMapDrag}
@@ -4561,7 +4558,7 @@ export default function InkStudio() {
                               onWheel={handleMapWheel}
                               onKeyDown={handleMapKeyDown}
                             >
-                              <span>拖拽移动 · 滚轮缩放{mapZoomPreview ? ` · ${mapZoomPreview} 级` : ""}</span>
+                              <span>{mapPanPreview ? "松开后更新地图" : "按住拖动 · 滚轮缩放"}{mapZoomPreview ? ` · ${mapZoomPreview} 级` : ""}</span>
                             </div>
                           )}
                         </div>
@@ -4674,7 +4671,7 @@ export default function InkStudio() {
                       <div className="map-editor-group">
                         <div className="map-editor-label">
                           <strong>定位方式</strong>
-                          <small>直接拖拽预览最直观；IP 仅为城市级估算</small>
+                          <small>按住预览拖动，松开后更新位置；IP 仅为城市级估算</small>
                         </div>
                         <div className="map-location-options" role="group" aria-label="地图定位方式">
                           <button
@@ -4833,8 +4830,8 @@ export default function InkStudio() {
                       </div>
                       <p className={`map-location-note${app.spec.map.approximate ? " approximate" : ""}`}>
                         {app.spec.map.statusMessage || (app.spec.map.approximate
-                          ? "当前只是城市级估算，写入前建议在预览上拖拽微调。"
-                          : "在屏幕预览上拖拽移动地图，滚轮调整缩放。")}
+                          ? "当前只是城市级估算，写入前建议在预览上拖动并松开以微调。"
+                          : "在屏幕预览上按住拖动，松开后更新地图；滚轮调整缩放。")}
                       </p>
                     </div>
                   )}
@@ -5155,7 +5152,7 @@ export default function InkStudio() {
                           />
                         )}
                         <small>{screenDisplay.qrMode === "wifi"
-                          ? "密码仅保存在当前浏览器；包含 Wi-Fi 凭据的应用不能公开到发现页。"
+                          ? "密码仅保存在当前浏览器；包含 Wi-Fi 凭据的模版不能发布到模板市场。"
                           : "内容只在本机生成二维码，不会发送到二维码服务；白色留边是扫码所必需。"}</small>
                       </div>
                     )}
@@ -5380,7 +5377,7 @@ export default function InkStudio() {
                       </div>
                     </label>
                     <p className={calendarNotice ? "calendar-source-warning" : undefined}>
-                      {calendarNotice || "最多 5 个 Google、Apple 或 Outlook 只读日历；可分别暂停与改名。地址不会写入应用或公开发现页。"}
+                      {calendarNotice || "最多 5 个 Google、Apple 或 Outlook 只读日历；可分别暂停与改名。地址不会写入模版或发布到模板市场。"}
                     </p>
                   </section>
                 )}
@@ -5434,7 +5431,7 @@ export default function InkStudio() {
                 )}
                 <div className="sharing-row">
                   <div>
-                    <strong>公开到发现页</strong>
+                    <strong>发布到模板市场</strong>
                     <small>其他人可以复制并使用</small>
                   </div>
                   <button
@@ -5490,9 +5487,9 @@ export default function InkStudio() {
           <section className="collection-view">
             <div className="collection-hero">
               <span className="eyebrow">LOCAL LIBRARY</span>
-              <h1>留在你设备里的应用</h1>
-              <p>这些应用保存在浏览器本机，不上传个人数据。清理浏览器数据会一并删除。</p>
-              <button type="button" onClick={() => navigateToTab("studio")}>＋ 创建新应用</button>
+              <h1>我的模版</h1>
+              <p>这些模版保存在浏览器本机，不上传个人数据。清理浏览器数据会一并删除。</p>
+              <button type="button" onClick={() => navigateToTab("studio")}>＋ 创建新模版</button>
             </div>
             {localApps.length ? (
               <div className="card-grid">
@@ -5500,7 +5497,7 @@ export default function InkStudio() {
               </div>
             ) : (
               <div className="empty-state">
-                <span>▦</span><h2>还没有保存的应用</h2><p>在创作台生成并保存，第一个应用就会出现在这里。</p>
+                <span>▦</span><h2>还没有保存的模版</h2><p>在创作台生成并保存，第一个模版就会出现在这里。</p>
               </div>
             )}
           </section>
@@ -5509,10 +5506,10 @@ export default function InkStudio() {
         {tab === "explore" && selectedPublicAppId && (
           <section className="collection-view public-app-detail">
             <div className="public-app-detail-head">
-              <button type="button" onClick={() => navigateToTab("explore")}>← 返回发现</button>
+              <button type="button" onClick={() => navigateToTab("explore")}>← 返回模板市场</button>
               <div>
                 <span className="eyebrow">PUBLIC APP</span>
-                <h1>{selectedPublicApp?.title || "公开应用"}</h1>
+                <h1>{selectedPublicApp?.title || "公开模板"}</h1>
                 <p>这个地址可以直接访问并分享给其他人。</p>
               </div>
               <button
@@ -5530,7 +5527,7 @@ export default function InkStudio() {
             ) : (
               <div className="empty-state public-link-state">
                 <span>{publicLinkStatus === "loading" ? "…" : "◎"}</span>
-                <h2>{publicLinkStatus === "loading" ? "正在读取公开应用" : "这个公开应用暂时无法访问"}</h2>
+                <h2>{publicLinkStatus === "loading" ? "正在读取公开模板" : "这个公开模板暂时无法访问"}</h2>
                 <p>{publicLinkStatus === "loading" ? "很快就好。" : "它可能已经被移除，或链接不完整。"}</p>
               </div>
             )}
@@ -5542,10 +5539,10 @@ export default function InkStudio() {
             <div className="collection-hero split">
               <div>
                 <span className="eyebrow">PUBLIC GALLERY</span>
-                <h1>把别人的灵感，变成你的屏幕</h1>
-                <p>所有应用都能一键复制到创作台，再按自己的数据与频率修改。</p>
+                <h1>模板市场</h1>
+                <p>所有模板都能一键复制到创作台，再按自己的数据与频率修改。</p>
               </div>
-              <div className="gallery-stat"><b>{publicApps.length}</b><span>公开应用</span></div>
+              <div className="gallery-stat"><b>{publicApps.length}</b><span>公开模板</span></div>
             </div>
             <div className="filter-row"><button className="active">精选</button><button>生活</button><button>效率</button><button>数据</button></div>
             <div className="card-grid">
