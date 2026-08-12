@@ -72,6 +72,7 @@ npm run lint
 | `LLM_BASE_URL` | 否 | OpenAI 兼容网关根地址；默认使用项目内置网关。不要以 `/` 结尾。 |
 | `LLM_MODEL` | 否 | 界面默认模型 ID；用户可从 `/models` 返回的列表中切换，为空时默认自动选择。 |
 | `BAIDU_MAP_AK` | 地图功能需要 | 百度地图 Web 服务端 AK。只允许配置在服务端，未配置时地图编辑器会给出可恢复提示。 |
+| `BAIDU_MAP_BASE_URL` | Docker 需要 | 百度 API 根地址；Docker 指向 Compose 私有 Node 代理，Sites 与本地留空直连百度。 |
 
 本地密钥只写入 `.env`，不要提交。线上变量通过 Sites 运行环境维护；不要把密钥写入 `.openai/hosting.json` 或前端代码。
 

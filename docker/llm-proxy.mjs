@@ -1,8 +1,16 @@
 import http from "node:http";
 
-const upstream = new URL(process.env.LLM_PROXY_UPSTREAM || "https://hub.tsingfly.com");
+const llmUpstream = new URL(process.env.LLM_PROXY_UPSTREAM || "https://hub.tsingfly.com");
+const baiduMapUpstream = new URL(process.env.BAIDU_MAP_UPSTREAM || "https://api.map.baidu.com");
 const port = Number.parseInt(process.env.LLM_PROXY_PORT || "8788", 10);
-const allowedPaths = new Set(["/v1/models", "/v1/chat/completions"]);
+const allowedLlmPaths = new Set(["/v1/models", "/v1/chat/completions"]);
+const baiduMapPaths = new Set([
+  "/location/ip",
+  "/geocoding/v3/",
+  "/reverse_geocoding/v3/",
+  "/geoconv/v1/",
+  "/staticimage/v2",
+]);
 const maxBodyBytes = 4 * 1024 * 1024;
 
 function sendJson(response, status, payload) {
@@ -33,12 +41,20 @@ const server = http.createServer(async (request, response) => {
 
   const incomingUrl = new URL(request.url || "/", "http://inkloop-llm-proxy");
   const method = request.method || "GET";
-  if (!allowedPaths.has(incomingUrl.pathname) || !["GET", "POST"].includes(method)) {
+  const mapPath = incomingUrl.pathname.startsWith("/baidu/")
+    ? incomingUrl.pathname.slice("/baidu".length)
+    : "";
+  const llmRequest = allowedLlmPaths.has(incomingUrl.pathname) && ["GET", "POST"].includes(method);
+  const mapRequest = baiduMapPaths.has(mapPath) && method === "GET";
+  if (!llmRequest && !mapRequest) {
     return sendJson(response, 404, { error: "not_found" });
   }
 
   try {
-    const target = new URL(incomingUrl.pathname + incomingUrl.search, upstream);
+    const target = new URL(
+      `${mapRequest ? mapPath : incomingUrl.pathname}${incomingUrl.search}`,
+      mapRequest ? baiduMapUpstream : llmUpstream,
+    );
     const headers = new Headers();
     for (const name of ["accept", "authorization", "content-type", "user-agent"]) {
       const value = request.headers[name];

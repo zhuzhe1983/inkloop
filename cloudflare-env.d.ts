@@ -5,5 +5,6 @@ declare namespace Cloudflare {
     LLM_BASE_URL?: string;
     LLM_MODEL?: string;
     BAIDU_MAP_AK?: string;
+    BAIDU_MAP_BASE_URL?: string;
   }
 }

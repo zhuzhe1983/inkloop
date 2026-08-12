@@ -4,3 +4,5 @@ LLM_API_KEY=
 LLM_BASE_URL=http://llm-proxy:8788/v1
 LLM_MODEL=Qwen/Qwen3.6-27B
 BAIDU_MAP_AK=
+# Docker 内由 Node 私有代理转发百度请求，绕过本地 Workers 运行时的证书链差异。
+BAIDU_MAP_BASE_URL=http://llm-proxy:8788/baidu

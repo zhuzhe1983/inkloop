@@ -1,10 +1,6 @@
 import { env } from "cloudflare:workers";
 
-const BAIDU_IP_LOCATION_ENDPOINT = "https://api.map.baidu.com/location/ip";
-const BAIDU_GEOCODING_ENDPOINT = "https://api.map.baidu.com/geocoding/v3/";
-const BAIDU_REVERSE_GEOCODING_ENDPOINT = "https://api.map.baidu.com/reverse_geocoding/v3/";
-const BAIDU_COORD_CONVERT_ENDPOINT = "https://api.map.baidu.com/geoconv/v1/";
-const BAIDU_STATIC_MAP_ENDPOINT = "https://api.map.baidu.com/staticimage/v2";
+const DEFAULT_BAIDU_MAP_BASE_URL = "https://api.map.baidu.com";
 const REQUEST_TIMEOUT_MS = 8_000;
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -27,6 +23,11 @@ class MapServiceError extends Error {
   ) {
     super(message);
   }
+}
+
+function baiduEndpoint(path: string) {
+  const baseUrl = env.BAIDU_MAP_BASE_URL?.trim().replace(/\/+$/u, "") || DEFAULT_BAIDU_MAP_BASE_URL;
+  return `${baseUrl}${path}`;
 }
 
 function mapAk() {
@@ -116,7 +117,7 @@ function baiduStatus(payload: Record<string, unknown>, label: string) {
 }
 
 async function locateByIp(request: Request, ak: string): Promise<MapPoint> {
-  const url = new URL(BAIDU_IP_LOCATION_ENDPOINT);
+  const url = new URL(baiduEndpoint("/location/ip"));
   url.searchParams.set("ak", ak);
   url.searchParams.set("coor", "bd09ll");
   const forwardedIp = request.headers.get("CF-Connecting-IP")?.trim();
@@ -145,7 +146,7 @@ async function locateByIp(request: Request, ak: string): Promise<MapPoint> {
 }
 
 async function geocode(query: string, ak: string): Promise<MapPoint> {
-  const url = new URL(BAIDU_GEOCODING_ENDPOINT);
+  const url = new URL(baiduEndpoint("/geocoding/v3/"));
   url.searchParams.set("ak", ak);
   url.searchParams.set("address", query);
   url.searchParams.set("output", "json");
@@ -167,7 +168,7 @@ async function geocode(query: string, ak: string): Promise<MapPoint> {
 }
 
 async function convertWgs84(longitude: number, latitude: number, ak: string) {
-  const url = new URL(BAIDU_COORD_CONVERT_ENDPOINT);
+  const url = new URL(baiduEndpoint("/geoconv/v1/"));
   url.searchParams.set("ak", ak);
   url.searchParams.set("coords", `${longitude.toFixed(7)},${latitude.toFixed(7)}`);
   url.searchParams.set("from", "1");
@@ -185,7 +186,7 @@ async function convertWgs84(longitude: number, latitude: number, ak: string) {
 }
 
 async function reverseGeocode(longitude: number, latitude: number, ak: string) {
-  const url = new URL(BAIDU_REVERSE_GEOCODING_ENDPOINT);
+  const url = new URL(baiduEndpoint("/reverse_geocoding/v3/"));
   url.searchParams.set("ak", ak);
   url.searchParams.set("location", `${latitude.toFixed(7)},${longitude.toFixed(7)}`);
   url.searchParams.set("coordtype", "bd09ll");
@@ -250,7 +251,7 @@ function staticMapUrl(ak: string, url: URL, point: MapPoint) {
   const zoom = Math.min(19, Math.max(3, Math.round(Number(url.searchParams.get("zoom")) || 17)));
   const marker = url.searchParams.get("marker") !== "false";
   const center = `${point.longitude.toFixed(7)},${point.latitude.toFixed(7)}`;
-  const imageUrl = new URL(BAIDU_STATIC_MAP_ENDPOINT);
+  const imageUrl = new URL(baiduEndpoint("/staticimage/v2"));
   imageUrl.searchParams.set("ak", ak);
   imageUrl.searchParams.set("width", String(logicalWidth / 2));
   imageUrl.searchParams.set("height", String(logicalHeight / 2));

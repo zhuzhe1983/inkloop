@@ -20,11 +20,13 @@ Inkloop 默认采用“双端发布”：同一个通过构建和测试的工作
 | `LLM_BASE_URL` | 推荐 | Sites 使用 OpenAI 兼容网关 URL；Docker 默认使用 `http://llm-proxy:8788/v1` |
 | `LLM_MODEL` | 可选 | 界面默认模型；用户可从 `/v1/models` 返回的列表切换，留空时默认自动选择 |
 | `BAIDU_MAP_AK` | 地图必需 | 百度地图 Web Service AK，只在服务端使用 |
+| `BAIDU_MAP_BASE_URL` | Docker 必需 | Docker 内设为 `http://llm-proxy:8788/baidu`，Sites 留空直连百度 |
 | `LLM_PROXY_UPSTREAM` | Docker 可选 | Docker 私有代理的 HTTPS 上游，默认 `https://hub.tsingfly.com` |
+| `BAIDU_MAP_UPSTREAM` | Docker 可选 | Docker 私有代理的百度 HTTPS 上游，默认 `https://api.map.baidu.com` |
 
 Sites 的值由 Sites 运行环境管理。Docker 的 Worker 变量保存在服务器项目目录的 `config/.dev.vars`，模板为 `config/.dev.vars.example`；若需更换代理上游，在项目根目录 `.env` 中设置 `LLM_PROXY_UPSTREAM`。密钥文件不会被 Git 或 Docker 构建上下文收录。
 
-Docker 中的 `llm-proxy` 只暴露在 Compose 私有网络，不映射宿主机端口。它使用 Node 系统 CA 校验并转发到固定 HTTPS 上游，解决本地 Workers 运行时与部分网关证书链的兼容差异；API Key 仍由 Inkloop Worker 在请求时通过 Authorization 传入，不保存在代理镜像或日志中。
+Docker 中的 `llm-proxy` 只暴露在 Compose 私有网络，不映射宿主机端口。它使用 Node 系统 CA 校验并按白名单转发 LLM 与百度地图 HTTPS 请求，解决本地 Workers 运行时与部分上游证书链的兼容差异；API Key 仍由 Inkloop Worker 在请求时传入，不保存在代理镜像或日志中。
 
 ## 3. ChatGPT Sites 发布
 
