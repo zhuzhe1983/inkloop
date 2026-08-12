@@ -116,12 +116,48 @@ function baiduStatus(payload: Record<string, unknown>, label: string) {
   }
 }
 
+function isPublicClientIp(value: string) {
+  const candidate = value.trim().toLowerCase();
+  if (!candidate || candidate.length > 64) return false;
+  if (candidate.startsWith("::ffff:")) return isPublicClientIp(candidate.slice(7));
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(candidate)) {
+    const parts = candidate.split(".").map(Number);
+    if (parts.some((part) => part < 0 || part > 255)) return false;
+    const [first, second, third] = parts;
+    return !(
+      first === 0
+      || first === 10
+      || first === 127
+      || first >= 224
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 169 && second === 254)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 0 && (third === 0 || third === 2))
+      || (first === 192 && second === 168)
+      || (first === 198 && (second === 18 || second === 19))
+      || (first === 198 && second === 51 && third === 100)
+      || (first === 203 && second === 0 && third === 113)
+    );
+  }
+
+  if (!/^[0-9a-f:]+$/u.test(candidate)) return false;
+  return !(
+    candidate === "::"
+    || candidate === "::1"
+    || candidate.startsWith("fc")
+    || candidate.startsWith("fd")
+    || /^fe[89ab]/u.test(candidate)
+    || candidate.startsWith("2001:db8:")
+  );
+}
+
 async function locateByIp(request: Request, ak: string): Promise<MapPoint> {
   const url = new URL(baiduEndpoint("/location/ip"));
   url.searchParams.set("ak", ak);
   url.searchParams.set("coor", "bd09ll");
   const forwardedIp = request.headers.get("CF-Connecting-IP")?.trim();
-  if (forwardedIp && /^[0-9a-f:.]{3,64}$/i.test(forwardedIp)) url.searchParams.set("ip", forwardedIp);
+  if (forwardedIp && isPublicClientIp(forwardedIp)) url.searchParams.set("ip", forwardedIp);
   const payload = await fetchJson(url, "IP 粗定位");
   baiduStatus(payload, "IP 粗定位");
   const content = payload.content && typeof payload.content === "object"
