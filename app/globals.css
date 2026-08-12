@@ -673,31 +673,6 @@ input:focus-visible {
   background: var(--lime);
 }
 
-.support-chip {
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  background: #fbfaf4;
-  color: #606861;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.support-chip i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--red);
-}
-
-.support-chip.ok i {
-  background: var(--green);
-}
-
 .prompt-attachment {
   margin-top: 10px;
 }
@@ -801,6 +776,101 @@ input:focus-visible {
 .save-button:hover,
 .collection-hero button:hover {
   background: #2c342f;
+}
+
+.template-top-actions,
+.save-split {
+  display: flex;
+  align-items: center;
+}
+
+.template-top-actions {
+  gap: 8px;
+}
+
+.share-template-button {
+  height: 36px;
+  padding: 0 13px;
+  border: 1px solid #aeb5ae;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.share-template-button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.save-split {
+  position: relative;
+}
+
+.save-split .save-button {
+  border-radius: 7px 0 0 7px;
+}
+
+.save-menu-toggle {
+  width: 34px;
+  height: 36px;
+  border: 1px solid var(--ink);
+  border-left-color: #4d554f;
+  border-radius: 0 7px 7px 0;
+  background: var(--ink);
+  color: white;
+  font-size: 14px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.save-menu-toggle:hover {
+  background: #2c342f;
+}
+
+.save-menu {
+  width: 258px;
+  padding: 6px;
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 30;
+  border: 1px solid #c8cdc7;
+  border-radius: 10px;
+  background: #fffefa;
+  box-shadow: 0 16px 38px rgba(20, 27, 22, 0.16);
+}
+
+.save-menu button {
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.save-menu button:hover {
+  background: #eff8d0;
+}
+
+.save-menu strong {
+  font-size: 13px;
+}
+
+.save-menu small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .studio-grid {
@@ -2246,31 +2316,6 @@ input:focus-visible {
   font-weight: 800;
 }
 
-.sharing-row {
-  margin-top: 17px;
-  padding: 15px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.sharing-row strong,
-.sharing-row small {
-  display: block;
-}
-
-.sharing-row strong {
-  font-size: 12px;
-}
-
-.sharing-row small {
-  margin-top: 4px;
-  color: #818881;
-  font-size: 12px;
-}
-
 .switch {
   width: 38px;
   height: 21px;
@@ -2441,7 +2486,38 @@ input:focus-visible {
 .run-actions {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.bluetooth-status-button {
+  height: 42px;
+  padding: 0 13px;
+  border: 1px solid #bdc3bd;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: white;
+  color: #59615b;
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.bluetooth-status-button i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.bluetooth-status-button.ok i {
+  background: var(--green);
+}
+
+.bluetooth-status-button:hover {
+  border-color: var(--ink);
 }
 
 .start-button,
@@ -2743,22 +2819,33 @@ input:focus-visible {
 .app-card-actions {
   margin-top: auto;
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
   gap: 8px;
 }
 
-.app-card-permalink {
-  width: fit-content;
-  color: var(--blue);
+.app-card-share {
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid #aeb6ae;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
   font-size: 12px;
   font-weight: 900;
-  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.app-card-permalink:hover {
-  text-decoration: underline;
+.app-card-share:hover {
+  border-color: var(--blue);
+  color: var(--blue);
 }
 
-.app-card-copy button {
+.app-card-use {
   margin-top: 0;
   min-height: 48px;
   padding: 0 8px 0 15px;
@@ -2801,68 +2888,16 @@ input:focus-visible {
   line-height: 1;
 }
 
-.app-card:hover .app-card-copy button,
-.app-card-copy button:hover {
+.app-card:hover .app-card-use,
+.app-card-use:hover {
   background: #d5ff35;
   box-shadow: 5px 5px 0 var(--ink);
   transform: translate(-2px, -2px);
 }
 
-.app-card-copy button:active {
+.app-card-use:active {
   box-shadow: 1px 1px 0 var(--ink);
   transform: translate(1px, 1px);
-}
-
-.public-app-detail {
-  min-height: calc(100vh - 82px);
-}
-
-.public-app-detail-head {
-  padding-bottom: 26px;
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 22px;
-}
-
-.public-app-detail-head > button {
-  min-height: 42px;
-  padding: 0 15px;
-  border: 1px solid #bdc3bd;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 900;
-  cursor: pointer;
-}
-
-.public-app-detail-head h1 {
-  margin: 5px 0 4px;
-  font-size: clamp(28px, 4vw, 46px);
-  line-height: 1;
-  letter-spacing: -1.8px;
-}
-
-.public-app-detail-head p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.public-app-detail-head .copy-public-link {
-  border-color: #a4c72b;
-  background: var(--lime);
-}
-
-.public-app-detail-card {
-  max-width: 800px;
-  margin: 30px auto 0;
-}
-
-.public-link-state {
-  margin-top: 30px;
 }
 
 .empty-state {
@@ -4096,14 +4131,9 @@ input:focus-visible {
   .settings-panel > label,
   .settings-panel .schedule-options,
   .settings-panel .inline-field,
-  .settings-panel .sharing-row,
   .settings-panel .code-toggle,
   .settings-panel .code-preview {
     grid-column: 2;
-  }
-
-  .settings-panel .sharing-row {
-    margin-top: 0;
   }
 
   .card-grid {
@@ -4193,8 +4223,16 @@ input:focus-visible {
     padding: 0 16px;
   }
 
-  .support-chip {
+  .topbar .guide-button {
     display: none;
+  }
+
+  .template-top-actions {
+    gap: 6px;
+  }
+
+  .share-template-button {
+    padding: 0 10px;
   }
 
   .studio-grid {
@@ -4227,10 +4265,6 @@ input:focus-visible {
     border-bottom: 1px solid var(--line);
   }
 
-  .settings-panel .sharing-row {
-    margin-top: 17px;
-  }
-
   .run-dock {
     padding: 12px 16px;
     position: static;
@@ -4249,6 +4283,7 @@ input:focus-visible {
   .run-actions {
     width: 100%;
     margin-left: 0;
+    flex-wrap: wrap;
   }
 
   .start-button {
@@ -4269,21 +4304,6 @@ input:focus-visible {
   .collection-hero.split,
   .device-hero {
     display: block;
-  }
-
-  .public-app-detail-head {
-    grid-template-columns: 1fr auto;
-    align-items: start;
-    gap: 14px;
-  }
-
-  .public-app-detail-head > button:first-child {
-    grid-column: 1 / -1;
-    width: fit-content;
-  }
-
-  .public-app-detail-head .copy-public-link {
-    align-self: center;
   }
 
   .gallery-stat {
@@ -4336,20 +4356,45 @@ input:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .topbar > div:first-child .eyebrow {
+    display: none;
+  }
+
+  .topbar strong {
+    max-width: 84px;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .share-template-button {
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .save-button {
+    padding: 0 11px;
+  }
+
+  .save-menu {
+    width: min(258px, calc(100vw - 32px));
+  }
+
+  .app-card-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .app-card-share {
+    justify-content: center;
+  }
+
   .qr-wifi-fields {
     grid-template-columns: 1fr;
   }
 
   .qr-wifi-fields > label {
     grid-column: 1;
-  }
-
-  .public-app-detail-head {
-    grid-template-columns: 1fr;
-  }
-
-  .public-app-detail-head .copy-public-link {
-    width: 100%;
   }
 
   .component-row:not(.border-control) {

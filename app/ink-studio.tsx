@@ -2695,8 +2695,8 @@ function MiniScreen({ app }: { app: InkApp }) {
   );
 }
 
-function publicAppHref(appId: string) {
-  return `/?view=explore&app=${encodeURIComponent(appId)}`;
+function templateStudioHref(templateId: string) {
+  return `/?template=${encodeURIComponent(templateId)}`;
 }
 
 function uniquePublicApps(apps: InkApp[]) {
@@ -2712,12 +2712,12 @@ function AppCard({
   app,
   onUse,
   local,
-  onOpen,
+  onShare,
 }: {
   app: InkApp;
   onUse: () => void;
   local?: boolean;
-  onOpen?: () => void;
+  onShare?: () => void;
 }) {
   return (
     <article className="app-card">
@@ -2730,21 +2730,13 @@ function AppCard({
         <h3>{app.title}</h3>
         <p>{app.description}</p>
         <div className="app-card-actions">
-          {!local && onOpen && (
-            <a
-              className="app-card-permalink"
-              href={publicAppHref(app.id)}
-              onClick={(event) => {
-                event.preventDefault();
-                onOpen();
-              }}
-              aria-label={`打开${app.title}的独立链接`}
-            >
-              独立链接 <span aria-hidden="true">↗</span>
-            </a>
+          {!local && onShare && (
+            <button type="button" className="app-card-share" onClick={onShare} aria-label={`分享模版${app.title}`}>
+              <span aria-hidden="true">↗</span> 分享模版
+            </button>
           )}
-          <button type="button" onClick={onUse} aria-label={`立即使用${app.title}`}>
-            <span className="app-card-cta-label"><i>✦</i> 立即使用此模版</span>
+          <button type="button" className="app-card-use" onClick={onUse} aria-label={`立即使用${app.title}`}>
+            <span className="app-card-cta-label"><i>✦</i> 立即使用模版</span>
             <span className="app-card-cta-arrow" aria-hidden="true">→</span>
           </button>
         </div>
@@ -2817,8 +2809,6 @@ export default function InkStudio() {
   const [app, setApp] = useState<InkApp>(starterApp);
   const [localApps, setLocalApps] = useState<InkApp[]>([]);
   const [publicApps, setPublicApps] = useState<InkApp[]>(featuredApps);
-  const [selectedPublicAppId, setSelectedPublicAppId] = useState<string | null>(null);
-  const [publicLinkStatus, setPublicLinkStatus] = useState<"idle" | "loading" | "missing">("idle");
   const [generating, setGenerating] = useState(false);
   const [generatorStatus, setGeneratorStatus] = useState<GeneratorStatus>("checking");
   const [generatorModel, setGeneratorModel] = useState("auto");
@@ -2837,6 +2827,7 @@ export default function InkStudio() {
   const [fontTick, setFontTick] = useState(0);
   const [clockTick, setClockTick] = useState(0);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const [deviceName, setDeviceName] = useState<string | null>(null);
@@ -2869,6 +2860,8 @@ export default function InkStudio() {
   const deviceTasksRef = useRef<DeviceTask[]>([]);
   const taskTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const transferLocksRef = useRef(new Set<string>());
+  const saveMenuRef = useRef<HTMLDivElement>(null);
+  const sharedTemplateRef = useRef<{ sourceId: string; shareId: string } | null>(null);
   const elementDragRef = useRef<{
     element: ScreenElementKey;
     pointerId: number;
@@ -2891,31 +2884,31 @@ export default function InkStudio() {
 
   const navigateToTab = useCallback((nextTab: Tab) => {
     setTab(nextTab);
-    setSelectedPublicAppId(null);
-    setPublicLinkStatus("idle");
     const url = new URL(window.location.href);
     url.searchParams.delete("app");
+    url.searchParams.delete("template");
     if (nextTab === "studio") url.searchParams.delete("view");
     else url.searchParams.set("view", nextTab);
     window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, []);
 
-  const openPublicApp = useCallback((appId: string) => {
-    setTab("explore");
-    setSelectedPublicAppId(appId);
-    setPublicLinkStatus("loading");
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", "explore");
-    url.searchParams.set("app", appId);
-    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
-
-  const copyPublicAppLink = useCallback(async (appId: string) => {
-    const url = new URL(publicAppHref(appId), window.location.origin);
+  const copyTemplateLink = useCallback(async (templateId: string) => {
+    const url = new URL(templateStudioHref(templateId), window.location.origin);
     try {
-      await navigator.clipboard.writeText(url.toString());
-      showToast("公开模板链接已复制", "success");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url.toString());
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = url.toString();
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) throw new Error("copy unavailable");
+      }
+      showToast("创作台模版链接已复制", "success");
     } catch {
       showToast("复制失败，请从浏览器地址栏复制", "error");
     }
@@ -3022,23 +3015,81 @@ export default function InkStudio() {
   }, [calendarPreferences]);
 
   useEffect(() => {
+    let controller: AbortController | null = null;
+    const openTemplateInStudio = (selected: InkApp) => {
+      const upgraded = upgradeLegacyApp(selected);
+      const cloned: InkApp = {
+        ...upgraded,
+        id: `app-${Date.now()}`,
+        author: "我",
+        isPublic: false,
+        createdAt: new Date().toISOString(),
+      };
+      setApp(cloned);
+      setPrompt(cloned.prompt);
+      setElementSizeDrafts({});
+      setTab("studio");
+      showToast("分享模版已载入创作台", "success");
+    };
     const syncFromLocation = () => {
+      controller?.abort();
       const params = new URLSearchParams(window.location.search);
-      const appId = params.get("app")?.trim() || null;
+      const legacyAppId = params.get("app")?.trim() || "";
+      const templateId = params.get("template")?.trim() || legacyAppId;
       const requestedView = params.get("view");
-      const nextTab = appId
-        ? "explore"
-        : requestedView === "mine" || requestedView === "explore" || requestedView === "device"
+      if (!templateId) {
+        setTab(requestedView === "mine" || requestedView === "explore" || requestedView === "device"
           ? requestedView
-          : "studio";
-      setSelectedPublicAppId(appId);
-      setPublicLinkStatus(appId ? "loading" : "idle");
-      setTab(nextTab);
+          : "studio");
+        return;
+      }
+
+      setTab("studio");
+      if (legacyAppId) {
+        const normalizedUrl = new URL(window.location.href);
+        normalizedUrl.searchParams.delete("app");
+        normalizedUrl.searchParams.delete("view");
+        normalizedUrl.searchParams.set("template", legacyAppId);
+        window.history.replaceState(null, "", `${normalizedUrl.pathname}${normalizedUrl.search}${normalizedUrl.hash}`);
+      }
+      controller = new AbortController();
+      fetch(`/api/apps?id=${encodeURIComponent(templateId)}`, { signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("not found");
+          return (await response.json()) as { app?: InkApp };
+        })
+        .then((data) => {
+          if (!data.app) throw new Error("not found");
+          openTemplateInStudio(data.app);
+        })
+        .catch((error) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          showToast("这个分享模版暂时无法访问", "error");
+        });
     };
     syncFromLocation();
     window.addEventListener("popstate", syncFromLocation);
-    return () => window.removeEventListener("popstate", syncFromLocation);
-  }, []);
+    return () => {
+      controller?.abort();
+      window.removeEventListener("popstate", syncFromLocation);
+    };
+  }, [showToast]);
+
+  useEffect(() => {
+    if (!saveMenuOpen) return;
+    const closeMenu = (event: PointerEvent) => {
+      if (!saveMenuRef.current?.contains(event.target as Node)) setSaveMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSaveMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [saveMenuOpen]);
 
   useEffect(() => {
     try {
@@ -3190,26 +3241,6 @@ export default function InkStudio() {
       })
       .catch(() => undefined);
   }, []);
-
-  useEffect(() => {
-    if (!selectedPublicAppId || publicApps.some((item) => item.id === selectedPublicAppId)) return;
-    const controller = new AbortController();
-    fetch(`/api/apps?id=${encodeURIComponent(selectedPublicAppId)}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("not found");
-        return (await response.json()) as { app?: InkApp };
-      })
-      .then((data) => {
-        if (!data.app) throw new Error("not found");
-        setPublicApps((current) => uniquePublicApps([upgradeLegacyApp(data.app!), ...current]));
-        setPublicLinkStatus("idle");
-      })
-      .catch((error) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setPublicLinkStatus("missing");
-      });
-    return () => controller.abort();
-  }, [publicApps, selectedPublicAppId]);
 
   useEffect(() => {
     setBluetoothSupported(
@@ -3759,42 +3790,78 @@ export default function InkStudio() {
     showToast("正在按原主题重新生成图片素材", "info");
   };
 
-  const saveApp = async () => {
-    const currentDisplay = displaySettings(app.spec, Boolean(app.localImage));
-    const containsWifiAccess = currentDisplay.qr && (
+  const hasWifiCredentials = (candidate: InkApp) => {
+    const currentDisplay = displaySettings(candidate.spec, Boolean(candidate.localImage));
+    return currentDisplay.qr && (
       currentDisplay.qrMode === "wifi"
       || /^WIFI:/i.test(currentDisplay.qrText.trim())
     );
-    const requestedPublic = app.isPublic;
+  };
+
+  const publishTemplateRecord = async (candidate: InkApp, listed: boolean) => {
+    const response = await fetch("/api/apps", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...candidate, localImage: undefined, listed }),
+    });
+    if (!response.ok) throw new Error("publish failed");
+    const data = (await response.json()) as { app: InkApp };
+    return upgradeLegacyApp(data.app);
+  };
+
+  const saveApp = async (publishToMarket: boolean) => {
+    const containsWifiAccess = hasWifiCredentials(app);
     const saved = {
       ...app,
       id: app.id.startsWith("starter") ? `app-${Date.now()}` : app.id,
-      isPublic: requestedPublic && !containsWifiAccess,
+      isPublic: publishToMarket && !containsWifiAccess,
     };
     const next = [saved, ...localApps.filter((item) => item.id !== saved.id)].slice(0, 30);
     setApp(saved);
     setLocalApps(next);
     localStorage.setItem(LOCAL_APPS_KEY, JSON.stringify(next));
 
-    if (requestedPublic && containsWifiAccess) {
+    if (publishToMarket && containsWifiAccess) {
       showToast("已保存到本机；Wi-Fi 二维码不会公开，避免泄露网络密码", "info");
-    } else if (saved.isPublic) {
+    } else if (publishToMarket) {
       try {
-        const publicPayload = { ...saved, localImage: undefined };
-        const response = await fetch("/api/apps", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(publicPayload),
-        });
-        if (!response.ok) throw new Error("publish failed");
-        const data = (await response.json()) as { app: InkApp };
-        setPublicApps((items) => [data.app, ...items.filter((item) => item.id !== data.app.id)]);
+        const published = await publishTemplateRecord(saved, true);
+        setPublicApps((items) => [published, ...items.filter((item) => item.id !== published.id)]);
         showToast("已保存到本机，并发布到模板市场", "success");
       } catch {
         showToast("已保存到本机；公开发布暂时不可用", "info");
       }
     } else {
       showToast("模版已保存在这台设备上", "success");
+    }
+  };
+
+  const shareCurrentTemplate = async () => {
+    if (hasWifiCredentials(app)) {
+      showToast("请先移除 Wi-Fi 凭据，再分享模版链接", "error");
+      return;
+    }
+    try {
+      const existingShare = sharedTemplateRef.current;
+      const shareId = existingShare?.sourceId === app.id
+        ? existingShare.shareId
+        : `share-${crypto.randomUUID()}`;
+      sharedTemplateRef.current = { sourceId: app.id, shareId };
+      const shared = await publishTemplateRecord({ ...app, id: shareId, isPublic: false }, false);
+      await copyTemplateLink(shared.id);
+    } catch {
+      showToast("分享链接生成失败，请稍后重试", "error");
+    }
+  };
+
+  const shareMarketTemplate = async (selected: InkApp) => {
+    try {
+      const existing = await fetch(`/api/apps?id=${encodeURIComponent(selected.id)}`, { cache: "no-store" });
+      if (existing.status === 404) await publishTemplateRecord({ ...selected, isPublic: false }, false);
+      else if (!existing.ok) throw new Error("template unavailable");
+      await copyTemplateLink(selected.id);
+    } catch {
+      showToast("分享链接生成失败，请稍后重试", "error");
     }
   };
 
@@ -4233,9 +4300,6 @@ export default function InkStudio() {
   };
 
   const contentTitle = tab === "mine" ? "我的模版" : tab === "explore" ? "模板市场" : tab === "device" ? "设备中心" : null;
-  const selectedPublicApp = selectedPublicAppId
-    ? publicApps.find((item) => item.id === selectedPublicAppId) ?? null
-    : null;
   const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
   const previewDimensions = screenDimensions(app.spec);
   const previewLandscape = screenOrientation(app.spec) === "landscape";
@@ -4339,13 +4403,42 @@ export default function InkStudio() {
             <button type="button" className="guide-button" onClick={() => setGuideOpen(true)}>
               <span>?</span> 使用说明
             </button>
-            <span className={`support-chip ${bluetoothSupported ? "ok" : "warn"}`}>
-              <i /> {bluetoothSupported ? "蓝牙可用" : "请使用 Chromium"}
-            </span>
             {tab === "studio" && (
-              <button type="button" className="save-button" onClick={saveApp}>
-                保存模版
-              </button>
+              <div className="template-top-actions">
+                <button type="button" className="share-template-button" onClick={() => void shareCurrentTemplate()}>
+                  <span aria-hidden="true">↗</span> 分享模版
+                </button>
+                <div className="save-split" ref={saveMenuRef}>
+                  <button type="button" className="save-button" onClick={() => void saveApp(false)}>
+                    保存模版
+                  </button>
+                  <button
+                    type="button"
+                    className="save-menu-toggle"
+                    aria-label="打开保存选项"
+                    aria-haspopup="menu"
+                    aria-expanded={saveMenuOpen}
+                    onClick={() => setSaveMenuOpen((open) => !open)}
+                  >
+                    <span aria-hidden="true">⌄</span>
+                  </button>
+                  {saveMenuOpen && (
+                    <div className="save-menu" role="menu">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setSaveMenuOpen(false);
+                          void saveApp(true);
+                        }}
+                      >
+                        <strong>保存并发布到市场</strong>
+                        <small>保存到本机，同时出现在模板市场</small>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </header>
@@ -5429,21 +5522,6 @@ export default function InkStudio() {
                     />
                   </div>
                 )}
-                <div className="sharing-row">
-                  <div>
-                    <strong>发布到模板市场</strong>
-                    <small>其他人可以复制并使用</small>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={app.isPublic}
-                    className={`switch ${app.isPublic ? "on" : ""}`}
-                    onClick={() => setApp((current) => ({ ...current, isPublic: !current.isPublic }))}
-                  >
-                    <span />
-                  </button>
-                </div>
                 <button type="button" className="code-toggle" onClick={() => setCodeOpen((open) => !open)}>
                   <span><i>&lt;/&gt;</i> 查看生成逻辑</span><b>{codeOpen ? "−" : "+"}</b>
                 </button>
@@ -5473,6 +5551,15 @@ export default function InkStudio() {
                 <div className="transfer-progress"><i style={{ width: `${progress?.percent ?? 0}%` }} /></div>
               )}
               <div className="run-actions">
+                <button
+                  type="button"
+                  className={`bluetooth-status-button ${bluetoothSupported ? "ok" : "warn"}`}
+                  onClick={() => bluetoothSupported ? void selectNewDevice() : setGuideOpen(true)}
+                  title={bluetoothSupported ? "选择或添加蓝牙设备" : "查看支持的浏览器与使用说明"}
+                >
+                  <i aria-hidden="true" />
+                  {bluetoothSupported ? "蓝牙可用" : "请使用 Chromium"}
+                </button>
                 {scheduleActive && <button type="button" className="stop-button" onClick={stopSchedule}>停止任务</button>}
                 <button type="button" className="start-button" onClick={start} disabled={deviceStatus === "writing"}>
                   <span>{deviceStatus === "writing" ? "正在写入" : scheduleActive ? "立即再写一次" : "开始写入"}</span>
@@ -5503,38 +5590,7 @@ export default function InkStudio() {
           </section>
         )}
 
-        {tab === "explore" && selectedPublicAppId && (
-          <section className="collection-view public-app-detail">
-            <div className="public-app-detail-head">
-              <button type="button" onClick={() => navigateToTab("explore")}>← 返回模板市场</button>
-              <div>
-                <span className="eyebrow">PUBLIC APP</span>
-                <h1>{selectedPublicApp?.title || "公开模板"}</h1>
-                <p>这个地址可以直接访问并分享给其他人。</p>
-              </div>
-              <button
-                type="button"
-                className="copy-public-link"
-                onClick={() => void copyPublicAppLink(selectedPublicAppId)}
-              >
-                复制链接
-              </button>
-            </div>
-            {selectedPublicApp ? (
-              <div className="public-app-detail-card">
-                <AppCard app={selectedPublicApp} onUse={() => copyAppToStudio(selectedPublicApp)} />
-              </div>
-            ) : (
-              <div className="empty-state public-link-state">
-                <span>{publicLinkStatus === "loading" ? "…" : "◎"}</span>
-                <h2>{publicLinkStatus === "loading" ? "正在读取公开模板" : "这个公开模板暂时无法访问"}</h2>
-                <p>{publicLinkStatus === "loading" ? "很快就好。" : "它可能已经被移除，或链接不完整。"}</p>
-              </div>
-            )}
-          </section>
-        )}
-
-        {tab === "explore" && !selectedPublicAppId && (
+        {tab === "explore" && (
           <section className="collection-view explore-view">
             <div className="collection-hero split">
               <div>
@@ -5551,7 +5607,7 @@ export default function InkStudio() {
                   key={item.id}
                   app={item}
                   onUse={() => copyAppToStudio(item)}
-                  onOpen={() => openPublicApp(item.id)}
+                  onShare={() => void shareMarketTemplate(item)}
                 />
               ))}
             </div>

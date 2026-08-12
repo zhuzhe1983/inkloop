@@ -12,11 +12,12 @@ const CREATE_TABLE = `CREATE TABLE IF NOT EXISTS public_apps (
   custom_minutes INTEGER NOT NULL DEFAULT 30,
   daily_time TEXT NOT NULL DEFAULT '08:00',
   author TEXT NOT NULL DEFAULT '匿名创作者',
+  listed INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`;
 
-const CREATE_INDEX = `CREATE INDEX IF NOT EXISTS idx_public_apps_created_at
-ON public_apps(created_at DESC)`;
+const CREATE_INDEX = `CREATE INDEX IF NOT EXISTS idx_public_apps_listed_created_at
+ON public_apps(listed, created_at DESC)`;
 
 type AppRow = {
   id: string;
@@ -29,16 +30,24 @@ type AppRow = {
   custom_minutes: number;
   daily_time: string;
   author: string;
+  listed: number;
   created_at: string;
 };
 
 async function ensureSchema() {
   const db = env.DB;
   if (!db) throw new Error("Public gallery database is unavailable");
-  await db.batch([
-    db.prepare(CREATE_TABLE),
-    db.prepare(CREATE_INDEX),
-  ]);
+  await db.prepare(CREATE_TABLE).run();
+  const columns = await db.prepare("PRAGMA table_info(public_apps)").all<{ name: string }>();
+  if (!columns.results.some((column) => column.name === "listed")) {
+    try {
+      await db.prepare("ALTER TABLE public_apps ADD COLUMN listed INTEGER NOT NULL DEFAULT 1").run();
+    } catch {
+      const refreshed = await db.prepare("PRAGMA table_info(public_apps)").all<{ name: string }>();
+      if (!refreshed.results.some((column) => column.name === "listed")) throw new Error("Unable to upgrade template sharing storage");
+    }
+  }
+  await db.prepare(CREATE_INDEX).run();
   return db;
 }
 
@@ -70,17 +79,17 @@ export async function GET(request: Request) {
     if (requestedId) {
       const row = await db
         .prepare(`SELECT id, title, description, prompt, spec, code, schedule_mode,
-          custom_minutes, daily_time, author, created_at
+          custom_minutes, daily_time, author, listed, created_at
           FROM public_apps WHERE id = ? LIMIT 1`)
         .bind(requestedId)
         .first<AppRow>();
-      if (!row) return Response.json({ error: "没有找到这个公开应用" }, { status: 404 });
+      if (!row) return Response.json({ error: "没有找到这个分享模版" }, { status: 404 });
       return Response.json({ app: rowToApp(row) });
     }
     const result = await db
       .prepare(`SELECT id, title, description, prompt, spec, code, schedule_mode,
-        custom_minutes, daily_time, author, created_at
-        FROM public_apps ORDER BY created_at DESC LIMIT 40`)
+        custom_minutes, daily_time, author, listed, created_at
+        FROM public_apps WHERE listed = 1 ORDER BY created_at DESC LIMIT 40`)
       .all<AppRow>();
     return Response.json({ apps: result.results.map(rowToApp) });
   } catch (error) {
@@ -93,7 +102,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as Partial<InkApp>;
+    const payload = (await request.json()) as Partial<InkApp> & { listed?: boolean };
     const title = cleanText(payload.title, 80);
     const description = cleanText(payload.description, 180);
     const prompt = cleanText(payload.prompt, 500);
@@ -106,21 +115,25 @@ export async function POST(request: Request) {
       : "once";
 
     if (!title || !description || !prompt || !payload.spec || !code) {
-      return Response.json({ error: "应用信息不完整" }, { status: 400 });
+      return Response.json({ error: "模版信息不完整" }, { status: 400 });
     }
 
     const id = cleanText(payload.id, 90) || crypto.randomUUID();
-    const spec = JSON.stringify(payload.spec).slice(0, 5000);
+    const spec = JSON.stringify(payload.spec);
+    if (spec.length > 64 * 1024) {
+      return Response.json({ error: "模版内容过大，无法分享" }, { status: 413 });
+    }
     const customMinutes = Math.max(1, Math.min(10080, Number(payload.customMinutes) || 30));
     const dailyTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(payload.dailyTime ?? "")
       ? payload.dailyTime!
       : "08:00";
     const createdAt = new Date().toISOString();
+    const listed = payload.listed === false ? 0 : 1;
     const db = await ensureSchema();
     await db
       .prepare(`INSERT INTO public_apps
-        (id, title, description, prompt, spec, code, schedule_mode, custom_minutes, daily_time, author, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, title, description, prompt, spec, code, schedule_mode, custom_minutes, daily_time, author, listed, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           title = excluded.title,
           description = excluded.description,
@@ -130,7 +143,8 @@ export async function POST(request: Request) {
           schedule_mode = excluded.schedule_mode,
           custom_minutes = excluded.custom_minutes,
           daily_time = excluded.daily_time,
-          author = excluded.author`)
+          author = excluded.author,
+          listed = excluded.listed`)
       .bind(
         id,
         title,
@@ -142,6 +156,7 @@ export async function POST(request: Request) {
         customMinutes,
         dailyTime,
         author,
+        listed,
         createdAt,
       )
       .run();
