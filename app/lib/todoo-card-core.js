@@ -96,7 +96,7 @@ export const TODOO_TRANSFER_PROFILES = deepFreeze({
   },
   skillT3: {
     id: "skill-t3",
-    description: "TodooCard_Skills 的 218893-byte stored-chunk 兼容传输",
+    description: "TodooCard_Skills 的 218893-byte QuickLZ-stored 规范传输",
     payloadMode: "skill-stored-short",
     payloadBytes: 218893,
     adaptiveBlockSize: true,
@@ -106,6 +106,25 @@ export const TODOO_TRANSFER_PROFILES = deepFreeze({
   },
 });
 
+export const TODOO_SECURE_PAIRING = deepFreeze({
+  manufacturerId: 0x5053,
+  screenType: 0x134c,
+  minimumSecureFirmware: 0x8c,
+  latestReviewedFirmware: 0x95,
+  flags: {
+    encryptedGatt: 0x01,
+    pairingWindow: 0x02,
+    otaRecovery: 0x08,
+  },
+  battery: {
+    service: uuid16(0x180f),
+    level: uuid16(0x2a19),
+  },
+  rearButtonHoldSeconds: 10,
+  pairingWindowSeconds: 60,
+  encryptionTimeoutRetryMs: [750, 1500],
+});
+
 export const TODOO_INPUT_LIMITS = deepFreeze({
   maxBytes: 100000000,
   maxPixels: 50000000,
@@ -113,19 +132,22 @@ export const TODOO_INPUT_LIMITS = deepFreeze({
 
 export const TODOO_SKILL_INTEGRATION = deepFreeze({
   source: "https://github.com/Sunbelife/TodooCard_Skills",
-  reviewedCommit: "f8b4eaca2d5ad9cb6cf381f68c55864bce665158",
-  reviewedAt: "2026-08-01",
+  reviewedCommit: "990f21caeaa74e2488ab72f9e343c04b1586689e",
+  reviewedAt: "2026-08-14",
   integrated: [
     "FDF0/FDF1/FDF2 兼容 GATT profile",
     "已授权设备列表和只读 GATT probe",
     "可选动态数据块尺寸、短 stored payload 和起始块恢复",
     "设备按钮 flag、方向修正、源图旋转和输入资源上限",
     "可选 skill-t3 色板/抖动 profile",
+    "v0x8C+ 加密 GATT 配对常量与显式电池特征验证",
+    "v0x95 固定 todoocard-correct 面板方向契约",
   ],
   deliberatelyNotDefault: [
     "218893-byte 短帧未在本项目设备上真机验证",
     "FDF profile 未在本项目设备上真机验证",
-    "skill-t3 的纯绿色代表值和控制器方向不替换本项目真机默认值",
+    "安全配对只在显式调用时进行，旧固件的一键连接路径保持不变",
+    "skill-t3 的纯绿色代表值不替换本项目真机默认值",
   ],
 });
 
@@ -223,6 +245,7 @@ export const TODOO_DOCUMENTATION = deepFreeze({
     "requestDevice 必须由点击等用户手势直接触发",
     "传输期间页面应保持前台，不能依赖 Service Worker 后台写屏",
     "网页无法主动执行 NFC 唤醒；设备休眠时需要用户手动短贴手机 NFC 区域",
+    "v0x8C+ 安全固件首次配对需先长按背面按钮 10 秒，在前灯快闪后的 60 秒窗口内读取加密 Battery Level",
   ],
   writeSequence: [
     "requestDevice() 选择设备",
@@ -237,17 +260,22 @@ export const TODOO_DOCUMENTATION = deepFreeze({
     "拒绝长度、块头、填充或色码不合法的帧",
     "同一实例拒绝并发写入",
     "可用 expectedDeviceId 把写入锁定到浏览器的稳定授权 ID",
+    "安全配对与探测/写屏分离；普通 BLE 连接不作为配对成功依据",
+    "T3 正向源图只使用固定 todoocard-correct 底层校准，不开放重复方向补偿",
   ],
   limitations: [
     "协议来自单台 TodooCard/当前固件的真机逆向，不是厂商公开 API",
     "Web Bluetooth 不向网页暴露真实 BLE MAC 地址",
     "协议成功不等于相机已经观察到最终显色",
     "skill-t3/FDF 兼容模式来自外部实现，必须显式选择，不替代本机验证默认值",
+    "Web Bluetooth 不稳定暴露厂商广播内容，因此网页只能通过显式加密特征读取验证系统绑定",
   ],
   compatibility: {
     default: "verified：FEF profile、219120-byte 固定帧、244-byte GATT value",
     optional:
-      "skill-t3：FEF/FDF profile、218893-byte 短 stored 帧、设备协商块长、可选恢复起始包",
+      "skill-t3：FEF/FDF profile、218893-byte QuickLZ-stored 帧、设备协商块长、固定面板校准、可选恢复起始包",
+    securePairing:
+      "v0x8C+ 安全固件需在实体 60 秒窗口内显式配对，并以加密 Battery Level 读取成功为准",
     upstream: TODOO_SKILL_INTEGRATION.source,
     upstreamCommit: TODOO_SKILL_INTEGRATION.reviewedCommit,
   },
@@ -395,6 +423,45 @@ function toUint8Array(value, label = "数据") {
   throw new TypeError(`${label}必须是 Uint8Array、ArrayBuffer、TypedArray 或数字数组`);
 }
 
+/**
+ * Parses the manufacturer payload documented by TodooCard_Skills.
+ * CoreBluetooth includes the two-byte manufacturer id in this buffer, while
+ * Web Bluetooth's manufacturerData value starts immediately after it.
+ */
+export function parseTodooAdvertisementData(input, { includesManufacturerId } = {}) {
+  const bytes = toUint8Array(input, "TodooCard 广播数据");
+  const hasEmbeddedId =
+    includesManufacturerId ??
+    (bytes.length >= 7 && (bytes[0] | (bytes[1] << 8)) === TODOO_SECURE_PAIRING.manufacturerId);
+  const offset = hasEmbeddedId ? 2 : 0;
+  if (bytes.length < offset + 5) {
+    throw new TodooCardError("TodooCard 厂商广播数据长度不足", {
+      code: "INVALID_ADVERTISEMENT_DATA",
+      details: { actualBytes: bytes.length, expectedMinimum: offset + 5 },
+    });
+  }
+  const manufacturerId = hasEmbeddedId
+    ? bytes[0] | (bytes[1] << 8)
+    : TODOO_SECURE_PAIRING.manufacturerId;
+  const screenType = bytes[offset] | (bytes[offset + 4] << 8);
+  const capabilityFlags = bytes[offset + 1];
+  const firmwareVersion = bytes[offset + 2];
+  const secure =
+    manufacturerId === TODOO_SECURE_PAIRING.manufacturerId &&
+    screenType === TODOO_SECURE_PAIRING.screenType &&
+    firmwareVersion >= TODOO_SECURE_PAIRING.minimumSecureFirmware &&
+    Boolean(capabilityFlags & TODOO_SECURE_PAIRING.flags.encryptedGatt);
+  return deepFreeze({
+    manufacturerId,
+    screenType,
+    capabilityFlags,
+    firmwareVersion,
+    secure,
+    pairingWindowOpen: secure && Boolean(capabilityFlags & TODOO_SECURE_PAIRING.flags.pairingWindow),
+    otaRecoveryMode: Boolean(capabilityFlags & TODOO_SECURE_PAIRING.flags.otaRecovery),
+  });
+}
+
 function bytesEqual(actual, expected) {
   if (actual.length !== expected.length) return false;
   for (let index = 0; index < actual.length; index += 1) {
@@ -518,6 +585,14 @@ export class TodooCard {
     return TODOO_SKILL_INTEGRATION;
   }
 
+  static get securePairing() {
+    return TODOO_SECURE_PAIRING;
+  }
+
+  static parseAdvertisementData(input, options) {
+    return parseTodooAdvertisementData(input, options);
+  }
+
   constructor({
     bluetooth = globalThis.navigator?.bluetooth,
     logger = null,
@@ -547,6 +622,9 @@ export class TodooCard {
     this._activeConnectController = null;
     this._writePromise = null;
     this._activeWriteController = null;
+    this._pairPromise = null;
+    this._activePairController = null;
+    this._securePairing = null;
     this._boundNotification = (event) => this._handleNotification(event);
     this._boundDisconnected = (event) => this._handleDisconnected(event);
   }
@@ -596,6 +674,7 @@ export class TodooCard {
           }
         : null,
       gattProfile: this._gattProfile?.id ?? null,
+      securePairing: this._securePairing,
     };
   }
 
@@ -661,6 +740,12 @@ export class TodooCard {
     if (exactName) filters.push({ name: exactName });
     if (allowCompatibleDevices) {
       for (const profile of GATT_PROFILE_LIST) filters.push({ services: [profile.service] });
+      filters.push({
+        manufacturerData: [{
+          companyIdentifier: TODOO_SECURE_PAIRING.manufacturerId,
+          dataPrefix: Uint8Array.from([TODOO_SECURE_PAIRING.screenType & 0xff]),
+        }],
+      });
       if (includeNameAliases) {
         for (const prefix of COMPATIBLE_NAME_PREFIXES) filters.push({ namePrefix: prefix });
       } else if (namePrefix) {
@@ -674,7 +759,10 @@ export class TodooCard {
     try {
       const device = await this._bluetooth.requestDevice({
         filters,
-        optionalServices: GATT_PROFILE_LIST.map((profile) => profile.service),
+        optionalServices: [
+          ...GATT_PROFILE_LIST.map((profile) => profile.service),
+          TODOO_SECURE_PAIRING.battery.service,
+        ],
       });
       if (expectedDeviceId && device.id !== expectedDeviceId) {
         throw new TodooCardError(
@@ -741,10 +829,120 @@ export class TodooCard {
     if (this._device !== device) {
       this._device?.removeEventListener?.("gattserverdisconnected", this._boundDisconnected);
       this._device = device;
+      this._securePairing = null;
       device.addEventListener?.("gattserverdisconnected", this._boundDisconnected);
     }
     this._setState("device-selected", { device: this.status.device });
     return this;
+  }
+
+  /**
+   * Explicitly creates/verifies the encrypted system bond used by v0x8C+
+   * firmware. Call only from an add-device flow after the user has opened the
+   * physical pairing window; ordinary writes never invoke this automatically.
+   */
+  pairSecureDevice({ signal, disconnectAfterPairing = true } = {}) {
+    if (this._pairPromise) return this._pairPromise;
+    if (!this._device) {
+      return Promise.reject(new TodooCardError("尚未选择设备；请先选择 TodooCard", {
+        code: "NO_DEVICE",
+      }));
+    }
+    if (this.isWriting || this._connectPromise) {
+      return Promise.reject(new TodooCardError("设备正在连接或写入，暂时不能开始配对", {
+        code: "BUSY",
+      }));
+    }
+    this._assertBrowserAccess();
+
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort(signal.reason);
+    if (signal?.aborted) relayAbort();
+    else signal?.addEventListener("abort", relayAbort, { once: true });
+    this._activePairController = controller;
+    const run = this._pairSecureDeviceInternal({
+      signal: controller.signal,
+      disconnectAfterPairing,
+    });
+    const tracked = run.finally(() => {
+      signal?.removeEventListener("abort", relayAbort);
+      if (this._activePairController === controller) this._activePairController = null;
+      if (this._pairPromise === tracked) this._pairPromise = null;
+    });
+    this._pairPromise = tracked;
+    return tracked;
+  }
+
+  async _pairSecureDeviceInternal({ signal, disconnectAfterPairing }) {
+    this._setState("pairing");
+    try {
+      this._server = await this._runWithTimeout(
+        () => this._device.gatt.connect(),
+        this._timing.connectTimeoutMs,
+        signal,
+        "连接 TodooCard 配对服务超时",
+      );
+      this._setState("verifying-pairing");
+      const batteryService = await this._runWithTimeout(
+        () => this._server.getPrimaryService(TODOO_SECURE_PAIRING.battery.service),
+        this._timing.discoveryTimeoutMs,
+        signal,
+        "发现加密电池服务超时",
+      );
+      const batteryLevel = await this._runWithTimeout(
+        async () => {
+          const characteristic = await batteryService.getCharacteristic(
+            TODOO_SECURE_PAIRING.battery.level,
+          );
+          if (typeof characteristic.readValue !== "function") {
+            throw new TodooCardConnectionError("浏览器不能读取配对验证特征", {
+              code: "PAIRING_VERIFICATION_UNSUPPORTED",
+            });
+          }
+          return characteristic.readValue();
+        },
+        this._timing.discoveryTimeoutMs,
+        signal,
+        "等待系统完成安全配对超时",
+      );
+      const bytes = toUint8Array(batteryLevel, "Battery Level");
+      if (bytes.length !== 1) {
+        throw new TodooCardConnectionError("加密 Battery Level 返回了无效数据", {
+          code: "PAIRING_VERIFICATION_FAILED",
+          details: { actualBytes: bytes.length },
+        });
+      }
+      const result = deepFreeze({
+        verified: true,
+        batteryPercent: bytes[0],
+        verification: "encrypted-battery-level",
+      });
+      this._securePairing = result;
+      this._setState("paired", result);
+      this._emit("paired", result);
+      if (disconnectAfterPairing) this._releaseGatt({ preserveState: true });
+      return result;
+    } catch (error) {
+      let mapped = error;
+      if (!(error instanceof TodooCardError)) {
+        const missing = error?.name === "NotFoundError";
+        mapped = new TodooCardConnectionError(
+          missing ? "设备没有安全配对验证服务" : "TodooCard 安全配对未完成",
+          {
+            code: missing ? "SECURE_PAIRING_UNSUPPORTED" : "SECURE_PAIRING_REQUIRED",
+            cause: error,
+            hint: missing
+              ? "这可能是旧固件，可继续使用原有蓝牙连接方式。"
+              : "长按设备背面按钮 10 秒，看到前灯快闪后在 60 秒内重试，并确认系统配对提示。",
+          },
+        );
+      }
+      this._setState(mapped.code === "ABORTED" ? "cancelled" : "error", {
+        error: serializeError(mapped),
+      });
+      this._releaseGatt({ preserveState: true, reason: mapped });
+      throw mapped;
+    }
   }
 
   /** Connects and reports the selected GATT profile/properties without sending image commands. */
@@ -894,6 +1092,10 @@ export class TodooCard {
     }
     if (this._activeConnectController && !this._activeConnectController.signal.aborted) {
       this._activeConnectController.abort(reason);
+      cancelled = true;
+    }
+    if (this._activePairController && !this._activePairController.signal.aborted) {
+      this._activePairController.abort(reason);
       cancelled = true;
     }
     return cancelled;
@@ -1333,11 +1535,17 @@ export class TodooCard {
     input,
     { screenOrientation = "normal", payloadMode = "verified-padded" } = {},
   ) {
-    const visibleCodes = TodooCard.transformVisibleCodes(input, screenOrientation);
     const resolvedPayloadMode = resolvePayloadMode(payloadMode);
     if (resolvedPayloadMode === "auto") {
       throw new TodooCardError("编码时 payloadMode 不能是 auto", { code: "INVALID_PAYLOAD_MODE" });
     }
+    if (resolvedPayloadMode === "skill-stored-short" && screenOrientation !== "normal") {
+      throw new TodooCardError(
+        "TodooCard/T3 的规范面板方向已由底层固定，不能额外旋转或镜像",
+        { code: "INVALID_ORIENTATION" },
+      );
+    }
+    const visibleCodes = TodooCard.transformVisibleCodes(input, screenOrientation);
 
     const rotatedCodes = new Uint8Array(PIXEL_COUNT);
     for (let sourceY = 0; sourceY < VISIBLE_HEIGHT; sourceY += 1) {
@@ -1923,7 +2131,7 @@ export class TodooCard {
       hint: "若设备已休眠，可手动短贴手机 NFC 区域约 2 秒后重连。",
     });
     this._rejectNotificationWaiters(error);
-    if (!["complete", "error", "cancelled", "disconnected"].includes(this._state)) {
+    if (!["paired", "complete", "error", "cancelled", "disconnected"].includes(this._state)) {
       this._setState("disconnected");
     }
     if (wasConnected) this._emit("disconnected", { device: this.status.device });

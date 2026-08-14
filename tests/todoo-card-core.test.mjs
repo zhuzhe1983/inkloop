@@ -9,8 +9,10 @@ import TodooCard, {
   TODOO_PRODUCT_INFO,
   TODOO_PROTOCOL,
   TODOO_RENDER_PROFILES,
+  TODOO_SECURE_PAIRING,
   TODOO_SKILL_INTEGRATION,
   TODOO_TRANSFER_PROFILES,
+  parseTodooAdvertisementData,
 } from "../app/lib/todoo-card-core.js";
 
 const WIDTH = TODOO_PROTOCOL.image.visibleWidth;
@@ -56,7 +58,11 @@ class FakeEventTarget {
 }
 
 class FakeCharacteristic extends FakeEventTarget {
-  constructor(uuid, role, { expectedPacketCount = TODOO_PROTOCOL.transfer.packetCount } = {}) {
+  constructor(
+    uuid,
+    role,
+    { expectedPacketCount = TODOO_PROTOCOL.transfer.packetCount, readValue = 73 } = {},
+  ) {
     super();
     this.uuid = uuid;
     this.role = role;
@@ -64,10 +70,20 @@ class FakeCharacteristic extends FakeEventTarget {
     this.control = null;
     this.expectedPacketCount = expectedPacketCount;
     this.initResponse = Uint8Array.from([0x01, 0xf4, 0x00]);
+    this.readResult = readValue;
     this.properties =
       role === "control"
         ? { write: true, writeWithoutResponse: true, notify: true, indicate: false, read: false }
-        : { write: false, writeWithoutResponse: true, notify: false, indicate: false, read: false };
+        : role === "battery"
+          ? { write: false, writeWithoutResponse: false, notify: false, indicate: false, read: true }
+          : { write: false, writeWithoutResponse: true, notify: false, indicate: false, read: false };
+  }
+
+  async readValue() {
+    assert.equal(this.role, "battery");
+    if (this.readResult instanceof Error) throw this.readResult;
+    const bytes = Uint8Array.from([this.readResult]);
+    return new DataView(bytes.buffer);
   }
 
   async startNotifications() {
@@ -104,6 +120,8 @@ class FakeCharacteristic extends FakeEventTarget {
 function createFakeStack({
   gattProfile = TODOO_GATT_PROFILES.fef,
   expectedPacketCount = TODOO_PROTOCOL.transfer.packetCount,
+  batteryValue = 73,
+  batteryServiceAvailable = true,
 } = {}) {
   const control = new FakeCharacteristic(gattProfile.control, "control");
   const data = new FakeCharacteristic(gattProfile.data, "data", { expectedPacketCount });
@@ -115,13 +133,25 @@ function createFakeStack({
       throw new DOMException("missing", "NotFoundError");
     },
   };
+  const battery = new FakeCharacteristic(TODOO_SECURE_PAIRING.battery.level, "battery", {
+    readValue: batteryValue,
+  });
+  const batteryService = {
+    async getCharacteristic(uuid) {
+      if (uuid === TODOO_SECURE_PAIRING.battery.level) return battery;
+      throw new DOMException("missing", "NotFoundError");
+    },
+  };
   const device = new FakeEventTarget();
   device.id = "opaque-browser-device-id";
   device.name = TODOO_PRODUCT_INFO.advertisedName;
   const server = {
     async getPrimaryService(uuid) {
-      if (uuid !== gattProfile.service) throw new DOMException("missing", "NotFoundError");
-      return service;
+      if (uuid === gattProfile.service) return service;
+      if (uuid === TODOO_SECURE_PAIRING.battery.service && batteryServiceAvailable) {
+        return batteryService;
+      }
+      throw new DOMException("missing", "NotFoundError");
     },
   };
   device.gatt = {
@@ -149,7 +179,7 @@ function createFakeStack({
       return device;
     },
   };
-  return { bluetooth, device, control, data };
+  return { bluetooth, device, control, data, battery };
 }
 
 function zeroDelayTiming() {
@@ -177,12 +207,48 @@ test("产品说明和协议常量与真机结果一致且只读", () => {
   assert.equal(TODOO_INPUT_LIMITS.maxPixels, 50000000);
   assert.equal(
     TODOO_SKILL_INTEGRATION.reviewedCommit,
-    "f8b4eaca2d5ad9cb6cf381f68c55864bce665158",
+    "990f21caeaa74e2488ab72f9e343c04b1586689e",
   );
+  assert.equal(TODOO_SECURE_PAIRING.manufacturerId, 0x5053);
+  assert.equal(TODOO_SECURE_PAIRING.screenType, 0x134c);
+  assert.equal(TODOO_SECURE_PAIRING.latestReviewedFirmware, 0x95);
   assert.match(TODOO_DOCUMENTATION.summary, /913/);
   assert.equal(Object.isFrozen(TODOO_PRODUCT_INFO.screen), true);
   assert.equal(Object.isFrozen(TODOO_PROTOCOL.handshake), true);
   assert.equal(Object.isFrozen(TODOO_RENDER_PROFILES.skillT3.palette), true);
+});
+
+test("解析 v0x95 安全广播和实体配对窗口", () => {
+  const raw = Uint8Array.from([0x53, 0x50, 0x4c, 0x03, 0x95, 0x00, 0x13]);
+  const parsed = parseTodooAdvertisementData(raw);
+  assert.deepEqual(parsed, {
+    manufacturerId: 0x5053,
+    screenType: 0x134c,
+    capabilityFlags: 0x03,
+    firmwareVersion: 0x95,
+    secure: true,
+    pairingWindowOpen: true,
+    otaRecoveryMode: false,
+  });
+  assert.deepEqual(
+    parseTodooAdvertisementData(raw.subarray(2), { includesManufacturerId: false }),
+    parsed,
+  );
+});
+
+test("安全配对以加密 Battery Level 读取成功为准，并保持旧写屏路径独立", async () => {
+  const fake = createFakeStack({ batteryValue: 81 });
+  const card = new TodooCard({ bluetooth: fake.bluetooth, timing: zeroDelayTiming() });
+  card.useDevice(fake.device);
+  const result = await card.pairSecureDevice();
+  assert.deepEqual(result, {
+    verified: true,
+    batteryPercent: 81,
+    verification: "encrypted-battery-level",
+  });
+  assert.equal(card.state, "paired");
+  assert.equal(fake.device.gatt.connected, false);
+  assert.equal(fake.control.writes.length, 0);
 });
 
 test("纯色帧具有精确长度、块头、填充和可逆像素", () => {
@@ -209,6 +275,13 @@ test("skill-t3 短帧可显式生成、校验，并与验证帧互转", () => {
   assert.equal(padded.subarray(shortPayload.length).every((value) => value === 0), true);
   assert.equal(TodooCard.validatePayload(padded).details.payloadMode, "verified-padded");
   assert.deepEqual(TodooCard.convertPayloadMode(padded, "skill-t3"), shortPayload);
+  assert.throws(
+    () => TodooCard.createSolidPayload("blue", {
+      payloadMode: "skill-t3",
+      screenOrientation: "rotate-180",
+    }),
+    { code: "INVALID_ORIENTATION" },
+  );
 });
 
 test("屏幕倒装方向别名在可见像素空间中执行，默认控制器旋转不变", () => {
@@ -355,11 +428,18 @@ test("模拟 GATT 完整执行设备选择、三段握手、913 包和 05 08", a
   assert.deepEqual(fake.bluetooth.requestOptions.optionalServices, [
     TODOO_GATT_PROFILES.fef.service,
     TODOO_GATT_PROFILES.fdf.service,
+    TODOO_SECURE_PAIRING.battery.service,
   ]);
   assert.equal(fake.bluetooth.requestOptions.filters[0].name, TODOO_PRODUCT_INFO.advertisedName);
   assert.equal(
     fake.bluetooth.requestOptions.filters.some(
       (filter) => filter.services?.[0] === TODOO_GATT_PROFILES.fdf.service,
+    ),
+    true,
+  );
+  assert.equal(
+    fake.bluetooth.requestOptions.filters.some(
+      (filter) => filter.manufacturerData?.[0]?.companyIdentifier === 0x5053,
     ),
     true,
   );

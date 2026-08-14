@@ -13,6 +13,31 @@ export const TODOO_PROTOCOL: {
   transfer: { gattValueBytes: number; dataBytesPerPacket: number; packetCount: number };
 };
 
+export const TODOO_SECURE_PAIRING: {
+  manufacturerId: number;
+  screenType: number;
+  minimumSecureFirmware: number;
+  latestReviewedFirmware: number;
+  flags: { encryptedGatt: number; pairingWindow: number; otaRecovery: number };
+  battery: { service: string; level: string };
+  rearButtonHoldSeconds: number;
+  pairingWindowSeconds: number;
+  encryptionTimeoutRetryMs: readonly number[];
+};
+
+export function parseTodooAdvertisementData(
+  input: ArrayBuffer | ArrayBufferView | number[],
+  options?: { includesManufacturerId?: boolean },
+): {
+  manufacturerId: number;
+  screenType: number;
+  capabilityFlags: number;
+  firmwareVersion: number;
+  secure: boolean;
+  pairingWindowOpen: boolean;
+  otaRecoveryMode: boolean;
+};
+
 export default class CoreTodooCard {
   constructor(options?: Record<string, unknown>);
   readonly device: CoreBluetoothDevice | null;
@@ -21,6 +46,11 @@ export default class CoreTodooCard {
   listAuthorizedDevices(options?: Record<string, unknown>): Promise<CoreBluetoothDevice[]>;
   useDevice(device: CoreBluetoothDevice, options?: Record<string, unknown>): this;
   requestDevice(options?: Record<string, unknown>): Promise<CoreBluetoothDevice>;
+  pairSecureDevice(options?: Record<string, unknown>): Promise<{
+    verified: true;
+    batteryPercent: number;
+    verification: "encrypted-battery-level";
+  }>;
   connect(options?: Record<string, unknown>): Promise<unknown>;
   disconnect(): void;
   writeImageData(imageData: ImageData, options?: Record<string, unknown>): Promise<unknown>;

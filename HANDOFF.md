@@ -111,6 +111,8 @@ npm run db:generate
 
 已兼容或纳入筛选的名称前缀包括 `NEMR`、`TodooCard`、`PotatoCard`、`PICKSMART` 和 `T3`。Web Bluetooth 不向网页暴露系统扫描列表中的 MAC 地址，因此不要用 `AD:99:9E:BE:7B:26` 作为网页筛选条件。
 
+上游 `TodooCard_Skills` 已同步到提交 `990f21caeaa74e2488ab72f9e343c04b1586689e`。v0x8C+ 安全固件使用厂商 `0x5053`、屏幕类型 `0x134C` 和加密 GATT；首次绑定需长按背面按钮 10 秒，并在前灯快闪后的 60 秒窗口内显式读取加密 Battery Level。普通 BLE 连接不能作为配对成功依据。核心驱动已提供显式安全配对能力，但不会在旧设备写屏路径中自动触发，以保持现有体验。
+
 ### 协议基线
 
 - 可见尺寸：528 × 792。
@@ -118,7 +120,8 @@ npm run db:generate
 - 真机默认帧：219120 bytes。
 - 默认传输：913 包。
 - 支持 FEF 与兼容 FDF GATT profile；当前项目设备默认继续使用真机验证过的 profile。
-- `skill-t3` 的短帧和部分兼容参数保留为显式可选项，不替换真机验证默认值。
+- `skill-t3` 的 218893-byte QuickLZ-stored 帧和部分兼容参数保留为显式可选项，不替换真机验证默认值。
+- T3 使用固定 `todoocard-correct` 底层面板校准；调用方提供正向源图，不得叠加旋转或镜像。
 
 `app/lib/todoo-card-core.js` 是协议事实来源，`app/lib/todoo-card.ts` 只做 UI 适配。原始协议整理项目仍位于 `/Users/zhuzhe/Workspace/todoo/web/`；若那里更新，应先备份当前 core、对比差异、更新测试，再考虑同步。
 
@@ -187,6 +190,7 @@ Open-Meteo 优先，wttr.in 备用；常见中国城市使用内置坐标以减�
 - 错误帧长度、块头、色码和尾部填充拒绝。
 - 50 MP 输入资源上限。
 - 模拟 FEF/FDF GATT 服务、三段握手、913 包、完成通知和错误属性。
+- v0x95 厂商广播解析、实体配对窗口和加密 Battery Level 配对验证。
 
 普通 UI 修改至少运行 `npm run build`。协议文件或依赖变更运行 `npm test`。真机回归应单独记录设备名、浏览器版本、固件状态、写入耗时和最终显示照片。
 

@@ -13,7 +13,7 @@ export const TODOO_PROTOCOL = {
 } as const;
 
 export type TodooProgress = {
-  phase: "connecting" | "encoding" | "sending" | "refreshing" | "complete";
+  phase: "connecting" | "pairing" | "encoding" | "sending" | "refreshing" | "complete";
   percent: number;
   message: string;
 };
@@ -27,6 +27,9 @@ type WriteCanvasOptions = {
 
 const stateProgress: Record<string, TodooProgress> = {
   connecting: { phase: "connecting", percent: 4, message: "正在连接 TodooCard…" },
+  pairing: { phase: "pairing", percent: 4, message: "正在连接安全配对服务…" },
+  "verifying-pairing": { phase: "pairing", percent: 7, message: "请确认系统配对提示…" },
+  paired: { phase: "pairing", percent: 9, message: "安全配对完成" },
   discovering: { phase: "connecting", percent: 6, message: "正在发现图像服务…" },
   subscribing: { phase: "connecting", percent: 8, message: "正在订阅设备通知…" },
   "handshake-init": { phase: "sending", percent: 10, message: "正在初始化写屏协议…" },
@@ -105,6 +108,10 @@ export class TodooCard {
       allowCompatibleDevices: true,
       includeNameAliases: true,
     });
+  }
+
+  pairSecureDevice(disconnectAfterPairing = true) {
+    return this.core.pairSecureDevice({ disconnectAfterPairing });
   }
 
   disconnect() {
