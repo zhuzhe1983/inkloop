@@ -43,6 +43,16 @@ import {
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
 import { isRecoverableBluetoothError, writeWithBluetoothRecovery } from "./lib/bluetooth-recovery";
+import { deviceAdapter, deviceSku, deviceSkusForFamily, type DeviceFamily, type DeviceSkuId } from "./lib/device-catalog";
+import {
+  claimEsp32Device,
+  deleteEsp32Task,
+  flashM5PaperColor,
+  listEsp32Devices,
+  publishEsp32Task,
+  type Esp32DeviceRecord,
+  type FirmwareProgress,
+} from "./lib/esp32-device";
 import {
   CALIBRATION_SWATCHES,
   analyzeCalibrationCapture,
@@ -115,8 +125,17 @@ function agendaWindow(table: Extract<NonNullable<ScreenSpec["table"]>, { type: "
 type DeviceProfile = {
   id: string;
   name: string;
+  family: DeviceFamily;
+  skuId: DeviceSkuId;
   colorCorrectionEnabled: boolean;
   calibration?: DeviceColorCalibration;
+  hardwareId?: string;
+  firmwareVersion?: string | null;
+  batteryPercent?: number | null;
+  lastSeenAt?: string | null;
+  online?: boolean;
+  desiredRevision?: number;
+  appliedRevision?: number;
 };
 
 type AuthorizedBluetoothDevice = {
@@ -137,7 +156,11 @@ type DeviceTask = {
   consecutiveFailures: number;
   lastError: string | null;
   lastCanvas?: string;
+  execution: "browser-bluetooth" | "device-wifi";
+  remoteRevision?: number;
 };
+
+type AddDeviceStep = "family" | "sku" | "method" | "claim" | "flash" | "flash-complete";
 
 type DragPreview = {
   element: ScreenElementKey;
@@ -166,8 +189,35 @@ function normalizeDeviceProfile(value: unknown): DeviceProfile | null {
   return {
     id: candidate.id,
     name: candidate.name,
+    family: candidate.family === "esp32" ? "esp32" : "bluetooth",
+    skuId: candidate.skuId === "m5-papercolor-c151" ? "m5-papercolor-c151" : "todoo-card-3.7",
     colorCorrectionEnabled: candidate.colorCorrectionEnabled !== false,
     calibration: validCalibration(candidate.calibration) ? candidate.calibration : undefined,
+    hardwareId: typeof candidate.hardwareId === "string" ? candidate.hardwareId : undefined,
+    firmwareVersion: typeof candidate.firmwareVersion === "string" ? candidate.firmwareVersion : null,
+    batteryPercent: typeof candidate.batteryPercent === "number" ? candidate.batteryPercent : null,
+    lastSeenAt: typeof candidate.lastSeenAt === "string" ? candidate.lastSeenAt : null,
+    online: candidate.online === true,
+    desiredRevision: typeof candidate.desiredRevision === "number" ? candidate.desiredRevision : 0,
+    appliedRevision: typeof candidate.appliedRevision === "number" ? candidate.appliedRevision : 0,
+  };
+}
+
+function profileFromEsp32(record: Esp32DeviceRecord, existing?: DeviceProfile): DeviceProfile {
+  return {
+    ...existing,
+    id: record.id,
+    name: record.name,
+    family: "esp32",
+    skuId: record.skuId,
+    colorCorrectionEnabled: true,
+    hardwareId: record.hardwareId,
+    firmwareVersion: record.firmwareVersion,
+    batteryPercent: record.batteryPercent,
+    lastSeenAt: record.lastSeenAt,
+    online: record.online,
+    desiredRevision: record.desiredRevision,
+    appliedRevision: record.appliedRevision,
   };
 }
 
@@ -1882,8 +1932,9 @@ function agendaStartDate(spec: ScreenSpec, events: AgendaEvent[]) {
 
 function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   if (spec.table?.type !== "agenda") return;
-  const { view } = spec.table;
-  const events = spec.table.events
+  const table = spec.table;
+  const { view } = table;
+  const events = table.events
     .filter((event) => Number.isFinite(Date.parse(event.start)) && Number.isFinite(Date.parse(event.end)))
     .sort((left, right) => Date.parse(left.start) - Date.parse(right.start));
   const family = screenFontFamily(spec);
@@ -1933,7 +1984,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
       );
       ctx.font = `800 ${rowHeight < 54 ? 14 : 17}px ${family}`;
       ctx.fillText(
-        truncateCanvasText(ctx, agendaTimeLabel(event, spec.table.showEndTime !== false), 118),
+        truncateCanvasText(ctx, agendaTimeLabel(event, table.showEndTime !== false), 118),
         margin + 78,
         y + rowHeight / 2 - 5,
       );
@@ -1943,7 +1994,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
         margin + 210,
         y + rowHeight / 2 - 5,
       );
-      if (spec.table.showLocation !== false && event.location && rowHeight >= 54) {
+      if (table.showLocation !== false && event.location && rowHeight >= 54) {
         ctx.fillStyle = ink;
         ctx.font = `700 13px ${family}`;
         ctx.fillText(
@@ -1968,7 +2019,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const gap = 8;
   const headerHeight = 48;
   const timeRailWidth = width > height ? 44 : 38;
-  const eventWidthRatio = Math.min(100, Math.max(45, spec.table.eventWidth ?? 100)) / 100;
+  const eventWidthRatio = Math.min(100, Math.max(45, table.eventWidth ?? 100)) / 100;
   const gridLeft = margin + timeRailWidth;
   const gridRight = width - margin;
   const columnWidth = (gridRight - gridLeft - gap * (columnCount - 1)) / columnCount;
@@ -2120,13 +2171,13 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
       const textInset = stripeWidth + (dense ? 3 : 5);
       ctx.font = `800 ${dense ? 8 : view === "workweek" ? 10 : 12}px ${family}`;
       ctx.fillText(
-        truncateCanvasText(ctx, agendaTimeLabel(event, spec.table.showEndTime !== false && cardWidth >= 76), cardWidth - textInset - 5),
+        truncateCanvasText(ctx, agendaTimeLabel(event, table.showEndTime !== false && cardWidth >= 76), cardWidth - textInset - 5),
         cardX + textInset,
         y + 14,
       );
       ctx.font = `900 ${dense ? 10 : view === "workweek" ? 13 : 16}px ${family}`;
       ctx.fillText(truncateCanvasText(ctx, event.title, cardWidth - textInset - 5), cardX + textInset, y + 34);
-      if (spec.table.showLocation !== false && event.location && cardHeight >= 64 && cardWidth >= 68) {
+      if (table.showLocation !== false && event.location && cardHeight >= 64 && cardWidth >= 68) {
         ctx.font = `700 ${dense ? 8 : view === "workweek" ? 10 : 11}px ${family}`;
         ctx.fillText(truncateCanvasText(ctx, event.location, cardWidth - textInset - 5), cardX + textInset, y + 51);
       }
@@ -2659,6 +2710,27 @@ function canvasForDevice(source: HTMLCanvasElement, orientation: ScreenOrientati
   return physical;
 }
 
+function canvasForM5PaperColor(source: HTMLCanvasElement, orientation: ScreenOrientation) {
+  const target = deviceAdapter("m5-papercolor-c151").renderTarget(orientation);
+  const output = document.createElement("canvas");
+  output.width = target.width;
+  output.height = target.height;
+  const context = output.getContext("2d");
+  if (!context) throw new Error("无法生成 M5 PaperColor 画面");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.fillStyle = "#fffefa";
+  context.fillRect(0, 0, output.width, output.height);
+  context.drawImage(source, 0, 0, output.width, output.height);
+  return output;
+}
+
+function canvasPng(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("无法导出设备画面")), "image/png");
+  });
+}
+
 function MiniScreen({ app }: { app: InkApp }) {
   const thumbnailRef = useRef<HTMLCanvasElement>(null);
   const dimensions = screenDimensions(app.spec);
@@ -2754,14 +2826,15 @@ function DeviceTaskCard({
   task: DeviceTask;
   now: number;
   onRetry: (taskId: string) => void | Promise<void>;
-  onStop: (taskId: string) => void;
+  onStop: (taskId: string) => void | Promise<void>;
 }) {
+  const runsOnDevice = task.execution === "device-wifi";
   return (
     <article className={`device-task ${task.status}`}>
       <div className="device-task-heading">
         <div>
           <span className="task-status-label">
-            {task.status === "writing" ? "正在写入" : task.status === "error" ? "等待重试" : "运行中"}
+            {task.status === "writing" ? "正在下发" : task.status === "error" ? "等待重试" : runsOnDevice ? "设备端运行" : "运行中"}
           </span>
           <h3>{task.app.title}</h3>
           <p>{scheduleLabel(task.app)}</p>
@@ -2775,13 +2848,15 @@ function DeviceTaskCard({
           >
             立即重试
           </button>
-          <button type="button" onClick={() => onStop(task.id)}>停止</button>
+          <button type="button" onClick={() => void onStop(task.id)}>停止</button>
         </div>
       </div>
       <div className="task-countdown">
-        <span>距离下次刷新</span>
-        <strong>{formatRemaining(task.nextRunAt, now)}</strong>
-        <small>{task.nextRunAt ? formatExactTime(task.nextRunAt) : "首次写入完成后开始计时"}</small>
+        <span>{runsOnDevice ? "任务调度位置" : "距离下次刷新"}</span>
+        <strong>{runsOnDevice ? "设备端" : formatRemaining(task.nextRunAt, now)}</strong>
+        <small>{runsOnDevice
+          ? "设备开机联网后从服务器同步；无需保持浏览器打开"
+          : task.nextRunAt ? formatExactTime(task.nextRunAt) : "首次写入完成后开始计时"}</small>
       </div>
       <dl className="task-stats">
         <div><dt>成功</dt><dd>{task.successCount}</dd></div>
@@ -2838,6 +2913,13 @@ export default function InkStudio() {
   const [deviceStatus, setDeviceStatus] = useState<"idle" | "ready" | "writing" | "scheduled" | "error">("idle");
   const [progress, setProgress] = useState<TodooProgress | null>(null);
   const [deviceTasks, setDeviceTasks] = useState<DeviceTask[]>([]);
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false);
+  const [addDeviceStep, setAddDeviceStep] = useState<AddDeviceStep>("family");
+  const [selectedDeviceSkuId, setSelectedDeviceSkuId] = useState<DeviceSkuId | null>(null);
+  const [deviceCode, setDeviceCode] = useState("");
+  const [deviceFlowBusy, setDeviceFlowBusy] = useState(false);
+  const [deviceFlowError, setDeviceFlowError] = useState<string | null>(null);
+  const [firmwareProgress, setFirmwareProgress] = useState<FirmwareProgress | null>(null);
   const [calibrationDeviceId, setCalibrationDeviceId] = useState<string | null>(null);
   const [calibrationStep, setCalibrationStep] = useState<1 | 2 | 3>(1);
   const [calibrationBusy, setCalibrationBusy] = useState(false);
@@ -2939,12 +3021,69 @@ export default function InkStudio() {
     }
   }, []);
 
+  const applyEsp32Records = useCallback((records: Esp32DeviceRecord[]) => {
+    const existingById = new Map(deviceProfilesRef.current.map((profile) => [profile.id, profile]));
+    const remoteProfiles = records.map((record) => profileFromEsp32(record, existingById.get(record.id)));
+    commitDeviceProfiles((current) => [
+      ...current.filter((profile) => profile.family !== "esp32"),
+      ...remoteProfiles,
+    ].slice(0, 12));
+    commitDeviceTasks((current) => {
+      const bluetoothTasks = current.filter((task) => task.execution !== "device-wifi");
+      const wifiTasks = records.flatMap((record) => record.tasks.map((task): DeviceTask => ({
+        id: task.id,
+        app: upgradeLegacyApp(task.app),
+        deviceId: record.id,
+        deviceName: record.name,
+        execution: "device-wifi",
+        remoteRevision: task.revision,
+        status: "scheduled",
+        nextRunAt: null,
+        lastRunAt: record.lastSeenAt ? new Date(record.lastSeenAt).getTime() : null,
+        successCount: record.appliedRevision >= task.revision ? 1 : 0,
+        failureCount: 0,
+        consecutiveFailures: 0,
+        lastError: null,
+      })));
+      return [...wifiTasks, ...bluetoothTasks];
+    });
+    return remoteProfiles;
+  }, [commitDeviceProfiles, commitDeviceTasks]);
+
+  const refreshEsp32Devices = useCallback(async (notify = false) => {
+    try {
+      const records = await listEsp32Devices();
+      return applyEsp32Records(records);
+    } catch (error) {
+      if (notify) showToast(error instanceof Error ? error.message : "无法刷新 ESP32 设备", "error");
+      return null;
+    }
+  }, [applyEsp32Records, showToast]);
+
+  const openAddDevice = useCallback(() => {
+    setAddDeviceStep("family");
+    setSelectedDeviceSkuId(null);
+    setDeviceCode("");
+    setDeviceFlowBusy(false);
+    setDeviceFlowError(null);
+    setFirmwareProgress(null);
+    setAddDeviceOpen(true);
+  }, []);
+
+  const closeAddDevice = useCallback(() => {
+    if (deviceFlowBusy) return;
+    setAddDeviceOpen(false);
+    setDeviceFlowError(null);
+  }, [deviceFlowBusy]);
+
   const rememberDevice = useCallback((driver: TodooCard, device: AuthorizedBluetoothDevice) => {
     const existing = deviceProfilesRef.current.find((item) => item.id === device.id);
     const profile: DeviceProfile = {
       ...existing,
       id: device.id,
       name: device.name ?? existing?.name ?? "TodooCard",
+      family: "bluetooth",
+      skuId: "todoo-card-3.7",
       colorCorrectionEnabled: existing?.colorCorrectionEnabled !== false,
     };
     const previousDriver = deviceDriversRef.current.get(profile.id);
@@ -3176,6 +3315,26 @@ export default function InkStudio() {
   }, [calibrationBusy, calibrationDeviceId]);
 
   useEffect(() => {
+    if (!addDeviceOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deviceFlowBusy) setAddDeviceOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [addDeviceOpen, deviceFlowBusy]);
+
+  useEffect(() => {
+    void refreshEsp32Devices();
+    const interval = window.setInterval(() => void refreshEsp32Devices(), 15_000);
+    return () => window.clearInterval(interval);
+  }, [refreshEsp32Devices]);
+
+  useEffect(() => {
     if (app.spec.kind !== "map") return;
     const controller = new AbortController();
     const checkMapService = async () => {
@@ -3261,6 +3420,8 @@ export default function InkStudio() {
             ...existing,
             id: device.id,
             name: device.name ?? existing?.name ?? "TodooCard",
+            family: "bluetooth",
+            skuId: "todoo-card-3.7",
             colorCorrectionEnabled: existing?.colorCorrectionEnabled !== false,
           } satisfies DeviceProfile;
         });
@@ -3891,7 +4052,7 @@ export default function InkStudio() {
     return next.getTime() - now.getTime();
   }, []);
 
-  const selectNewDevice = useCallback(async () => {
+  const selectNewBluetoothDevice = useCallback(async () => {
     const driver = new TodooCard(setProgress);
     if (!driver.supported) {
       showToast("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站", "error");
@@ -3901,6 +4062,7 @@ export default function InkStudio() {
       const device = await driver.requestDevice();
       const profile = rememberDevice(driver, device);
       showToast(`已添加设备 ${profile.name}，尚未执行写入`, "success");
+      setAddDeviceOpen(false);
       return profile;
     } catch (error) {
       driver.disconnect();
@@ -3908,6 +4070,45 @@ export default function InkStudio() {
       return null;
     }
   }, [rememberDevice, showToast]);
+
+  const bindEsp32Device = useCallback(async () => {
+    if (!/^\d{6}$/.test(deviceCode)) {
+      setDeviceFlowError("请输入设备屏幕上的六位设备码");
+      return;
+    }
+    setDeviceFlowBusy(true);
+    setDeviceFlowError(null);
+    try {
+      const claimed = await claimEsp32Device(deviceCode);
+      const profiles = await refreshEsp32Devices();
+      const profile = profiles?.find((item) => item.id === claimed.id) ?? profileFromEsp32(claimed);
+      setActiveDeviceId(profile.id);
+      setDeviceName(profile.name);
+      setDeviceStatus(profile.online ? "ready" : "idle");
+      setExpandedDeviceIds((current) => new Set(current).add(profile.id));
+      setAddDeviceOpen(false);
+      showToast(`已绑定 ${profile.name}，设备端计划会自动同步`, "success");
+    } catch (error) {
+      setDeviceFlowError(error instanceof Error ? error.message : "设备绑定失败");
+    } finally {
+      setDeviceFlowBusy(false);
+    }
+  }, [deviceCode, refreshEsp32Devices, showToast]);
+
+  const flashEsp32Device = useCallback(async () => {
+    setDeviceFlowBusy(true);
+    setDeviceFlowError(null);
+    setFirmwareProgress(null);
+    try {
+      await flashM5PaperColor(setFirmwareProgress);
+      setAddDeviceStep("flash-complete");
+      showToast("M5 PaperColor 瘦客户端已写入", "success");
+    } catch (error) {
+      setDeviceFlowError(error instanceof Error ? error.message : "设备刷机失败");
+    } finally {
+      setDeviceFlowBusy(false);
+    }
+  }, [showToast]);
 
   const openDeviceCalibration = useCallback((deviceId: string) => {
     setCalibrationDeviceId(deviceId);
@@ -4009,14 +4210,62 @@ export default function InkStudio() {
     showToast(enabled ? "已开启设备色差纠正" : "已关闭设备色差纠正", "info");
   }, [commitDeviceProfiles, showToast]);
 
-  const stopDeviceTask = useCallback((taskId: string, notify = true) => {
+  const stopDeviceTask = useCallback(async (taskId: string, notify = true) => {
+    const task = deviceTasksRef.current.find((item) => item.id === taskId);
+    if (task?.execution === "device-wifi") {
+      commitDeviceTasks((current) => current.map((item) => item.id === taskId
+        ? { ...item, status: "writing", lastError: null }
+        : item));
+      try {
+        await deleteEsp32Task(task.deviceId, task.id);
+        await refreshEsp32Devices();
+        if (notify) showToast("任务已从服务器删除；在线设备会在下一次同步时移除", "success");
+      } catch (error) {
+        commitDeviceTasks((current) => current.map((item) => item.id === taskId
+          ? { ...item, status: "error", lastError: error instanceof Error ? error.message : "删除任务失败" }
+          : item));
+        if (notify) showToast(error instanceof Error ? error.message : "删除任务失败", "error");
+      }
+      return;
+    }
     const timer = taskTimersRef.current.get(taskId);
     if (timer) clearTimeout(timer);
     taskTimersRef.current.delete(taskId);
     commitDeviceTasks((current) => current.filter((task) => task.id !== taskId));
     if (deviceTasksRef.current.length <= 1) setDeviceStatus(deviceName ? "ready" : "idle");
     if (notify) showToast("定时任务已停止", "info");
-  }, [commitDeviceTasks, deviceName, showToast]);
+  }, [commitDeviceTasks, deviceName, refreshEsp32Devices, showToast]);
+
+  const prepareEsp32Frame = useCallback(async (targetApp: InkApp) => {
+    const editingCurrent = targetApp.id === currentAppRef.current.id;
+    const currentCanvas = editingCurrent ? canvasRef.current : null;
+    if (editingCurrent && previewStatus === "loading") throw new Error("图片素材仍在加载，请稍候重试");
+    const outputCanvas = currentCanvas ?? document.createElement("canvas");
+    if (!currentCanvas) {
+      const dimensions = screenDimensions(targetApp.spec);
+      outputCanvas.width = dimensions.width;
+      outputCanvas.height = dimensions.height;
+      const runtimeSpec = await resolveRuntimeScreen(targetApp, new Date(), calendarPreferencesRef.current);
+      await renderScreenToCanvas(outputCanvas, runtimeSpec, targetApp.localImage);
+    }
+    const deviceCanvas = canvasForM5PaperColor(outputCanvas, screenOrientation(targetApp.spec));
+    return {
+      blob: await canvasPng(deviceCanvas),
+      preview: deviceCanvas.toDataURL("image/png"),
+    };
+  }, [previewStatus]);
+
+  const publishTaskToEsp32 = useCallback(async (profile: DeviceProfile, targetApp: InkApp) => {
+    setDeviceStatus("writing");
+    const frame = await prepareEsp32Frame(targetApp);
+    await publishEsp32Task(profile.id, targetApp, frame.blob);
+    const profiles = await refreshEsp32Devices();
+    const refreshed = profiles?.find((item) => item.id === profile.id) ?? profile;
+    setDeviceStatus("scheduled");
+    setActiveDeviceId(profile.id);
+    setDeviceName(profile.name);
+    return { frame, refreshed };
+  }, [prepareEsp32Frame, refreshEsp32Devices]);
 
   const runTransfer = useCallback(async (
     targetApp: InkApp,
@@ -4164,7 +4413,7 @@ export default function InkStudio() {
     const existing = taskTimersRef.current.get(taskId);
     if (existing) clearTimeout(existing);
     const task = deviceTasksRef.current.find((item) => item.id === taskId);
-    if (!task) return;
+    if (!task || task.execution === "device-wifi") return;
     const delay = retryDelay ?? calculateNextDelay(task.app);
     if (!delay) return;
     const nextRunAt = Date.now() + delay;
@@ -4197,6 +4446,25 @@ export default function InkStudio() {
     taskTimersRef.current.delete(taskId);
     const task = deviceTasksRef.current.find((item) => item.id === taskId);
     if (!task || task.status === "writing") return;
+    if (task.execution === "device-wifi") {
+      const profile = deviceProfilesRef.current.find((item) => item.id === task.deviceId);
+      if (!profile) return;
+      commitDeviceTasks((current) => current.map((item) => item.id === taskId
+        ? { ...item, status: "writing", lastError: null }
+        : item));
+      showToast("正在更新服务器任务，设备联网后会自动同步", "info");
+      try {
+        await publishTaskToEsp32(profile, task.app);
+        showToast(profile.online ? "任务已更新，在线设备即将同步" : "任务已更新，设备开机后同步", "success");
+      } catch (error) {
+        commitDeviceTasks((current) => current.map((item) => item.id === taskId
+          ? { ...item, status: "error", lastError: error instanceof Error ? error.message : "任务更新失败" }
+          : item));
+        showToast(error instanceof Error ? error.message : "任务更新失败", "error");
+        setDeviceStatus("error");
+      }
+      return;
+    }
     commitDeviceTasks((current) => current.map((item) => item.id === taskId
       ? { ...item, status: "writing", nextRunAt: null, lastError: null }
       : item));
@@ -4213,10 +4481,28 @@ export default function InkStudio() {
   const stopSchedule = useCallback(() => {
     const current = deviceTasksRef.current.find((task) => task.app.id === app.id
       && (!activeDeviceId || task.deviceId === activeDeviceId));
-    if (current) stopDeviceTask(current.id);
+    if (current) void stopDeviceTask(current.id);
   }, [activeDeviceId, app.id, stopDeviceTask]);
 
   const start = async () => {
+    const selectedProfile = deviceProfilesRef.current.find((item) => item.id === activeDeviceId)
+      ?? deviceProfilesRef.current[0]
+      ?? null;
+    if (selectedProfile?.family === "esp32") {
+      try {
+        await publishTaskToEsp32(selectedProfile, app);
+        showToast(
+          selectedProfile.online
+            ? "任务已保存，M5 PaperColor 将在下一次同步时拉取"
+            : "任务已保存；设备开机联网后会自动拉取",
+          "success",
+        );
+      } catch (error) {
+        setDeviceStatus("error");
+        showToast(error instanceof Error ? error.message : "ESP32 任务下发失败", "error");
+      }
+      return;
+    }
     let driver = activeDeviceId ? deviceDriversRef.current.get(activeDeviceId) ?? null : driverRef.current;
     if (!driver) {
       driver = new TodooCard(setProgress);
@@ -4287,6 +4573,7 @@ export default function InkStudio() {
         failureCount: 0,
         consecutiveFailures: 0,
         lastError: null,
+        execution: "browser-bluetooth",
       };
       commitDeviceTasks((current) => [task, ...current]);
       const wrote = await runTransfer(app, resolvedDeviceId, taskId, { reusePreview: true });
@@ -4307,17 +4594,25 @@ export default function InkStudio() {
   const previewFrameHeight = previewLandscape ? 288 : 486;
   const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
   const calibrationDevice = devices.find((device) => device.id === calibrationDeviceId) ?? null;
+  const selectedDeviceSku = deviceSku(selectedDeviceSkuId);
   const deviceSummaries = devices.map((device) => {
     const tasks = deviceTasks.filter((task) => task.deviceId === device.id);
     const hasError = tasks.some((task) => task.status === "error");
     const isWriting = tasks.some((task) => task.status === "writing");
-    const authorized = deviceDriversRef.current.has(device.id);
+    const adapter = deviceAdapter(device.skuId);
+    const authorized = !adapter.requiresBrowserDriver || deviceDriversRef.current.has(device.id);
     return {
       ...device,
       tasks,
       hasError,
       authorized,
-      status: hasError ? "error" : isWriting ? "writing" : tasks.length ? "scheduled" : authorized ? "ready" : "idle",
+      status: hasError
+        ? "error"
+        : isWriting
+          ? "writing"
+          : device.family === "esp32"
+            ? device.online ? (tasks.length ? "scheduled" : "ready") : "idle"
+            : tasks.length ? "scheduled" : authorized ? "ready" : "idle",
     };
   });
   const currentTask = deviceTasks.find((task) => task.app.id === app.id
@@ -4372,7 +4667,9 @@ export default function InkStudio() {
               <span className={`status-dot ${device.status}`} />
               <div className="sidebar-device-copy">
                 <strong>{device.name}</strong>
-                <small>{device.tasks.length ? `${device.tasks.length} 个定时任务` : "已记住，可自动重连"}</small>
+                <small>{device.tasks.length
+                  ? `${device.tasks.length} 个定时任务`
+                  : device.family === "esp32" ? (device.online ? "Wi‑Fi 在线" : "离线 · 开机后同步") : "已记住，可自动重连"}</small>
               </div>
               {device.tasks.length > 0 && <span className="task-count" aria-label={`${device.tasks.length} 个任务`}>{device.tasks.length}</span>}
               {device.hasError && <span className="task-alert" aria-label="任务出现错误">!</span>}
@@ -4384,7 +4681,7 @@ export default function InkStudio() {
               <div className="sidebar-device-copy"><strong>未连接设备</strong><small>TodooCard · BLE</small></div>
             </div>
           )}
-          <button type="button" className="add-device-button" onClick={() => void selectNewDevice()}>
+          <button type="button" className="add-device-button" onClick={openAddDevice}>
             <span aria-hidden="true">＋</span><span className="add-device-label">添加设备</span>
           </button>
         </div>
@@ -5534,7 +5831,11 @@ export default function InkStudio() {
                 <span className={`run-icon ${deviceStatus}`}>{deviceStatus === "writing" ? "↻" : "⌁"}</span>
                 <div className="run-status-copy">
                   <strong>
-                    {deviceStatus === "writing" ? progress?.message ?? "正在写入" : scheduleActive ? "定时任务运行中" : deviceName ?? "准备写入 TodooCard"}
+                    {deviceStatus === "writing"
+                      ? activeDevice?.family === "esp32" ? "正在保存设备任务" : progress?.message ?? "正在写入"
+                      : scheduleActive
+                        ? activeDevice?.family === "esp32" ? "设备端计划已就绪" : "定时任务运行中"
+                        : deviceName ?? "准备写入设备"}
                   </strong>
                   {nextRun ? (
                     <div className="next-run-summary">
@@ -5543,7 +5844,9 @@ export default function InkStudio() {
                       <em>{formatRemaining(nextRun, secondTick)}</em>
                     </div>
                   ) : (
-                    <small>{deviceName ? "已授权设备不会再次弹出选择器" : "首次需要手动选择设备 · 之后自动重连"}</small>
+                    <small>{activeDevice?.family === "esp32"
+                      ? activeDevice.online ? "Wi‑Fi 在线 · 计划由设备端执行" : "设备离线 · 任务会在开机后同步"
+                      : deviceName ? "已授权设备不会再次弹出选择器" : "首次需要手动选择设备 · 之后自动重连"}</small>
                   )}
                 </div>
               </div>
@@ -5553,16 +5856,20 @@ export default function InkStudio() {
               <div className="run-actions">
                 <button
                   type="button"
-                  className={`bluetooth-status-button ${bluetoothSupported ? "ok" : "warn"}`}
-                  onClick={() => bluetoothSupported ? void selectNewDevice() : setGuideOpen(true)}
-                  title={bluetoothSupported ? "选择或添加蓝牙设备" : "查看支持的浏览器与使用说明"}
+                  className={`bluetooth-status-button ${activeDevice?.family === "esp32" ? activeDevice.online ? "ok" : "warn" : bluetoothSupported ? "ok" : "warn"}`}
+                  onClick={openAddDevice}
+                  title="选择或添加设备"
                 >
                   <i aria-hidden="true" />
-                  {bluetoothSupported ? "蓝牙可用" : "请使用 Chromium"}
+                  {activeDevice?.family === "esp32"
+                    ? activeDevice.online ? "Wi‑Fi 在线" : "Wi‑Fi 离线"
+                    : bluetoothSupported ? "蓝牙可用" : "请使用 Chromium"}
                 </button>
                 {scheduleActive && <button type="button" className="stop-button" onClick={stopSchedule}>停止任务</button>}
                 <button type="button" className="start-button" onClick={start} disabled={deviceStatus === "writing"}>
-                  <span>{deviceStatus === "writing" ? "正在写入" : scheduleActive ? "立即再写一次" : "开始写入"}</span>
+                  <span>{deviceStatus === "writing"
+                    ? activeDevice?.family === "esp32" ? "正在保存" : "正在写入"
+                    : activeDevice?.family === "esp32" ? scheduleActive ? "更新设备任务" : "下发到设备" : scheduleActive ? "立即再写一次" : "开始写入"}</span>
                   <i>→</i>
                 </button>
               </div>
@@ -5618,17 +5925,17 @@ export default function InkStudio() {
           <section className="device-view">
             <div className="device-hero">
               <div>
-                <span className="eyebrow">WEB BLUETOOTH · FEF0 / FEF1 / FEF2</span>
-                <h1>一次选择，页面打开时自动写入。</h1>
-                <p>首选 Android 或桌面版 Chromium。首次必须由点击唤起设备选择；授权后本页面会保留设备，并优先恢复历史授权。</p>
+                <span className="eyebrow">BLUETOOTH + ESP32 · ONE DEVICE CENTER</span>
+                <h1>同一个创作台，两种无痛写入方式。</h1>
+                <p>TodooCard 延续浏览器蓝牙写入；M5 PaperColor 在设备端保存计划并主动联网拉取，浏览器关闭也不会丢失任务。</p>
               </div>
               <div className="connection-card">
                 <span className={`status-orb ${devices.length ? "connected" : ""}`}>⌁</span>
-                <strong>{activeDevice?.name ?? "TodooCard 未连接"}</strong>
+                <strong>{activeDevice?.name ?? "尚未添加设备"}</strong>
                 <small>{devices.length
                   ? `已添加 ${devices.length} 台设备 · 写入任务按设备独立管理`
-                  : "NEMR99803797 / PICKSMART · 528 × 792"}</small>
-                <button type="button" onClick={() => void selectNewDevice()}>{devices.length ? "添加另一台设备" : "选择设备"}</button>
+                  : "支持 TodooCard 与 M5 PaperColor"}</small>
+                <button type="button" onClick={openAddDevice}>{devices.length ? "添加另一台设备" : "添加设备"}</button>
               </div>
             </div>
             <section className="device-registry" aria-labelledby="device-registry-title">
@@ -5636,9 +5943,9 @@ export default function InkStudio() {
                 <div>
                   <span className="eyebrow">AUTHORIZED DEVICES</span>
                   <h2 id="device-registry-title">连接过的设备</h2>
-                  <p>刷新任务按设备保存于当前页面会话中。点开设备即可查看倒计时、刷新结果与最近画面。</p>
+                  <p>蓝牙任务在当前页面调度；ESP32 任务持久化在服务器与设备上。点开设备即可查看其执行方式与同步状态。</p>
                 </div>
-                <button type="button" onClick={() => void selectNewDevice()}>添加设备</button>
+                <button type="button" onClick={openAddDevice}>添加设备</button>
               </header>
               {deviceSummaries.length ? (
                 <div className="device-registry-list">
@@ -5648,6 +5955,8 @@ export default function InkStudio() {
                       ? "任务异常"
                       : device.status === "writing"
                         ? "正在写入"
+                        : device.family === "esp32"
+                          ? device.online ? "Wi‑Fi 在线" : "离线 · 等待开机"
                         : device.tasks.length
                           ? "定时刷新中"
                           : device.authorized
@@ -5672,7 +5981,7 @@ export default function InkStudio() {
                           <span className={`status-dot ${device.status}`} aria-hidden="true" />
                           <span className="device-registry-copy">
                             <strong>{device.name}</strong>
-                            <small>{statusLabel}{!device.authorized ? " · 写入时可能需要重新选择" : ""}</small>
+                            <small>{statusLabel}{device.family === "bluetooth" && !device.authorized ? " · 写入时可能需要重新选择" : ""}</small>
                           </span>
                           <span className="device-registry-meta">
                             <b>{device.tasks.length}</b>
@@ -5683,7 +5992,7 @@ export default function InkStudio() {
                         </button>
                         {expanded && (
                           <div className="device-registry-tasks" id={`device-history-${device.id}`}>
-                            <section className={`device-calibration-panel${device.calibration ? " calibrated" : ""}`} aria-label={`${device.name} 设备校色`}>
+                            {deviceAdapter(device.skuId).supportsCalibration ? <section className={`device-calibration-panel${device.calibration ? " calibrated" : ""}`} aria-label={`${device.name} 设备校色`}>
                               <div className="device-calibration-copy">
                                 <span className="device-calibration-mark" aria-hidden="true">C</span>
                                 <div>
@@ -5722,7 +6031,21 @@ export default function InkStudio() {
                                   {device.calibration ? "重新校色" : "开始校色"}
                                 </button>
                               </div>
-                            </section>
+                            </section> : (
+                              <section className="device-adapter-panel" aria-label={`${device.name} 设备信息`}>
+                                <div>
+                                  <span className="device-calibration-mark" aria-hidden="true">W</span>
+                                  <div><strong>{deviceSku(device.skuId)?.displayName ?? device.name}</strong><small>{deviceSku(device.skuId)?.description}</small></div>
+                                </div>
+                                <dl>
+                                  <div><dt>适配器</dt><dd>{deviceAdapter(device.skuId).id}</dd></div>
+                                  <div><dt>渲染</dt><dd>{deviceAdapter(device.skuId).taskStatusCopy}</dd></div>
+                                  <div><dt>写入</dt><dd>设备 HTTPS 主动拉取</dd></div>
+                                  <div><dt>同步</dt><dd>{device.appliedRevision ?? 0} / {device.desiredRevision ?? 0}</dd></div>
+                                  <div><dt>固件</dt><dd>{device.firmwareVersion ?? "待上报"}</dd></div>
+                                </dl>
+                              </section>
+                            )}
                             {device.tasks.length ? (
                               <div className="device-history-task-list">
                                 {device.tasks.map((task) => (
@@ -5751,7 +6074,7 @@ export default function InkStudio() {
                 <div className="device-registry-empty">
                   <span className="status-dot idle" aria-hidden="true" />
                   <div><strong>还没有连接过设备</strong><p>点击“添加设备”，授权后会保留在这个列表中。</p></div>
-                  <button type="button" onClick={() => void selectNewDevice()}>选择 TodooCard</button>
+                  <button type="button" onClick={openAddDevice}>添加设备</button>
                 </div>
               )}
             </section>
@@ -5762,14 +6085,14 @@ export default function InkStudio() {
                 <p>保留 BluetoothDevice，定时到点后连接 GATT、写入、断开。支持 getDevices() 时，下次访问也可找回已授权设备。</p>
               </article>
               <article className="verdict-card caution">
-                <span>有条件</span>
-                <h2>使用 setTimeout 调度</h2>
-                <p>每次传输完成后再计算下一次时间，避免 setInterval 在写屏耗时较长时产生重叠任务。</p>
+                <span>ESP32 模式</span>
+                <h2>设备主动同步</h2>
+                <p>计划保存在设备端；开机联网后每 15 秒同步变更，按本机时钟执行并拉取最新画面。</p>
               </article>
               <article className="verdict-card no">
                 <span>无法保证</span>
-                <h2>浏览器关闭后无人值守</h2>
-                <p>后台节流、系统休眠和设备唤醒都会打断任务；Service Worker 也不能在后台调用 Web Bluetooth。</p>
+                <h2>蓝牙仍依赖浏览器</h2>
+                <p>TodooCard 的定时任务仍受后台节流、系统休眠与设备唤醒影响；已有操作习惯保持不变。</p>
               </article>
             </div>
             <div className="protocol-table">
@@ -5780,11 +6103,150 @@ export default function InkStudio() {
             </div>
             <div className="reliability-note">
               <span>长期无人值守建议</span>
-              <p>如果必须在浏览器关闭后也准时刷新，建议把调度与蓝牙下沉到常开网关（树莓派 / ESP32 / 原生 App），网页只负责编辑应用与下发计划。</p>
+              <p>M5 PaperColor 已采用设备侧调度；离线期间不会抓取，重新开机联网后会同步服务器上的新增、更新与删除。</p>
             </div>
           </section>
         )}
       </section>
+
+      {addDeviceOpen && (
+        <div className="calibration-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeAddDevice();
+        }}>
+          <section className="add-device-dialog" role="dialog" aria-modal="true" aria-labelledby="add-device-title">
+            <header className="calibration-header">
+              <div>
+                <span className="eyebrow">ADD DEVICE · ADAPTER READY</span>
+                <h2 id="add-device-title">
+                  {addDeviceStep === "family" ? "添加设备" : selectedDeviceSku?.displayName ?? "添加 ESP32 设备"}
+                </h2>
+                <p>现有蓝牙流程保持不变；Wi‑Fi 设备绑定后由硬件端保存计划并主动同步。</p>
+              </div>
+              <button type="button" onClick={closeAddDevice} disabled={deviceFlowBusy} aria-label="关闭添加设备">×</button>
+            </header>
+
+            {addDeviceStep === "family" && (
+              <div className="device-family-grid">
+                <button type="button" onClick={() => void selectNewBluetoothDevice()}>
+                  <span className="device-choice-icon bluetooth">⌁</span>
+                  <strong>蓝牙设备</strong>
+                  <p>TodooCard · 浏览器直接写入，原有使用方式不变。</p>
+                  <small>{bluetoothSupported ? "当前浏览器蓝牙可用" : "需要桌面 Chrome / Edge 或 Android Chromium"}</small>
+                  <i>选择设备 →</i>
+                </button>
+                <button type="button" onClick={() => setAddDeviceStep("sku")}>
+                  <span className="device-choice-icon wifi">W</span>
+                  <strong>ESP32 设备</strong>
+                  <p>通过 Wi‑Fi 拉取任务，关掉创作台后仍由设备按计划运行。</p>
+                  <small>支持设备码绑定与 USB 在线刷机</small>
+                  <i>选择型号 →</i>
+                </button>
+              </div>
+            )}
+
+            {addDeviceStep === "sku" && (
+              <div className="device-flow-panel">
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("family")}>← 返回设备类型</button>
+                <h3>选择具体型号</h3>
+                <div className="device-sku-grid">
+                  {deviceSkusForFamily("esp32").map((sku) => (
+                    <button type="button" key={sku.id} onClick={() => {
+                      setSelectedDeviceSkuId(sku.id as DeviceSkuId);
+                      setAddDeviceStep("method");
+                    }}>
+                      <span className="sku-screen"><b>M5</b><i>INKLOOP</i></span>
+                      <div><strong>{sku.displayName}</strong><p>{sku.description}</p><small>{sku.screen.width} × {sku.screen.height} · {sku.write.strategy === "https-image-pull" ? "Wi‑Fi 拉取" : sku.write.strategy}</small></div>
+                      <em>→</em>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {addDeviceStep === "method" && selectedDeviceSku && (
+              <div className="device-flow-panel">
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("sku")}>← 返回型号</button>
+                <h3>这台设备准备好了吗？</h3>
+                <div className="device-method-grid">
+                  <button type="button" onClick={() => setAddDeviceStep("claim")}>
+                    <b>01</b><strong>输入六位设备码</strong><p>瘦客户端已运行，屏幕上正在显示绑定码。</p><i>立即绑定 →</i>
+                  </button>
+                  <button type="button" onClick={() => setAddDeviceStep("flash")}>
+                    <b>02</b><strong>给设备刷机</strong><p>通过 USB 写入 Inkloop 瘦客户端，首次启动后再绑定。</p><i>开始刷机 →</i>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {addDeviceStep === "claim" && (
+              <div className="device-flow-panel device-code-panel">
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("method")}>← 返回连接方式</button>
+                <span className="device-code-mark">6</span>
+                <h3>输入屏幕上的六位设备码</h3>
+                <p>保持 M5 PaperColor 开机并联网。绑定成功后，任务会存储到设备端。</p>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  maxLength={6}
+                  value={deviceCode}
+                  onChange={(event) => {
+                    setDeviceCode(event.target.value.replace(/\D/g, "").slice(0, 6));
+                    setDeviceFlowError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void bindEsp32Device();
+                  }}
+                  aria-label="六位设备码"
+                  placeholder="000000"
+                />
+                {deviceFlowError && <p className="device-flow-error" role="alert">{deviceFlowError}</p>}
+                <button type="button" className="device-flow-primary" onClick={() => void bindEsp32Device()} disabled={deviceFlowBusy || deviceCode.length !== 6}>
+                  {deviceFlowBusy ? "正在绑定…" : "绑定设备"}
+                </button>
+              </div>
+            )}
+
+            {addDeviceStep === "flash" && (
+              <div className="device-flow-panel device-flash-panel">
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("method")} disabled={deviceFlowBusy}>← 返回连接方式</button>
+                <h3>插入 M5 PaperColor</h3>
+                <p>使用可传输数据的 USB 线连接设备和电脑。浏览器会在下一步让你选择串口，写入过程中不要拔线。</p>
+                <ol>
+                  <li><b>1</b><span><strong>连接设备</strong><small>请使用桌面版 Chrome 或 Edge</small></span></li>
+                  <li><b>2</b><span><strong>写入瘦客户端</strong><small>不会读取电脑上的其他文件</small></span></li>
+                  <li><b>3</b><span><strong>配置 Wi‑Fi 并绑定</strong><small>首次启动屏幕会给出引导和六位码</small></span></li>
+                </ol>
+                {firmwareProgress && (
+                  <div className="firmware-progress" aria-live="polite">
+                    <span><i style={{ width: `${firmwareProgress.percent}%` }} /></span>
+                    <div><strong>{firmwareProgress.message}</strong><b>{firmwareProgress.percent}%</b></div>
+                  </div>
+                )}
+                {deviceFlowError && <p className="device-flow-error" role="alert">{deviceFlowError}</p>}
+                <button type="button" className="device-flow-primary" onClick={() => void flashEsp32Device()} disabled={deviceFlowBusy}>
+                  {deviceFlowBusy ? "正在写入，请勿拔线…" : "选择串口并开始刷机"}
+                </button>
+              </div>
+            )}
+
+            {addDeviceStep === "flash-complete" && (
+              <div className="device-flow-panel device-flash-complete">
+                <span>✓</span>
+                <h3>瘦客户端已经写入</h3>
+                <p>设备重启后会显示 Wi‑Fi 配网指引；完成配网后，屏幕会显示六位硬件码和“请通过 Inkloop 添加设备绑定”。</p>
+                <button type="button" className="device-flow-primary" onClick={() => {
+                  setDeviceCode("");
+                  setDeviceFlowError(null);
+                  setAddDeviceStep("claim");
+                }}>我看到六位设备码了</button>
+                <button type="button" className="device-flow-secondary" onClick={closeAddDevice}>稍后再绑定</button>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
 
       {calibrationDevice && (
         <div className="calibration-backdrop" role="presentation" onMouseDown={(event) => {

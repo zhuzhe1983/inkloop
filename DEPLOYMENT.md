@@ -6,7 +6,7 @@ Inkloop 默认采用“双端发布”：同一个通过构建和测试的工作
 
 1. 在项目根目录执行构建和测试，任何失败都停止发布。
 2. 发布 ChatGPT Sites，保留现有公开域名和云端 D1。
-3. 将同一工作区同步到 `192.168.199.80:/volume1/docker/inkloop`。
+3. 将同一工作区同步到 `192.168.199.5:/volume1/docker/inkloop`（若服务器账户不允许覆盖源码，可直接传输本机生成的镜像）。
 4. 在本机生成 `linux/amd64` 镜像并传入 NAS，再执行 `docker compose up -d --no-build`。这样不依赖 NAS 访问 npm registry。
 5. 分别检查 Sites 页面、Docker 页面、`/api/health`、公开应用数据库、LLM 配置状态和地图配置状态。
 
@@ -33,13 +33,13 @@ Docker 中的 `llm-proxy` 只暴露在 Compose 私有网络，不映射宿主机
 - 项目标识保存在 `.openai/hosting.json`，不要删除或替换现有 `project_id`。
 - 使用 Sites 发布流程保存新版本并部署到现有站点。
 - 发布后至少验证首页、`/api/health`、`/api/apps`、一次 LLM 生成和地图配置状态。
-- 公开站点仍使用：<https://inkloop-todoo.zhuzhe1983.chatgpt.site/>
+- 公开站点使用：<https://inkloop.vibapp.ai/>（部署地址仍为 <https://inkloop-todoo.zhuzhe1983.chatgpt.site/>）。
 
 ## 4. Synology Docker 发布
 
 ### 目录和端口
 
-- 主机：`192.168.199.80`
+- 主机：`192.168.199.5`
 - 项目：`/volume1/docker/inkloop`
 - 默认局域网端口：`38080`
 - 数据目录：`/volume1/docker/inkloop/data`
@@ -64,8 +64,8 @@ Synology 的非交互 SSH PATH 不包含 `/usr/local/bin`，脚本和远程命�
 
 ```bash
 docker buildx build --platform linux/amd64 -t inkloop:local --load .
-docker save inkloop:local | gzip -1 | ssh 192.168.199.80 '/usr/local/bin/docker load'
-ssh 192.168.199.80 \
+docker save inkloop:local | gzip -1 | ssh 192.168.199.5 '/usr/local/bin/docker load'
+ssh 192.168.199.5 \
   'cd /volume1/docker/inkloop && /usr/local/bin/docker compose up -d --no-build --remove-orphans'
 ```
 
@@ -92,6 +92,14 @@ curl -fsS http://127.0.0.1:38080/api/apps
 
 ## 5. HTTPS 与 Web Bluetooth
 
-`http://192.168.199.80:38080` 可用于页面、LLM、天气、日历和地图测试，但浏览器通常不会在普通局域网 HTTP 地址开放 Web Bluetooth。要在 Docker 版本写入设备，需要在 Synology 反向代理或其他网关上配置可信 HTTPS 域名，并反向代理到 `http://127.0.0.1:38080`。
+`http://192.168.199.5:38080` 可用于页面、LLM、天气、日历和地图测试，但浏览器通常不会在普通局域网 HTTP 地址开放 Web Bluetooth 或 Web Serial。要在 Docker 版本写入或刷写设备，需要在 Synology 反向代理或其他网关上配置可信 HTTPS 域名，并反向代理到 `http://127.0.0.1:38080`。
 
 完成 HTTPS 后，验证浏览器地址栏为安全连接，再检查“蓝牙可用”和设备选择器。自签名但未被客户端信任的证书通常仍不满足安全上下文要求。
+
+## 6. ESP32 / M5 PaperColor
+
+M5 PaperColor 使用 `m5-papercolor-wifi-v1` adapter：服务端输出 400 × 600 或 600 × 400 PNG，设备通过 HTTPS 拉取，计划与最近执行状态保存在 LittleFS。设备关闭时不会抓取；重新开机后以 `desired_revision` / `applied_revision` 做完整任务集替换，因此服务器删除会在下一次在线同步时下发。
+
+网页刷机包位于 `public/firmware/m5-papercolor/`，构建源位于 `firmware/m5-papercolor/`。刷机前浏览器会校验镜像 SHA-256，并把当前创作台的 `/api/devices` 地址写入固件预留槽位，确保 Sites 与内网副本各自注册到当前环境。Web Serial 需要可信 HTTPS 安全上下文。
+
+Sites 使用 D1 保存设备与任务元数据，使用 R2 保存渲染帧；Docker 由 Wrangler 的本地 D1/R2 持久化目录保存同类数据。两端状态彼此独立。

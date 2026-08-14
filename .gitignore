@@ -45,3 +45,4 @@ next-env.d.ts
 /work/
 /config/.dev.vars
 /data/
+/firmware/**/.pio/
