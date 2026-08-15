@@ -982,7 +982,7 @@ async function prepareLocalImage(file: File) {
   const width = image.naturalWidth * scale;
   const height = image.naturalHeight * scale;
   context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
-  return canvas.toDataURL("image/jpeg", 0.78);
+  return canvas.toDataURL("image/png");
 }
 
 async function analyzeCalibrationPhoto(file: File) {
@@ -1056,7 +1056,7 @@ function drawImageCover(
   ctx.imageSmoothingQuality = "high";
   ctx.filter = renderMode === "inkloop-text"
     ? "saturate(0.96) contrast(0.96) brightness(1.02)"
-    : "none";
+    : "saturate(1.22) contrast(1.1) brightness(1.04)";
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
   ctx.restore();
 }
@@ -1301,13 +1301,14 @@ function drawGlowText(
 ) {
   ctx.save();
   ctx.lineJoin = "round";
-  ctx.strokeStyle = "#151816";
-  ctx.lineWidth = 4;
-  ctx.shadowColor = EPAPER_WHITE;
-  ctx.shadowBlur = 5;
+  ctx.strokeStyle = EPAPER_WHITE;
+  ctx.lineWidth = 6;
+  ctx.shadowColor = "rgba(250, 250, 248, 0.9)";
+  ctx.shadowBlur = 8;
   if (maxWidth) ctx.strokeText(text, x, y, maxWidth);
   else ctx.strokeText(text, x, y);
-  ctx.fillStyle = EPAPER_WHITE;
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#151816";
   if (maxWidth) ctx.fillText(text, x, y, maxWidth);
   else ctx.fillText(text, x, y);
   ctx.restore();
@@ -2570,6 +2571,10 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       }
       if (imageOnly) return true;
       if (artwork.layout === "fullscreen") {
+        // Text must stay crisp above the photo: quantize the picture first,
+        // then draw overlay copy and only dither the copy as final layer.
+        drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
+        if (display.renderMode === "official") quantizeTextRegion(ctx, 0, 0, width, height);
         if (display.border) drawOuterScreenBorder(ctx);
         drawQrElement(ctx, spec);
         return true;

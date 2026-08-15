@@ -64,14 +64,51 @@ function sourceHue(red: number, green: number, blue: number, maximum: number, ch
 }
 
 /**
- * Deterministic stochastic halftoning for Todoo's six native pigments.
+ * Deterministic clustered-dot halftoning for Todoo's six native pigments.
  *
  * Brightness is decomposed into black/white weights, while chroma is spread
  * continuously across the neighbouring native hue pigments. A stable
- * image-seeded threshold then selects a pigment for each pixel. This keeps
- * cyan as a blue/green mix and magenta as a blue/red mix without hard
- * thresholds or Floyd-Steinberg's directional feedback loops.
+ * Bayer-style clustered threshold matrix then selects a pigment for each
+ * pixel, so pigments gather into visible dots instead of white-noise grain.
+ * This keeps cyan as a blue/green mix and magenta as a blue/red mix without
+ * hard thresholds or Floyd-Steinberg's directional feedback loops.
  */
+
+// 8x8 clustered-dot matrix generated as a true 0..63 permutation: ranks grow
+// outward from the tile centre (ties broken by angle), so partial pigment
+// coverage forms a single growing blob instead of dispersed white-noise
+// pixels. The full 0..63 span keeps cumulative weights calibrated, which also
+// guarantees native source colours map back to themselves exactly.
+const CLUSTER_DOT_8 = (() => {
+  const cells: Array<{ x: number; y: number; distance: number; angle: number }> = [];
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      const dx = x - 3.5;
+      const dy = y - 3.5;
+      cells.push({
+        x,
+        y,
+        distance: dx * dx + dy * dy,
+        angle: Math.atan2(dy, dx),
+      });
+    }
+  }
+  cells.sort((a, b) => (a.distance - b.distance) || (a.angle - b.angle));
+  const matrix = new Uint8Array(64);
+  cells.forEach((cell, rank) => {
+    matrix[cell.y * 8 + cell.x] = rank;
+  });
+  return matrix;
+})();
+
+function clusteredThreshold(seed: number, x: number, y: number) {
+  const rank = (CLUSTER_DOT_8[(y & 7) * 8 + (x & 7)] + 0.5) / 64;
+  // Slight deterministic spatial jitter breaks the rigid 8px grid on smooth
+  // gradients while staying far below one rank step, so dots stay clustered.
+  const jitter = (deterministicUnit(seed, x, y) - 0.5) / 128;
+  return rank + jitter;
+}
+
 export function stochasticSixColorDither(
   source: Uint8ClampedArray,
   width: number,
@@ -119,7 +156,7 @@ export function stochasticSixColorDither(
         }
       }
 
-      const threshold = deterministicUnit(seed, pixelX, pixelY);
+      const threshold = clusteredThreshold(seed, pixelX, pixelY);
       let cumulative = 0;
       let selectedIndex = 0;
       for (let paletteIndex = 0; paletteIndex < weights.length; paletteIndex += 1) {

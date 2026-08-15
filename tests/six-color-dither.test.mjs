@@ -26,23 +26,28 @@ test("随机六色抖动对同一图片保持稳定，并只输出设备六色",
   }
 });
 
-test("随机网点保持灰阶平均亮度且不会形成单向误差扩散长条", () => {
+test("聚簇网点保持灰阶平均亮度且形成成簇墨点而非白噪声颗粒", () => {
   const width = 528;
-  const output = stochasticSixColorDither(solidImage(width, 24, [128, 128, 128]), width, 24, {
+  const height = 64;
+  const output = stochasticSixColorDither(solidImage(width, height, [128, 128, 128]), width, height, {
     protectNeutral: true,
   });
   let whitePixels = 0;
-  let horizontalTransitions = 0;
-  for (let y = 0; y < 24; y += 1) {
+  let whiteRuns = 0;
+  let wasWhite = false;
+  for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const offset = (y * width + x) * 4;
-      if (output[offset] === INKLOOP_PREVIEW_PALETTE[1][0]) whitePixels += 1;
-      if (x > 0 && output[offset] !== output[offset - 4]) horizontalTransitions += 1;
+      const isWhite = output[offset] === INKLOOP_PREVIEW_PALETTE[1][0];
+      if (isWhite) whitePixels += 1;
+      if (isWhite && !wasWhite) whiteRuns += 1;
+      wasWhite = isWhite;
     }
   }
-  const ratio = whitePixels / (width * 24);
-  assert.ok(ratio > 0.46 && ratio < 0.54, `白色占比异常：${ratio}`);
-  assert.ok(horizontalTransitions > width * 5, `随机网点不足：${horizontalTransitions}`);
+  const ratio = whitePixels / (width * height);
+  assert.ok(ratio > 0.44 && ratio < 0.56, `白色占比异常：${ratio}`);
+  const averageRun = whitePixels / Math.max(1, whiteRuns);
+  assert.ok(averageRun > 1.4, `墨点过于分散（近似白噪声），平均连续长度：${averageRun}`);
 });
 
 test("设备原生纯色不会被随机化", () => {
