@@ -631,6 +631,37 @@ input:focus-visible {
   color: white;
 }
 
+.topbar-locale {
+  display: none;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #c7cbc6;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.topbar-locale button {
+  min-width: 32px;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #5d655f;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.topbar-locale button:hover {
+  color: var(--ink);
+}
+
+.topbar-locale button.active {
+  background: var(--ink);
+  color: white;
+}
+
 .workspace {
   grid-column: 2;
   min-width: 0;
@@ -2658,6 +2689,7 @@ input:focus-visible {
 .filter-row {
   margin-bottom: 20px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -2727,6 +2759,146 @@ input:focus-visible {
   height: 112px;
   margin-top: 66px;
   margin-bottom: 66px;
+}
+
+.product-grid {
+  align-items: stretch;
+}
+
+.product-card {
+  min-width: 0;
+  min-height: 246px;
+  padding: 18px;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 20px;
+  border: 1px solid #ced2cd;
+  border-radius: 13px;
+  background: rgba(255, 254, 250, 0.86);
+  color: inherit;
+  text-decoration: none;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.product-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 35px rgba(21, 26, 23, 0.08);
+}
+
+.product-screen {
+  width: 112px;
+  padding: 10px 8px 8px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 6px solid #1b211d;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 28%),
+    #efe9c6;
+  box-shadow: 5px 7px 0 #d9d9d2;
+  color: var(--ink);
+}
+
+.product-screen small,
+.product-screen b,
+.product-screen em {
+  display: block;
+}
+
+.product-screen small {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.product-screen b {
+  margin-top: 10px;
+  font-size: 15px;
+  line-height: 1.05;
+  letter-spacing: -0.4px;
+}
+
+.product-screen em {
+  margin-top: auto;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.product-screen-swatches {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 2px;
+}
+
+.product-screen-swatches i {
+  display: block;
+  height: 8px;
+  border: 1px solid rgba(21, 26, 23, 0.16);
+}
+
+.product-card-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.product-card-copy > small {
+  color: #7b837c;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+}
+
+.product-card-copy strong {
+  margin-top: 4px;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.product-card-copy p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.product-card-copy dl {
+  margin: 14px 0 0;
+  display: grid;
+  gap: 6px;
+}
+
+.product-card-copy dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #687169;
+  font-size: 12px;
+}
+
+.product-card-copy dt {
+  font-weight: 700;
+}
+
+.product-card-copy dd {
+  margin: 0;
+  font-weight: 800;
+  color: var(--ink);
+  text-align: right;
+}
+
+.product-card-cta {
+  margin-top: auto;
+  padding-top: 16px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .mini-screen.has-artwork > * {
@@ -4630,51 +4802,70 @@ input:focus-visible {
 
   .app-shell {
     display: block;
-    padding-bottom: 68px;
+    padding-bottom: 74px;
   }
 
   .sidebar {
     inset: auto 0 0;
     width: auto;
-    height: 68px;
-    padding: 8px 10px;
+    height: 74px;
+    padding: 6px 6px;
     display: block;
   }
 
   .brand,
   .sidebar-device,
-  .product-link {
+  .product-link,
+  .sidebar-locale {
     display: none;
   }
 
   .sidebar nav {
     height: 100%;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 2px;
   }
 
   .sidebar nav button {
     height: 100%;
-    padding: 5px 2px;
+    padding: 4px 1px;
     flex-direction: column;
     justify-content: center;
-    gap: 3px;
+    gap: 2px;
     text-align: center;
-    font-size: 12px;
+    font-size: 10px;
   }
 
   .sidebar nav button span {
-    font-size: 15px;
+    font-size: 14px;
+  }
+
+  .sidebar nav button .nav-label {
+    max-width: 100%;
+    white-space: normal;
+    line-height: 1.15;
+    font-size: 10px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: unset;
   }
 
   .workspace {
-    min-height: calc(100vh - 68px);
+    min-height: calc(100vh - 74px);
   }
 
   .topbar {
-    height: 64px;
-    padding: 0 16px;
+    height: auto;
+    min-height: 64px;
+    padding: 10px 16px;
+    flex-wrap: wrap;
+  }
+
+  .topbar-locale {
+    display: flex;
   }
 
   .topbar .guide-button {
@@ -4805,21 +4996,36 @@ input:focus-visible {
   .toast {
     left: 16px;
     right: 16px;
-    bottom: 82px;
+    bottom: 88px;
   }
 }
 
 @media (max-width: 560px) {
+  .topbar > div:first-child {
+    min-width: 0;
+    flex: 1;
+  }
+
   .topbar > div:first-child .eyebrow {
     display: none;
   }
 
   .topbar strong {
-    max-width: 84px;
+    max-width: 160px;
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .product-card {
+    grid-template-columns: 92px minmax(0, 1fr);
+    padding: 14px;
+    gap: 14px;
+  }
+
+  .product-screen {
+    width: 92px;
   }
 
   .share-template-button {
@@ -4999,6 +5205,10 @@ input:focus-visible {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
+}
+
+.map-location-options.map-type-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .map-location-options button {
@@ -5517,7 +5727,8 @@ input:focus-visible {
 }
 
 @media (max-width: 480px) {
-  .map-location-options {
+  .map-location-options,
+  .map-location-options.map-type-options {
     grid-template-columns: 1fr;
   }
 

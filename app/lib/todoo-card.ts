@@ -24,6 +24,7 @@ type AuthorizedBluetoothDevice = { id: string; name?: string | null };
 type WriteCanvasOptions = {
   palette?: Array<[number, number, number] | null>;
   dither?: boolean;
+  renderProfile?: "verified" | "skillT3" | "skill-t3";
 };
 
 const stateProgress: Record<string, TodooProgress> = {
@@ -152,9 +153,10 @@ export class TodooCard {
       {
         disconnectAfterWrite,
         palette: options.palette,
-        // The UI canvas is already rendered to the physical six-colour palette.
-        // A second error-diffusion pass creates visible bands and worm patterns.
-        dither: options.dither ?? false,
+        // Official TodooCard_Skills path: one raster Floyd-Steinberg pass on the
+        // T3 palette. Transport stays on the verified 219120-byte FEF profile.
+        dither: options.dither ?? true,
+        renderProfile: options.renderProfile ?? "skillT3",
       },
     );
   }

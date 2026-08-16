@@ -1,3 +1,7 @@
+import { env } from "cloudflare:workers";
+
+import { outboundUrl } from "../../lib/outbound-url";
+
 const DEFAULT_WIDTH = 528;
 const DEFAULT_HEIGHT = 792;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -42,7 +46,7 @@ function cleanSeed(value: string | null) {
 }
 
 async function fetchImage(url: string) {
-  const response = await fetch(url, {
+  const response = await fetch(outboundUrl(url, env.OUTBOUND_PROXY_BASE_URL), {
     redirect: "follow",
     headers: {
       Accept: "image/avif,image/webp,image/jpeg,image/png",
@@ -56,7 +60,11 @@ async function fetchImage(url: string) {
   if (declaredSize > MAX_IMAGE_BYTES) return null;
   const body = await response.arrayBuffer();
   if (!body.byteLength || body.byteLength > MAX_IMAGE_BYTES) return null;
-  return { body, contentType, sourceUrl: response.url };
+  return {
+    body,
+    contentType,
+    sourceUrl: response.headers.get("x-upstream-url") || response.url,
+  };
 }
 
 async function fetchCommonsImage(query: string, seed: number, requestWidth: number, requestHeight: number) {
@@ -83,7 +91,7 @@ async function fetchCommonsImage(query: string, seed: number, requestWidth: numb
     format: "json",
     formatversion: "2",
   }).toString();
-  const response = await fetch(apiUrl, {
+  const response = await fetch(outboundUrl(apiUrl, env.OUTBOUND_PROXY_BASE_URL), {
     headers: {
       Accept: "application/json",
       "Api-User-Agent": "Inkloop/1.0 (TodooCard artwork preview)",

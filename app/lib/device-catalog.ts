@@ -1,4 +1,5 @@
-import { t } from "./i18n-runtime";
+import type { Locale } from "./i18n-types";
+
 export type DeviceFamily = "bluetooth" | "esp32";
 export type DeviceTransport = "web-bluetooth" | "wifi-pull";
 export type DeviceScheduleOwner = "browser" | "device";
@@ -11,6 +12,8 @@ export type DeviceSku = {
   model: string;
   displayName: string;
   description: string;
+  sizeInches: number;
+  officialUrls: Record<Locale, string>;
   screen: {
     technology: "spectra6" | "six-color-epaper";
     width: number;
@@ -46,7 +49,13 @@ export const DEVICE_SKUS = {
     manufacturer: "Todoo",
     model: "TodooCard 3.7",
     displayName: "TodooCard",
-    description: t("528 × 792 六色蓝牙电子纸卡片"),
+    description: "528 × 792 六色蓝牙电子纸卡片",
+    sizeInches: 3.7,
+    officialUrls: {
+      zh: "https://p.todoo.tech/?lang=zh",
+      en: "https://p.todoo.tech/?lang=en",
+      ja: "https://p.todoo.tech/?lang=ja",
+    },
     screen: {
       technology: "six-color-epaper",
       width: 528,
@@ -75,7 +84,13 @@ export const DEVICE_SKUS = {
     manufacturer: "M5Stack",
     model: "PaperColor C151",
     displayName: "M5 PaperColor",
-    description: t("400 × 600 Spectra 6 Wi‑Fi 彩色电子纸"),
+    description: "400 × 600 Spectra 6 Wi‑Fi 彩色电子纸",
+    sizeInches: 4,
+    officialUrls: {
+      zh: "https://docs.m5stack.com/zh_CN/core/PaperColor",
+      en: "https://docs.m5stack.com/en/core/PaperColor",
+      ja: "https://docs.m5stack.com/ja/core/PaperColor",
+    },
     screen: {
       technology: "spectra6",
       width: 400,
@@ -123,7 +138,7 @@ export const DEVICE_ADAPTERS: Record<DeviceSkuId, DeviceAdapter> = {
     supportsCalibration: true,
     requiresBrowserDriver: true,
     renderTarget: () => ({ width: 528, height: 792 }),
-    taskStatusCopy: t("浏览器渲染 · GATT 分包写入"),
+    taskStatusCopy: "浏览器渲染 · GATT 分包写入",
   },
   "m5-papercolor-c151": {
     id: "m5-papercolor-wifi-v1",
@@ -134,7 +149,7 @@ export const DEVICE_ADAPTERS: Record<DeviceSkuId, DeviceAdapter> = {
     renderTarget: (orientation) => orientation === "landscape"
       ? { width: 600, height: 400 }
       : { width: 400, height: 600 },
-    taskStatusCopy: t("服务端 PNG · HTTPS 主动拉取"),
+    taskStatusCopy: "服务端 PNG · HTTPS 主动拉取",
   },
 };
 
@@ -144,6 +159,29 @@ export function deviceSku(id: string | null | undefined): DeviceSku | null {
 
 export function deviceSkusForFamily(family: DeviceFamily) {
   return Object.values(DEVICE_SKUS).filter((sku) => sku.family === family);
+}
+
+export function allDeviceSkus() {
+  return Object.values(DEVICE_SKUS);
+}
+
+export function deviceManufacturers() {
+  return [...new Set(Object.values(DEVICE_SKUS).map((sku) => sku.manufacturer))];
+}
+
+export function filterDeviceSkus(filters: {
+  family?: DeviceFamily | "all" | null;
+  manufacturer?: string | "all" | null;
+} = {}) {
+  return Object.values(DEVICE_SKUS).filter((sku) => {
+    if (filters.family && filters.family !== "all" && sku.family !== filters.family) return false;
+    if (filters.manufacturer && filters.manufacturer !== "all" && sku.manufacturer !== filters.manufacturer) return false;
+    return true;
+  });
+}
+
+export function officialProductUrl(sku: DeviceSku, locale: Locale) {
+  return sku.officialUrls[locale] ?? sku.officialUrls.zh;
 }
 
 export function deviceAdapter(id: string | null | undefined) {

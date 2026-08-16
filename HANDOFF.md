@@ -73,6 +73,7 @@ npm run lint
 | `LLM_MODEL` | 否 | 界面默认模型 ID；用户可从 `/models` 返回的列表中切换，为空时默认自动选择。 |
 | `BAIDU_MAP_AK` | 地图功能需要 | 百度地图 Web 服务端 AK。只允许配置在服务端，未配置时地图编辑器会给出可恢复提示。 |
 | `BAIDU_MAP_BASE_URL` | Docker 需要 | 百度 API 根地址；Docker 指向 Compose 私有 Node 代理，Sites 与本地留空直连百度。 |
+| `OUTBOUND_PROXY_BASE_URL` | Docker 需要 | 图片和天气出站代理；Docker 指向 `http://llm-proxy:8788/outbound`，Sites 与本地留空直连上游。 |
 
 本地密钥只写入 `.env`，不要提交。线上变量通过 Sites 运行环境维护；不要把密钥写入 `.openai/hosting.json` 或前端代码。
 
@@ -137,13 +138,13 @@ M5 PaperColor 已接入 ESP32 Wi‑Fi adapter。该路径将计划持久化到�
 
 ### 六色渲染
 
-屏幕只支持黑、白、黄、红、蓝、绿，不存在真正的浅色。日程卡的浅底使用规则稀疏网点模拟，左侧用实色分类条，正文保持黑色高对比。不要用 CSS 半透明或照片式随机抖动替代这套规则，否则真机容易出现高噪点。
+屏幕只支持黑、白、黄、红、蓝、绿，不存在真正的浅色。预览画布保持全彩原图，不再预量化。TodooCard 写入只做一次官方 `TodooCard_Skills` 量化：T3 色板（绿 `[0,255,0]`）、普通 RGB 距离、逐行 Floyd-Steinberg。传输仍用已验证的 219120-byte FEF 帧，不切换 218893-byte skill 短帧。
 
-纯文字、日历和课程表默认使用 `Inkloop text` 低噪点渲染；照片使用 `Official Skill`。当前没有 `Inkloop Image` 模式。
+纯文字、日历和课程表默认 `Inkloop text`：写入按最近六色、不再抖动。照片默认 `Official Skill`。日程卡的浅底继续用规则稀疏网点模拟，不要用 CSS 半透明替代。
 
 ### 图片
 
-`/api/artwork` 按屏幕方向请求 528 × 792 或 792 × 528 图片：
+`/api/artwork` 按屏幕方向请求 528 × 792 或 792 × 528 图片。Docker 中这些请求经 Node 私有代理出站，避免 workerd 与部分上游证书链不兼容：
 
 1. LoremFlickr 主题图片。
 2. Wikimedia Commons 搜索结果。

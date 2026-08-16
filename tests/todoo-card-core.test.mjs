@@ -365,6 +365,84 @@ test("ImageData 被量化为协议六色，透明像素合成到白底", () => {
   }
 });
 
+function officialSkillSixColorCodes(rgba, width, height) {
+  const palette = [
+    [0, 0, 0, 0],
+    [255, 255, 255, 1],
+    [255, 255, 0, 2],
+    [255, 0, 0, 3],
+    [0, 0, 255, 5],
+    [0, 255, 0, 6],
+  ];
+  const working = Float32Array.from(rgba);
+  const codes = new Uint8Array(width * height);
+  const addError = (x, y, red, green, blue, weight) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const offset = (y * width + x) * 4;
+    working[offset] += red * weight;
+    working[offset + 1] += green * weight;
+    working[offset + 2] += blue * weight;
+  };
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const red = Math.min(255, Math.max(0, working[offset]));
+      const green = Math.min(255, Math.max(0, working[offset + 1]));
+      const blue = Math.min(255, Math.max(0, working[offset + 2]));
+      let best = palette[0];
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const color of palette) {
+        const distance =
+          (red - color[0]) ** 2 +
+          (green - color[1]) ** 2 +
+          (blue - color[2]) ** 2;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = color;
+        }
+      }
+      codes[y * width + x] = best[3];
+      addError(x + 1, y, red - best[0], green - best[1], blue - best[2], 7 / 16);
+      addError(x - 1, y + 1, red - best[0], green - best[1], blue - best[2], 3 / 16);
+      addError(x, y + 1, red - best[0], green - best[1], blue - best[2], 5 / 16);
+      addError(x + 1, y + 1, red - best[0], green - best[1], blue - best[2], 1 / 16);
+    }
+  }
+  return codes;
+}
+
+test("skillT3 写入复现官方 TodooCard_Skills 的 raster Floyd-Steinberg", () => {
+  const rgba = new Uint8ClampedArray(PIXELS * 4);
+  for (let y = 0; y < HEIGHT; y += 1) {
+    for (let x = 0; x < WIDTH; x += 1) {
+      const offset = (y * WIDTH + x) * 4;
+      rgba[offset] = Math.round((x / (WIDTH - 1)) * 255);
+      rgba[offset + 1] = Math.round((y / (HEIGHT - 1)) * 180);
+      rgba[offset + 2] = 48;
+      rgba[offset + 3] = 255;
+    }
+  }
+  rgba.set([255, 255, 0, 255], 0);
+  rgba.set([0, 255, 0, 255], ((HEIGHT * WIDTH) - 1) * 4);
+  const payload = TodooCard.encodeImageData(
+    { width: WIDTH, height: HEIGHT, data: rgba },
+    { dither: true, renderProfile: "skill-t3" },
+  );
+  const decoded = TodooCard.decodePayloadToVisibleCodes(payload);
+  const expected = officialSkillSixColorCodes(rgba, WIDTH, HEIGHT);
+  assert.equal(decoded[0], TODOO_COLOR_CODES.yellow);
+  assert.equal(decoded[decoded.length - 1], TODOO_COLOR_CODES.green);
+  assert.deepEqual(Array.from(decoded), Array.from(expected));
+
+  const verified = TodooCard.decodePayloadToVisibleCodes(
+    TodooCard.encodeImageData(
+      { width: WIDTH, height: HEIGHT, data: rgba },
+      { dither: true, renderProfile: "verified" },
+    ),
+  );
+  assert.notDeepEqual(Array.from(verified), Array.from(expected));
+});
+
 test("源图在 Canvas 分配前执行 50MP 资源上限", async () => {
   await assert.rejects(
     TodooCard.encodeImageSource(new Blob(["x"]), { maxInputBytes: 0 }),

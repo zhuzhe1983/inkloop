@@ -1,3 +1,7 @@
+import { env } from "cloudflare:workers";
+
+import { outboundUrl } from "../../lib/outbound-url";
+
 type GeocodingResponse = {
   results?: Array<{
     name?: string;
@@ -64,7 +68,7 @@ function validNumber(value: unknown): value is number {
 }
 
 async function fetchJson<T>(url: URL | string, label: string) {
-  const response = await fetch(url, {
+  const response = await fetch(outboundUrl(url, env.OUTBOUND_PROXY_BASE_URL), {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(8_000),
   });

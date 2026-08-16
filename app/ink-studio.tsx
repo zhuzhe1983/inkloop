@@ -22,6 +22,8 @@ import {
   generateInkApp,
   inferWeatherCity,
   intervalFor,
+  MAP_TYPE_OPTIONS,
+  normalizeMapType,
   scheduleLabel,
   starterApp,
   starterPrompt,
@@ -45,7 +47,7 @@ import {
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
 import { isRecoverableBluetoothError, writeWithBluetoothRecovery } from "./lib/bluetooth-recovery";
-import { deviceAdapter, deviceSku, deviceSkusForFamily, type DeviceFamily, type DeviceSkuId } from "./lib/device-catalog";
+import { deviceAdapter, deviceSku, deviceSkusForFamily, deviceManufacturers, filterDeviceSkus, officialProductUrl, type DeviceFamily, type DeviceSkuId } from "./lib/device-catalog";
 import {
   claimEsp32Device,
   deleteEsp32Task,
@@ -62,7 +64,7 @@ import {
   type DeviceColorCalibration,
 } from "./lib/device-calibration";
 
-type Tab = "studio" | "mine" | "explore" | "device";
+type Tab = "studio" | "mine" | "explore" | "device" | "products";
 type Toast = { tone: "success" | "error" | "info"; message: string } | null;
 type ToastTone = NonNullable<Toast>["tone"];
 type GeneratorStatus = "checking" | "online" | "local";
@@ -237,6 +239,7 @@ function mapApiParams(map: MapSpec, mode: "resolve" | "image", orientation?: Scr
     coordtype: map.coordinateType,
     zoom: String(map.zoomLevel),
     marker: String(map.marker),
+    t: String(normalizeMapType(map.mapType)),
   });
   if (typeof map.latitude === "number") params.set("lat", String(map.latitude));
   if (typeof map.longitude === "number") params.set("lng", String(map.longitude));
@@ -308,10 +311,11 @@ function calendarSourceName(url: string, position: number) {
 }
 
 const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
-  { id: "studio", label: tRuntime("创作台"), glyph: "✦" },
-  { id: "mine", label: tRuntime("我的模版"), glyph: "▦" },
-  { id: "explore", label: tRuntime("模板市场"), glyph: "◎" },
-  { id: "device", label: tRuntime("设备中心"), glyph: "⌁" },
+  { id: "studio", label: "创作台", glyph: "✦" },
+  { id: "mine", label: "我的模版", glyph: "▦" },
+  { id: "explore", label: "模板市场", glyph: "◎" },
+  { id: "device", label: "设备中心", glyph: "⌁" },
+  { id: "products", label: "产品信息", glyph: "▣" },
 ];
 
 const samplePrompts = [
@@ -362,8 +366,8 @@ const renderModeOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "official", label: "Official Skill", description: tRuntime("稳定随机网点，保留照片渐变并减少条纹与撕裂") },
-  { value: "inkloop-text", label: "Inkloop text", description: tRuntime("低噪点，适合课程表、日历和纯文字画面") },
+  { value: "official", label: "Official Skill", description: tRuntime("预览保持原图；写入按官方 skill 做一次六色 Floyd-Steinberg") },
+  { value: "inkloop-text", label: "Inkloop text", description: tRuntime("预览保持原图；文字画面按最近六色写入，不再二次网点") },
 ];
 
 const knownWeatherCities = [
@@ -425,7 +429,13 @@ function upgradeLegacyApp(savedApp: InkApp): InkApp {
     spec: {
       ...savedApp.spec,
       display: displaySettings(savedApp.spec, Boolean(savedApp.localImage)),
-      map: savedApp.spec.map ? { ...savedApp.spec.map, style: "balanced" } : undefined,
+      map: savedApp.spec.map
+        ? {
+            ...savedApp.spec.map,
+            style: "balanced",
+            mapType: normalizeMapType(savedApp.spec.map.mapType),
+          }
+        : undefined,
     },
   };
   const prompt = savedApp.prompt || "";
@@ -1048,7 +1058,6 @@ function drawImageCover(
   y: number,
   width: number,
   height: number,
-  renderMode: ScreenRenderMode,
 ) {
   const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
   const drawWidth = image.naturalWidth * scale;
@@ -1056,9 +1065,6 @@ function drawImageCover(
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.filter = renderMode === "inkloop-text"
-    ? "saturate(0.96) contrast(0.96) brightness(1.02)"
-    : "saturate(1.22) contrast(1.1) brightness(1.04)";
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
   ctx.restore();
 }
@@ -2282,7 +2288,6 @@ async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, qu
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.filter = "saturate(0.88) contrast(1.02) brightness(1.03)";
     ctx.drawImage(image, 0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.restore();
     if (quantize) {
@@ -2578,7 +2583,7 @@ async function drawScreen(
     try {
       if (localImage || artwork.mode === "web") {
         const image = await loadArtwork(localImage || artworkUrl(artwork, screenOrientation(spec)));
-        drawImageCover(ctx, image, area.x, area.y, area.width, area.height, display.renderMode);
+        drawImageCover(ctx, image, area.x, area.y, area.width, area.height);
         if (quantize) quantizeRegion(ctx, area.x, area.y, area.width, area.height, display.renderMode);
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
@@ -2700,7 +2705,7 @@ async function renderScreenToCanvas(canvas: HTMLCanvasElement, spec: ScreenSpec,
   const staging = document.createElement("canvas");
   staging.width = width;
   staging.height = height;
-  const usedArtwork = await drawScreen(staging, spec, localImage);
+  const usedArtwork = await drawScreen(staging, spec, localImage, false);
   const context = canvas.getContext("2d");
   if (!context) return usedArtwork;
   if (canvas.width !== width || canvas.height !== height) {
@@ -2897,6 +2902,43 @@ function DeviceTaskCard({
   );
 }
 
+const localeShortLabels: Record<Locale, string> = {
+  zh: "中",
+  en: "EN",
+  ja: "日",
+};
+
+function LocaleSwitch({
+  locale,
+  setLocale,
+  t,
+  compact = false,
+  className,
+}: {
+  locale: Locale;
+  setLocale: (next: Locale) => void;
+  t: (zh: string) => string;
+  compact?: boolean;
+  className: string;
+}) {
+  return (
+    <div className={className} role="group" aria-label={t("界面语言")}>
+      {localeOptions.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={locale === option.value ? "active" : ""}
+          onClick={() => setLocale(option.value)}
+          aria-pressed={locale === option.value}
+          title={option.label}
+        >
+          {compact ? localeShortLabels[option.value] : option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function InkStudio() {
   const { locale, setLocale, t } = useI18n();
   const [tab, setTab] = useState<Tab>("studio");
@@ -2936,6 +2978,8 @@ export default function InkStudio() {
   const [addDeviceOpen, setAddDeviceOpen] = useState(false);
   const [addDeviceStep, setAddDeviceStep] = useState<AddDeviceStep>("family");
   const [selectedDeviceSkuId, setSelectedDeviceSkuId] = useState<DeviceSkuId | null>(null);
+  const [productFamily, setProductFamily] = useState<"all" | DeviceFamily>("all");
+  const [productBrand, setProductBrand] = useState<"all" | string>("all");
   const [deviceCode, setDeviceCode] = useState("");
   const [deviceFlowBusy, setDeviceFlowBusy] = useState(false);
   const [deviceFlowError, setDeviceFlowError] = useState<string | null>(null);
@@ -3197,7 +3241,7 @@ export default function InkStudio() {
       const templateId = params.get("template")?.trim() || legacyAppId;
       const requestedView = params.get("view");
       if (!templateId) {
-        setTab(requestedView === "mine" || requestedView === "explore" || requestedView === "device"
+        setTab(requestedView === "mine" || requestedView === "explore" || requestedView === "device" || requestedView === "products"
           ? requestedView
           : "studio");
         return;
@@ -3668,6 +3712,9 @@ export default function InkStudio() {
         zoomLevel: patch.zoomLevel === undefined
           ? current.spec.map.zoomLevel
           : Math.min(19, Math.max(3, Math.round(patch.zoomLevel))),
+        mapType: patch.mapType === undefined
+          ? normalizeMapType(current.spec.map.mapType)
+          : normalizeMapType(patch.mapType),
       };
       return {
         ...current,
@@ -4372,15 +4419,14 @@ export default function InkStudio() {
         if (renderInPreview) setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       }
       lastCanvas = outputCanvas.toDataURL("image/jpeg", 0.76);
-      const deviceProfile = deviceProfilesRef.current.find((profile) => profile.id === deviceId);
-      const calibrationPalette = deviceProfile?.colorCorrectionEnabled !== false
-        ? deviceProfile?.calibration?.palette
-        : undefined;
+      const renderMode = displaySettings(transferApp.spec, Boolean(transferApp.localImage)).renderMode;
       const deviceCanvas = canvasForDevice(outputCanvas, screenOrientation(transferApp.spec));
       await writeWithBluetoothRecovery({
         forceReconnect: options.reconnect,
         reconnect: () => driver.reconnect(),
-        write: () => driver.writeCanvas(deviceCanvas, true, { palette: calibrationPalette }),
+        write: () => driver.writeCanvas(deviceCanvas, true, renderMode === "inkloop-text"
+          ? { renderProfile: "verified", dither: false }
+          : { renderProfile: "skillT3", dither: true }),
         onRecovering: () => {
           if (!taskId) setProgress({ phase: "connecting", percent: 2, message: tRuntime("连接中断，正在自动重连…") });
           if (taskId) {
@@ -4606,7 +4652,8 @@ export default function InkStudio() {
     }
   };
 
-  const contentTitle = tab === "mine" ? tRuntime("我的模版") : tab === "explore" ? tRuntime("模板市场") : tab === "device" ? tRuntime("设备中心") : null;
+  const contentTitle = tab === "mine" ? t("我的模版") : tab === "explore" ? t("模板市场") : tab === "device" ? t("设备中心") : tab === "products" ? t("产品信息") : null;
+  const visibleProductSkus = filterDeviceSkus({ family: productFamily, manufacturer: productBrand });
   const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
   const previewDimensions = screenDimensions(app.spec);
   const previewLandscape = screenOrientation(app.spec) === "landscape";
@@ -4666,10 +4713,10 @@ export default function InkStudio() {
               key={item.id}
               className={tab === item.id ? "active" : ""}
               onClick={() => navigateToTab(item.id)}
-              title={sidebarCollapsed ? item.label : undefined}
+              title={sidebarCollapsed ? t(item.label) : undefined}
             >
               <span className="nav-glyph" aria-hidden="true">{item.glyph}</span>
-              <span className="nav-label">{item.label}</span>
+              <span className="nav-label">{t(item.label)}</span>
             </button>
           ))}
         </nav>
@@ -4705,23 +4752,7 @@ export default function InkStudio() {
             <span aria-hidden="true">＋</span><span className="add-device-label">{t("添加设备")}</span>
           </button>
         </div>
-        <div className="sidebar-locale" role="group" aria-label={t("界面语言")}>
-          {localeOptions.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={locale === option.value ? "active" : ""}
-              onClick={() => setLocale(option.value)}
-              aria-pressed={locale === option.value}
-              title={t("界面语言")}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <a className="product-link" href={`https://p.todoo.tech/?lang=${locale}`} target="_blank" rel="noreferrer">
-          <span className="product-link-label">{t("产品信息")}</span><span aria-hidden="true">↗</span>
-        </a>
+        <LocaleSwitch className="sidebar-locale" locale={locale} setLocale={setLocale} t={t} />
       </aside>
 
       <section className="workspace">
@@ -4731,6 +4762,7 @@ export default function InkStudio() {
             <strong>{contentTitle ?? app.title}</strong>
           </div>
           <div className="topbar-actions">
+            <LocaleSwitch className="topbar-locale" locale={locale} setLocale={setLocale} t={t} compact />
             <button type="button" className="guide-button" onClick={() => setGuideOpen(true)}>
               <span>?</span> {t("使用说明")}
             </button>
@@ -5205,6 +5237,26 @@ export default function InkStudio() {
                             placeholder={app.spec.map.address || app.spec.map.query || tRuntime("例如：集合点")}
                           />
                         </label>
+                      </div>
+
+                      <div className="map-editor-group">
+                        <div className="map-editor-label">
+                          <strong>{t("地图类型")}</strong>
+                          <small>{t("道路图、卫星图，或卫星叠加道路")}</small>
+                        </div>
+                        <div className="map-location-options map-type-options" role="group" aria-label={tRuntime("地图类型")}>
+                          {MAP_TYPE_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              className={normalizeMapType(app.spec.map.mapType) === option.value ? "selected" : ""}
+                              onClick={() => updateMap({ mapType: option.value })}
+                            >
+                              <strong>{t(option.label)}</strong>
+                              <small>{t(option.detail)}</small>
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
                       <div className="map-editor-group map-zoom-group">
@@ -5955,6 +6007,99 @@ export default function InkStudio() {
           </section>
         )}
 
+        {tab === "products" && (
+          <section className="collection-view products-view">
+            <div className="collection-hero">
+              <span className="eyebrow">SUPPORTED DISPLAYS</span>
+              <h1>{t("已支持的墨水屏")}</h1>
+              <p>{t("按连接方式和品牌筛选，查看不同类型支持的墨水屏。")}</p>
+            </div>
+            <div className="filter-row" role="group" aria-label={t("连接方式")}>
+              {([
+                { id: "all" as const, label: "全部类型" },
+                { id: "bluetooth" as const, label: "蓝牙" },
+                { id: "esp32" as const, label: "ESP32" },
+              ]).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={productFamily === item.id ? "active" : ""}
+                  onClick={() => setProductFamily(item.id)}
+                >
+                  {t(item.label)}
+                </button>
+              ))}
+            </div>
+            <div className="filter-row" role="group" aria-label={t("品牌")}>
+              <button
+                type="button"
+                className={productBrand === "all" ? "active" : ""}
+                onClick={() => setProductBrand("all")}
+              >
+                {t("全部品牌")}
+              </button>
+              {deviceManufacturers().map((brand) => (
+                <button
+                  key={brand}
+                  type="button"
+                  className={productBrand === brand ? "active" : ""}
+                  onClick={() => setProductBrand(brand)}
+                >
+                  {brand}
+                </button>
+              ))}
+            </div>
+            {visibleProductSkus.length ? (
+              <div className="card-grid product-grid">
+                {visibleProductSkus.map((sku) => (
+                  <a
+                    key={sku.id}
+                    className="product-card"
+                    href={officialProductUrl(sku, locale)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <div
+                      className="product-screen"
+                      style={{ aspectRatio: `${sku.screen.width} / ${sku.screen.height}` }}
+                      aria-hidden="true"
+                    >
+                      <small>{sku.manufacturer}</small>
+                      <b>{sku.screen.width}×{sku.screen.height}</b>
+                      <em>{sku.sizeInches} {t("英寸")}</em>
+                      <span className="product-screen-swatches">
+                        <i style={{ background: "#151a17" }} />
+                        <i style={{ background: "#f7f4e8" }} />
+                        <i style={{ background: "#e5c900" }} />
+                        <i style={{ background: "#dc3f2f" }} />
+                        <i style={{ background: "#2756c7" }} />
+                        <i style={{ background: "#087c4e" }} />
+                      </span>
+                    </div>
+                    <div className="product-card-copy">
+                      <small>{sku.manufacturer} · {sku.family === "bluetooth" ? t("蓝牙") : t("ESP32")}</small>
+                      <strong>{sku.displayName}</strong>
+                      <p>{t(sku.description)}</p>
+                      <dl>
+                        <div><dt>{t("连接方式")}</dt><dd>{sku.family === "bluetooth" ? t("蓝牙") : t("ESP32")}</dd></div>
+                        <div><dt>{t("品牌")}</dt><dd>{sku.manufacturer}</dd></div>
+                        <div><dt>{t("支持的产品")}</dt><dd>{sku.model}</dd></div>
+                      </dl>
+                      <span className="product-card-cta">{t("查看官方介绍")} ↗</span>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <span>▣</span>
+                <h2>{t("没有符合筛选的产品")}</h2>
+                <p>{t("试试切换类型或品牌。")}</p>
+              </div>
+            )}
+          </section>
+        )}
+
         {tab === "device" && (
           <section className="device-view">
             <div className="device-hero">
@@ -6069,11 +6214,11 @@ export default function InkStudio() {
                               <section className="device-adapter-panel" aria-label={`${device.name} ${t("设备信息")}`}>
                                 <div>
                                   <span className="device-calibration-mark" aria-hidden="true">W</span>
-                                  <div><strong>{deviceSku(device.skuId)?.displayName ?? device.name}</strong><small>{deviceSku(device.skuId)?.description}</small></div>
+                                  <div><strong>{deviceSku(device.skuId)?.displayName ?? device.name}</strong><small>{deviceSku(device.skuId) ? t(deviceSku(device.skuId)!.description) : ""}</small></div>
                                 </div>
                                 <dl>
                                   <div><dt>{t("适配器")}</dt><dd>{deviceAdapter(device.skuId).id}</dd></div>
-                                  <div><dt>{t("渲染")}</dt><dd>{deviceAdapter(device.skuId).taskStatusCopy}</dd></div>
+                                  <div><dt>{t("渲染")}</dt><dd>{t(deviceAdapter(device.skuId).taskStatusCopy)}</dd></div>
                                   <div><dt>{t("写入")}</dt><dd>{t("设备 HTTPS 主动拉取")}</dd></div>
                                   <div><dt>{t("同步")}</dt><dd>{device.appliedRevision ?? 0} / {device.desiredRevision ?? 0}</dd></div>
                                   <div><dt>{t("固件")}</dt><dd>{device.firmwareVersion ?? tRuntime("待上报")}</dd></div>
@@ -6189,7 +6334,7 @@ export default function InkStudio() {
                       setAddDeviceStep("method");
                     }}>
                       <span className="sku-screen"><b>M5</b><i>INKLOOP</i></span>
-                      <div><strong>{sku.displayName}</strong><p>{sku.description}</p><small>{sku.screen.width} × {sku.screen.height} · {sku.write.strategy === "https-image-pull" ? tRuntime("Wi‑Fi 拉取") : sku.write.strategy}</small></div>
+                      <div><strong>{sku.displayName}</strong><p>{t(sku.description)}</p><small>{sku.screen.width} × {sku.screen.height} · {sku.write.strategy === "https-image-pull" ? tRuntime("Wi‑Fi 拉取") : sku.write.strategy}</small></div>
                       <em>→</em>
                     </button>
                   ))}
