@@ -12,6 +12,8 @@ import {
 } from "react";
 import { create as createQrCode } from "qrcode";
 import { stochasticSixColorDither } from "./lib/six-color-dither";
+import { localeTags, localeOptions, useI18n, type Locale } from "./lib/i18n";
+import { activeLocaleTag, t as tRuntime } from "./lib/i18n-runtime";
 import {
   DEFAULT_ELEMENT_POSITIONS,
   DEFAULT_ELEMENT_SIZES,
@@ -222,9 +224,9 @@ function profileFromEsp32(record: Esp32DeviceRecord, existing?: DeviceProfile): 
 }
 
 function calibrationQualityLabel(profile: DeviceColorCalibration) {
-  if (profile.quality === "excellent") return "校色质量优秀";
-  if (profile.quality === "good") return "校色质量良好";
-  return "色差较大，建议避开反光后重拍";
+  if (profile.quality === "excellent") return tRuntime("校色质量优秀");
+  if (profile.quality === "good") return tRuntime("校色质量良好");
+  return tRuntime("色差较大，建议避开反光后重拍");
 }
 
 function mapApiParams(map: MapSpec, mode: "resolve" | "image", orientation?: ScreenOrientation) {
@@ -249,7 +251,7 @@ async function resolveMapLocation(map: MapSpec) {
   });
   const payload = await response.json() as MapResolvePayload;
   if (!response.ok || typeof payload.latitude !== "number" || typeof payload.longitude !== "number") {
-    throw new Error(payload.error || "地图位置暂时无法解析");
+    throw new Error(payload.error || tRuntime("地图位置暂时无法解析"));
   }
   return payload;
 }
@@ -293,11 +295,11 @@ function calendarSourceName(url: string, position: number) {
   try {
     const hostname = new URL(url.replace(/^webcal:/i, "https:")).hostname.toLowerCase();
     const provider = hostname.includes("icloud")
-      ? "iCloud 日历"
+      ? tRuntime("iCloud 日历")
       : hostname.includes("google")
-        ? "Google 日历"
+        ? tRuntime("Google 日历")
         : hostname.includes("outlook") || hostname.includes("office365")
-          ? "Outlook 日历"
+          ? tRuntime("Outlook 日历")
           : hostname.replace(/^www\./, "");
     return position === 0 ? provider : `${provider} ${position + 1}`;
   } catch {
@@ -306,53 +308,53 @@ function calendarSourceName(url: string, position: number) {
 }
 
 const navItems: Array<{ id: Tab; label: string; glyph: string }> = [
-  { id: "studio", label: "创作台", glyph: "✦" },
-  { id: "mine", label: "我的模版", glyph: "▦" },
-  { id: "explore", label: "模板市场", glyph: "◎" },
-  { id: "device", label: "设备中心", glyph: "⌁" },
+  { id: "studio", label: tRuntime("创作台"), glyph: "✦" },
+  { id: "mine", label: tRuntime("我的模版"), glyph: "▦" },
+  { id: "explore", label: tRuntime("模板市场"), glyph: "◎" },
+  { id: "device", label: tRuntime("设备中心"), glyph: "⌁" },
 ];
 
 const samplePrompts = [
-  "每天 8 点显示上海天气和带伞提醒",
-  "显示新品发布倒计时",
-  "彩虹背景，中间写一句今天也很棒",
-  "美女时钟，每分钟换背景和字体",
-  "生成本月日历，8号项目发布，18号复盘",
-  "生成周一到周五的课程表",
-  "横版苹果日历风格，显示未来三天日程",
-  "做一张星穹机械守卫金卡，自动生成等级和攻防",
-  "每 15 分钟更新会议室状态",
-  "每小时显示本月销售目标进度",
+  tRuntime("每天 8 点显示上海天气和带伞提醒"),
+  tRuntime("显示新品发布倒计时"),
+  tRuntime("彩虹背景，中间写一句今天也很棒"),
+  tRuntime("美女时钟，每分钟换背景和字体"),
+  tRuntime("生成本月日历，8号项目发布，18号复盘"),
+  tRuntime("生成周一到周五的课程表"),
+  tRuntime("横版苹果日历风格，显示未来三天日程"),
+  tRuntime("做一张星穹机械守卫金卡，自动生成等级和攻防"),
+  tRuntime("每 15 分钟更新会议室状态"),
+  tRuntime("每小时显示本月销售目标进度"),
 ];
 
 const quoteOptions = [
-  "把注意力留给真正重要的事",
-  "今天也值得认真生活",
-  "慢一点，也是在向前",
-  "先完成，再完善",
-  "愿每一步都有清晰的回响",
-  "专注当下，一次只做一件事",
-  "保持好奇，保持热爱",
-  "去做让自己眼睛发亮的事",
+  tRuntime("把注意力留给真正重要的事"),
+  tRuntime("今天也值得认真生活"),
+  tRuntime("慢一点，也是在向前"),
+  tRuntime("先完成，再完善"),
+  tRuntime("愿每一步都有清晰的回响"),
+  tRuntime("专注当下，一次只做一件事"),
+  tRuntime("保持好奇，保持热爱"),
+  tRuntime("去做让自己眼睛发亮的事"),
 ];
 
 const screenElementOptions: Array<{ key: ScreenElementKey; label: string; width: number; height: number }> = [
-  { key: "quote", label: "今日名言", width: 400, height: 58 },
+  { key: "quote", label: tRuntime("今日名言"), width: 400, height: 58 },
   { key: "logo", label: "LOGO", width: 220, height: 48 },
-  { key: "date", label: "日期", width: 260, height: 54 },
-  { key: "time", label: "时间", width: 170, height: 56 },
-  { key: "timeLarge", label: "时间（大）", width: 430, height: 154 },
-  { key: "weather", label: "天气（小）", width: 310, height: 64 },
-  { key: "weatherLarge", label: "天气（大）", width: 430, height: 230 },
-  { key: "qr", label: "二维码", width: 176, height: 176 },
+  { key: "date", label: tRuntime("日期"), width: 260, height: 54 },
+  { key: "time", label: tRuntime("时间"), width: 170, height: 56 },
+  { key: "timeLarge", label: tRuntime("时间（大）"), width: 430, height: 154 },
+  { key: "weather", label: tRuntime("天气（小）"), width: 310, height: 64 },
+  { key: "weatherLarge", label: tRuntime("天气（大）"), width: 430, height: 230 },
+  { key: "qr", label: tRuntime("二维码"), width: 176, height: 176 },
 ];
 
 const screenFontOptions: Array<{ value: ScreenFont; label: string }> = [
-  { value: "sans", label: "思源黑体 · 清晰" },
-  { value: "serif", label: "思源宋体 · 优雅" },
-  { value: "rounded", label: "M PLUS 圆体 · 亲和" },
-  { value: "mono", label: "等宽数字 · 精准" },
-  { value: "handwritten", label: "马善政手写 · 醒目" },
+  { value: "sans", label: tRuntime("思源黑体 · 清晰") },
+  { value: "serif", label: tRuntime("思源宋体 · 优雅") },
+  { value: "rounded", label: tRuntime("M PLUS 圆体 · 亲和") },
+  { value: "mono", label: tRuntime("等宽数字 · 精准") },
+  { value: "handwritten", label: tRuntime("马善政手写 · 醒目") },
 ];
 
 const renderModeOptions: Array<{
@@ -360,8 +362,8 @@ const renderModeOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "official", label: "Official Skill", description: "稳定随机网点，保留照片渐变并减少条纹与撕裂" },
-  { value: "inkloop-text", label: "Inkloop text", description: "低噪点，适合课程表、日历和纯文字画面" },
+  { value: "official", label: "Official Skill", description: tRuntime("稳定随机网点，保留照片渐变并减少条纹与撕裂") },
+  { value: "inkloop-text", label: "Inkloop text", description: tRuntime("低噪点，适合课程表、日历和纯文字画面") },
 ];
 
 const knownWeatherCities = [
@@ -378,35 +380,35 @@ function applyPreferredCityToGeneratedApp(generated: InkApp, sourcePrompt: strin
     ...generated,
     spec: {
       ...generated.spec,
-      city: explicitCity || preferredCity || generated.spec.city || "上海",
+      city: explicitCity || preferredCity || generated.spec.city || tRuntime("上海"),
     },
   };
 }
 
 const guideExamples = [
   {
-    level: "入门",
+    level: tRuntime("入门"),
     number: "01",
-    title: "贴图片或文字，帮我排版",
-    description: "直接粘贴一张图片和要显示的文字，或点“选择图片”。生成器会把内容整理成适合六色墨水屏的版面。",
-    prompt: "请用我贴入的图片做背景，把标题「今天也要开心」和小字「一步一步，慢慢来」排成简洁海报。",
-    action: "套用排版示例",
+    title: tRuntime("贴图片或文字，帮我排版"),
+    description: tRuntime("直接粘贴一张图片和要显示的文字，或点“选择图片”。生成器会把内容整理成适合六色墨水屏的版面。"),
+    prompt: tRuntime("请用我贴入的图片做背景，把标题「今天也要开心」和小字「一步一步，慢慢来」排成简洁海报。"),
+    action: tRuntime("套用排版示例"),
   },
   {
-    level: "进阶",
+    level: tRuntime("进阶"),
     number: "02",
-    title: "让 LLM 生成主题随机内容",
-    description: "只要说清主题、语气和用途，LLM 会生成文案、业务逻辑与配图关键词；预览不满意可继续换一张。",
-    prompt: "生成一张露营主题的每日鼓励卡，每次刷新换一张自然风景，文案简短、有户外杂志感。",
-    action: "套用主题示例",
+    title: tRuntime("让 LLM 生成主题随机内容"),
+    description: tRuntime("只要说清主题、语气和用途，LLM 会生成文案、业务逻辑与配图关键词；预览不满意可继续换一张。"),
+    prompt: tRuntime("生成一张露营主题的每日鼓励卡，每次刷新换一张自然风景，文案简短、有户外杂志感。"),
+    action: tRuntime("套用主题示例"),
   },
   {
-    level: "高级",
+    level: tRuntime("高级"),
     number: "03",
-    title: "做会自动更新的屏幕",
-    description: "例如美女时钟每分钟换背景和字体，或每天早上更新指定城市的天气，再选择对应的刷新计划。",
-    prompt: "美女时钟，每分钟更新日期和时间、换一张时尚人像背景并随机字体，时间放在白色画板里。",
-    action: "套用时钟示例",
+    title: tRuntime("做会自动更新的屏幕"),
+    description: tRuntime("例如美女时钟每分钟换背景和字体，或每天早上更新指定城市的天气，再选择对应的刷新计划。"),
+    prompt: tRuntime("美女时钟，每分钟更新日期和时间、换一张时尚人像背景并随机字体，时间放在白色画板里。"),
+    action: tRuntime("套用时钟示例"),
   },
 ];
 
@@ -501,7 +503,7 @@ function randomArtworkSeed() {
 }
 
 function formatExactTime(value: number) {
-  return new Date(value).toLocaleString("zh-CN", {
+  return new Date(value).toLocaleString(activeLocaleTag(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -512,7 +514,7 @@ function formatExactTime(value: number) {
 }
 
 function formatRemaining(value: number | null, now: number) {
-  if (!value) return "等待安排";
+  if (!value) return tRuntime("等待安排");
   const total = Math.max(0, Math.ceil((value - now) / 1000));
   const days = Math.floor(total / 86_400);
   const hours = Math.floor((total % 86_400) / 3600);
@@ -540,7 +542,7 @@ function replaceTimeVariables(value: string, now: Date) {
     year,
     month,
     day,
-    weekday: new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now),
+    weekday: new Intl.DateTimeFormat(activeLocaleTag(), { weekday: "short" }).format(now),
     hour,
     minute,
     time: `${hour}:${minute}`,
@@ -556,7 +558,7 @@ function resolveTimeVariables(spec: ScreenSpec, now = new Date()): ScreenSpec {
   const displayTime = new Date(now.getTime() + 60_000);
   const pad = (part: number) => String(part).padStart(2, "0");
   const date = `${displayTime.getFullYear()}-${pad(displayTime.getMonth() + 1)}-${pad(displayTime.getDate())}`;
-  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(displayTime);
+  const weekday = new Intl.DateTimeFormat(activeLocaleTag(), { weekday: "short" }).format(displayTime);
   return {
     ...spec,
     eyebrow: replaceTimeVariables(spec.eyebrow, displayTime),
@@ -598,11 +600,11 @@ async function resolveRuntimeScreen(
           latitude: location.latitude,
           longitude: location.longitude,
           coordinateType: "bd09ll",
-          address: location.address || location.city || resolved.map.query || "已选位置",
+          address: location.address || location.city || resolved.map.query || tRuntime("已选位置"),
           approximate: location.approximate === true,
           statusMessage: location.approximate
-            ? "当前为 IP 城市级估算，可在预览上拖拽微调"
-            : "位置已确认",
+            ? tRuntime("当前为 IP 城市级估算，可在预览上拖拽微调")
+            : tRuntime("位置已确认"),
         },
       };
     } catch (error) {
@@ -610,7 +612,7 @@ async function resolveRuntimeScreen(
         ...resolved,
         map: {
           ...resolved.map,
-          statusMessage: error instanceof Error ? error.message : "地图位置暂时无法解析",
+          statusMessage: error instanceof Error ? error.message : tRuntime("地图位置暂时无法解析"),
         },
       };
     }
@@ -640,11 +642,11 @@ async function resolveRuntimeScreen(
           remoteEvents = Array.isArray(payload.timedEvents) ? payload.timedEvents : [];
           onCalendarNotice?.(payload.warnings?.length ? payload.warnings.join("；") : null);
         } else {
-          onCalendarNotice?.("在线日历暂时无法读取");
+          onCalendarNotice?.(tRuntime("在线日历暂时无法读取"));
         }
       } catch {
         remoteEvents = [];
-        onCalendarNotice?.("在线日历暂时无法读取");
+        onCalendarNotice?.(tRuntime("在线日历暂时无法读取"));
       }
     } else {
       onCalendarNotice?.(null);
@@ -688,11 +690,11 @@ async function resolveRuntimeScreen(
           remoteEvents = Array.isArray(payload.events) ? payload.events : [];
           onCalendarNotice?.(payload.warnings?.length ? payload.warnings.join("；") : null);
         } else {
-          onCalendarNotice?.("在线日历暂时无法读取");
+          onCalendarNotice?.(tRuntime("在线日历暂时无法读取"));
         }
       } catch {
         remoteEvents = [];
-        onCalendarNotice?.("在线日历暂时无法读取");
+        onCalendarNotice?.(tRuntime("在线日历暂时无法读取"));
       }
     } else {
       onCalendarNotice?.(null);
@@ -730,7 +732,7 @@ async function resolveRuntimeScreen(
         weatherText: `${city} · 天气暂不可用`,
         weatherValue: "--",
         weatherUnit: "°C",
-        weatherDetail: "天气服务暂时不可用",
+        weatherDetail: tRuntime("天气服务暂时不可用"),
         weatherAccent: "yellow" as const,
       };
       if (resolved.kind !== "weather" || resolved.clock?.enabled) {
@@ -740,11 +742,11 @@ async function resolveRuntimeScreen(
         ...resolved,
         ...unavailableOverlay,
         eyebrow: `${city} · 今日`,
-        title: "今日天气",
+        title: tRuntime("今日天气"),
         value: "--",
         unit: "°C",
-        detail: "天气服务暂时不可用",
-        footer: "稍后刷新会自动重试",
+        detail: tRuntime("天气服务暂时不可用"),
+        footer: tRuntime("稍后刷新会自动重试"),
       };
     }
     if (
@@ -755,7 +757,7 @@ async function resolveRuntimeScreen(
       throw new Error("weather incomplete");
     }
     const rainProbability = typeof weather.rainProbability === "number" ? weather.rainProbability : 0;
-    const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(now);
+    const weekday = new Intl.DateTimeFormat(activeLocaleTag(), { weekday: "short" }).format(now);
     const resolvedCity = weather.city || city;
     const temperature = String(Math.round(weather.temperature));
     const detail = `${weather.condition || "天气多变"} · ${Math.round(weather.low)}—${Math.round(weather.high)}°C`;
@@ -779,13 +781,13 @@ async function resolveRuntimeScreen(
       ...resolved,
       ...weatherOverlay,
       eyebrow: `${resolvedCity} · ${weekday}`,
-      title: "今日天气",
+      title: tRuntime("今日天气"),
       value: temperature,
       unit: "°C",
       detail,
       footer: rainProbability >= 45
         ? `降雨${Math.round(rainProbability)}% · 带伞 · Open-Meteo`
-        : "少雨 · 适合出门 · Open-Meteo",
+        : tRuntime("少雨 · 适合出门 · Open-Meteo"),
       accent: weatherAccent,
     };
   } catch {
@@ -794,7 +796,7 @@ async function resolveRuntimeScreen(
       weatherText: `${city} · 天气暂不可用`,
       weatherValue: "--",
       weatherUnit: "°C",
-      weatherDetail: "天气数据暂不可用",
+      weatherDetail: tRuntime("天气数据暂不可用"),
       weatherAccent: "yellow" as const,
     };
     if (resolved.kind !== "weather" || resolved.clock?.enabled) {
@@ -804,11 +806,11 @@ async function resolveRuntimeScreen(
       ...resolved,
       ...unavailableOverlay,
       eyebrow: resolved.eyebrow === "—" ? `${city} · 今日` : resolved.eyebrow,
-      title: resolved.title === "—" ? "今日天气" : resolved.title,
+      title: resolved.title === "—" ? tRuntime("今日天气") : resolved.title,
       value: resolved.value === "—" ? "--" : resolved.value,
       unit: "°C",
-      detail: resolved.detail === "—" ? "天气数据暂不可用" : resolved.detail,
-      footer: resolved.footer === "—" ? "稍后刷新重试" : resolved.footer,
+      detail: resolved.detail === "—" ? tRuntime("天气数据暂不可用") : resolved.detail,
+      footer: resolved.footer === "—" ? tRuntime("稍后刷新重试") : resolved.footer,
     };
   }
 }
@@ -932,7 +934,7 @@ const artworkCreditCache = new Map<string, ArtworkCredit>();
 function decodeArtwork(url: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
-    const timeout = window.setTimeout(() => reject(new Error("图片素材加载超时")), 15_000);
+    const timeout = window.setTimeout(() => reject(new Error(tRuntime("图片素材加载超时"))), 15_000);
     image.decoding = "async";
     image.onload = () => {
       window.clearTimeout(timeout);
@@ -940,7 +942,7 @@ function decodeArtwork(url: string) {
     };
     image.onerror = () => {
       window.clearTimeout(timeout);
-      reject(new Error("图片素材加载失败"));
+      reject(new Error(tRuntime("图片素材加载失败")));
     };
     image.src = url;
   });
@@ -949,7 +951,7 @@ function decodeArtwork(url: string) {
 async function loadArtwork(url: string) {
   if (url.startsWith("data:") || url.startsWith("blob:")) return decodeArtwork(url);
   const response = await fetch(url, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error("图片素材加载失败");
+  if (!response.ok) throw new Error(tRuntime("图片素材加载失败"));
   const provider = response.headers.get("X-Inkloop-Image-Source");
   const sourceUrl = response.headers.get("X-Inkloop-Image-Url");
   if (provider && sourceUrl) artworkCreditCache.set(url, { provider, url: sourceUrl });
@@ -962,12 +964,12 @@ async function loadArtwork(url: string) {
 }
 
 async function prepareLocalImage(file: File) {
-  if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
-  if (file.size > 15 * 1024 * 1024) throw new Error("图片请控制在 15MB 以内");
+  if (!file.type.startsWith("image/")) throw new Error(tRuntime("请选择图片文件"));
+  if (file.size > 15 * 1024 * 1024) throw new Error(tRuntime("图片请控制在 15MB 以内"));
   const source = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.onerror = () => reject(new Error(tRuntime("读取图片失败")));
     reader.readAsDataURL(file);
   });
   const image = await loadArtwork(source);
@@ -975,7 +977,7 @@ async function prepareLocalImage(file: File) {
   canvas.width = 528;
   canvas.height = 792;
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("浏览器无法处理这张图片");
+  if (!context) throw new Error(tRuntime("浏览器无法处理这张图片"));
   context.fillStyle = EPAPER_WHITE;
   context.fillRect(0, 0, canvas.width, canvas.height);
   const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
@@ -986,12 +988,12 @@ async function prepareLocalImage(file: File) {
 }
 
 async function analyzeCalibrationPhoto(file: File) {
-  if (!file.type.startsWith("image/")) throw new Error("请选择拍摄的图片文件");
-  if (file.size > 20 * 1024 * 1024) throw new Error("照片请控制在 20MB 以内");
+  if (!file.type.startsWith("image/")) throw new Error(tRuntime("请选择拍摄的图片文件"));
+  if (file.size > 20 * 1024 * 1024) throw new Error(tRuntime("照片请控制在 20MB 以内"));
   const source = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("读取照片失败"));
+    reader.onerror = () => reject(new Error(tRuntime("读取照片失败")));
     reader.readAsDataURL(file);
   });
   const image = await loadArtwork(source);
@@ -1000,7 +1002,7 @@ async function analyzeCalibrationPhoto(file: File) {
   analysisCanvas.width = Math.max(120, Math.round(image.naturalWidth * analysisScale));
   analysisCanvas.height = Math.max(120, Math.round(image.naturalHeight * analysisScale));
   const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: true });
-  if (!analysisContext) throw new Error("浏览器无法分析这张照片");
+  if (!analysisContext) throw new Error(tRuntime("浏览器无法分析这张照片"));
   analysisContext.drawImage(image, 0, 0, analysisCanvas.width, analysisCanvas.height);
   const imageData = analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height);
   const analyzed = analyzeCalibrationCapture(imageData.data, imageData.width, imageData.height);
@@ -1013,7 +1015,7 @@ async function analyzeCalibrationPhoto(file: File) {
   previewCanvas.width = 528;
   previewCanvas.height = 792;
   const previewContext = previewCanvas.getContext("2d");
-  if (!previewContext) throw new Error("浏览器无法生成校色预览");
+  if (!previewContext) throw new Error(tRuntime("浏览器无法生成校色预览"));
   previewContext.fillStyle = "#f7f4e8";
   previewContext.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
   previewContext.save();
@@ -1328,7 +1330,7 @@ function drawWeatherGroup(
   const ink = "#151816";
   const summary = spec.weatherText || `${spec.city || "天气"} · ${spec.weatherValue ?? spec.value}${spec.weatherUnit ?? spec.unit}`;
   const weatherDetail = spec.weatherDetail || spec.detail;
-  const condition = weatherDetail.split("·")[0]?.trim() || "天气多变";
+  const condition = weatherDetail.split("·")[0]?.trim() || tRuntime("天气多变");
   const weatherAccent = spec.weatherAccent ? accentColors[spec.weatherAccent] : accent;
 
   ctx.save();
@@ -1650,9 +1652,9 @@ function drawQrElement(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
 }
 
 const lunarDayLabels = [
-  "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
-  "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
-  "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十",
+  tRuntime("初一"), tRuntime("初二"), tRuntime("初三"), tRuntime("初四"), tRuntime("初五"), tRuntime("初六"), tRuntime("初七"), tRuntime("初八"), tRuntime("初九"), tRuntime("初十"),
+  tRuntime("十一"), tRuntime("十二"), tRuntime("十三"), tRuntime("十四"), tRuntime("十五"), tRuntime("十六"), tRuntime("十七"), tRuntime("十八"), tRuntime("十九"), tRuntime("二十"),
+  tRuntime("廿一"), tRuntime("廿二"), tRuntime("廿三"), tRuntime("廿四"), tRuntime("廿五"), tRuntime("廿六"), tRuntime("廿七"), tRuntime("廿八"), tRuntime("廿九"), tRuntime("三十"),
 ];
 
 function lunarDateLabel(year: number, month: number, day: number) {
@@ -1677,8 +1679,8 @@ function drawCalendarTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const ink = "#151816";
   const accent = accentColors[spec.accent];
   const weekdays = weekStartsOn === "sunday"
-    ? ["日", "一", "二", "三", "四", "五", "六"]
-    : ["一", "二", "三", "四", "五", "六", "日"];
+    ? [tRuntime("日"), tRuntime("一"), tRuntime("二"), tRuntime("三"), tRuntime("四"), tRuntime("五"), tRuntime("六")]
+    : [tRuntime("一"), tRuntime("二"), tRuntime("三"), tRuntime("四"), tRuntime("五"), tRuntime("六"), tRuntime("日")];
   const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
   const offset = weekStartsOn === "sunday" ? firstWeekday : (firstWeekday + 6) % 7;
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -1823,7 +1825,7 @@ function drawTimetable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   ctx.fillStyle = ink;
   ctx.textAlign = "left";
   ctx.font = `900 ${landscape ? 34 : 42}px ${family}`;
-  ctx.fillText(spec.title || "一周课程表", left, landscape ? 48 : 68, ctx.canvas.width - 120);
+  ctx.fillText(spec.title || tRuntime("一周课程表"), left, landscape ? 48 : 68, ctx.canvas.width - 120);
   ctx.fillStyle = accentColors[spec.accent];
   ctx.fillRect(left, landscape ? 62 : 88, 88, 8);
 
@@ -1866,7 +1868,7 @@ function agendaDateKey(value: Date) {
 }
 
 function agendaTimeLabel(event: AgendaEvent, showEndTime = true) {
-  if (event.allDay) return "全天";
+  if (event.allDay) return tRuntime("全天");
   const start = new Date(event.start);
   const end = new Date(event.end);
   const time = (value: Date) => `${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
@@ -1949,21 +1951,21 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     ctx.fillStyle = ink;
     ctx.textAlign = "left";
     ctx.font = `900 ${width > height ? 34 : 40}px ${family}`;
-    ctx.fillText(spec.title || "智能日程", margin, width > height ? 46 : 62, width - margin * 2 - 150);
+    ctx.fillText(spec.title || tRuntime("智能日程"), margin, width > height ? 46 : 62, width - margin * 2 - 150);
     ctx.fillStyle = accentColors[spec.accent];
     ctx.fillRect(margin, width > height ? 60 : 80, 88, 7);
     ctx.fillStyle = ink;
     ctx.textAlign = "right";
     ctx.font = `800 15px ${family}`;
-    ctx.fillText("按时间排序", width - margin, width > height ? 47 : 62);
+    ctx.fillText(tRuntime("按时间排序"), width - margin, width > height ? 47 : 62);
     const top = width > height ? 86 : 108;
     const usable = events.slice(0, width > height ? 7 : 9);
     if (!usable.length) {
       ctx.textAlign = "center";
       ctx.font = `800 28px ${family}`;
-      ctx.fillText("这段时间没有日程", width / 2, height / 2);
+      ctx.fillText(tRuntime("这段时间没有日程"), width / 2, height / 2);
       ctx.font = `700 17px ${family}`;
-      ctx.fillText("可以调整时间范围，或读取 iCal", width / 2, height / 2 + 38);
+      ctx.fillText(tRuntime("可以调整时间范围，或读取 iCal"), width / 2, height / 2 + 38);
       ctx.restore();
       return;
     }
@@ -2094,7 +2096,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     ctx.fillStyle = ink;
     ctx.textAlign = "left";
     ctx.font = `900 ${view === "workweek" ? 16 : 19}px ${family}`;
-    const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(day);
+    const weekday = new Intl.DateTimeFormat(activeLocaleTag(), { weekday: "short" }).format(day);
     ctx.fillText(
       truncateCanvasText(ctx, `${day.getMonth() + 1}/${day.getDate()} ${weekday}`, columnWidth - 18),
       x + 10,
@@ -2106,7 +2108,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     ctx.fillStyle = ink;
     ctx.textAlign = "right";
     ctx.font = `800 11px ${family}`;
-    ctx.fillText("全天", gridLeft - 8, allDayTop + 20, timeRailWidth - 4);
+    ctx.fillText(tRuntime("全天"), gridLeft - 8, allDayTop + 20, timeRailWidth - 4);
     days.forEach(({ allDay }, column) => {
       const x = gridLeft + column * (columnWidth + gap);
       const cardWidth = columnWidth * eventWidthRatio;
@@ -2187,7 +2189,7 @@ function drawAgendaTable(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
       ctx.fillStyle = "#707871";
       ctx.textAlign = "left";
       ctx.font = `700 12px ${family}`;
-      ctx.fillText("无安排", x + 10, timelineTop + 22, columnWidth - 18);
+      ctx.fillText(tRuntime("无安排"), x + 10, timelineTop + 22, columnWidth - 18);
     } else if (timed.length > (view === "workweek" ? 8 : 10)) {
       ctx.fillStyle = ink;
       ctx.font = `900 13px ${family}`;
@@ -2217,11 +2219,11 @@ function drawMapMessage(ctx: CanvasRenderingContext2D, spec: ScreenSpec, message
   ctx.fillStyle = "#151816";
   ctx.textAlign = "center";
   ctx.font = `900 34px ${family}`;
-  ctx.fillText("地图等待位置", centerX, centerY, ctx.canvas.width - 80);
+  ctx.fillText(tRuntime("地图等待位置"), centerX, centerY, ctx.canvas.width - 80);
   ctx.font = `700 19px ${family}`;
   ctx.fillText(truncateCanvasText(ctx, message, ctx.canvas.width - 96), centerX, centerY + 50);
   ctx.font = `700 16px ${family}`;
-  ctx.fillText("请在右侧地图设置中修正后重试", centerX, centerY + 88, ctx.canvas.width - 96);
+  ctx.fillText(tRuntime("请在右侧地图设置中修正后重试"), centerX, centerY + 88, ctx.canvas.width - 96);
   ctx.restore();
 }
 
@@ -2234,7 +2236,7 @@ function drawMapInformation(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const address = map.displayName?.trim()
     || map.address
     || map.query
-    || (map.approximate ? "IP 城市级估算" : "已选位置");
+    || (map.approximate ? tRuntime("IP 城市级估算") : tRuntime("已选位置"));
   const coordinateText = typeof map.latitude === "number" && typeof map.longitude === "number"
     ? `${map.longitude.toFixed(5)}, ${map.latitude.toFixed(5)}`
     : "";
@@ -2251,7 +2253,7 @@ function drawMapInformation(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   ctx.textAlign = "left";
   if (map.showAddress) {
     ctx.font = `900 ${landscape ? 22 : 23}px ${family}`;
-    const prefix = map.approximate ? "约 " : "";
+    const prefix = map.approximate ? tRuntime("约 ") : "";
     ctx.fillText(
       truncateCanvasText(ctx, `${prefix}${address}`, width - innerPadding * 2),
       innerPadding,
@@ -2272,7 +2274,7 @@ function drawMapInformation(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
 async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   const map = spec.map;
   if (!map || typeof map.latitude !== "number" || typeof map.longitude !== "number") {
-    drawMapMessage(ctx, spec, map?.statusMessage || "请先选择地图位置");
+    drawMapMessage(ctx, spec, map?.statusMessage || tRuntime("请先选择地图位置"));
     return false;
   }
   try {
@@ -2294,7 +2296,7 @@ async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     drawMapInformation(ctx, spec);
     return true;
   } catch {
-    drawMapMessage(ctx, spec, "静态地图暂时无法获取；请检查服务端配置或稍后重试");
+    drawMapMessage(ctx, spec, tRuntime("静态地图暂时无法获取；请检查服务端配置或稍后重试"));
     return false;
   }
 }
@@ -2721,7 +2723,7 @@ function canvasForM5PaperColor(source: HTMLCanvasElement, orientation: ScreenOri
   output.width = target.width;
   output.height = target.height;
   const context = output.getContext("2d");
-  if (!context) throw new Error("无法生成 M5 PaperColor 画面");
+  if (!context) throw new Error(tRuntime("无法生成 M5 PaperColor 画面"));
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
   context.fillStyle = "#fffefa";
@@ -2732,7 +2734,7 @@ function canvasForM5PaperColor(source: HTMLCanvasElement, orientation: ScreenOri
 
 function canvasPng(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("无法导出设备画面")), "image/png");
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error(tRuntime("无法导出设备画面"))), "image/png");
   });
 }
 
@@ -2839,7 +2841,7 @@ function DeviceTaskCard({
       <div className="device-task-heading">
         <div>
           <span className="task-status-label">
-            {task.status === "writing" ? "正在下发" : task.status === "error" ? "等待重试" : runsOnDevice ? "设备端运行" : "运行中"}
+            {task.status === "writing" ? tRuntime("正在下发") : task.status === "error" ? tRuntime("等待重试") : runsOnDevice ? tRuntime("设备端运行") : tRuntime("运行中")}
           </span>
           <h3>{task.app.title}</h3>
           <p>{scheduleLabel(task.app)}</p>
@@ -2857,16 +2859,16 @@ function DeviceTaskCard({
         </div>
       </div>
       <div className="task-countdown">
-        <span>{runsOnDevice ? "任务调度位置" : "距离下次刷新"}</span>
-        <strong>{runsOnDevice ? "设备端" : formatRemaining(task.nextRunAt, now)}</strong>
+        <span>{runsOnDevice ? tRuntime("任务调度位置") : tRuntime("距离下次刷新")}</span>
+        <strong>{runsOnDevice ? tRuntime("设备端") : formatRemaining(task.nextRunAt, now)}</strong>
         <small>{runsOnDevice
-          ? "设备开机联网后从服务器同步；无需保持浏览器打开"
-          : task.nextRunAt ? formatExactTime(task.nextRunAt) : "首次写入完成后开始计时"}</small>
+          ? tRuntime("设备开机联网后从服务器同步；无需保持浏览器打开")
+          : task.nextRunAt ? formatExactTime(task.nextRunAt) : tRuntime("首次写入完成后开始计时")}</small>
       </div>
       <dl className="task-stats">
         <div><dt>成功</dt><dd>{task.successCount}</dd></div>
         <div><dt>失败</dt><dd>{task.failureCount}</dd></div>
-        <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : "尚未执行"}</dd></div>
+        <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : tRuntime("尚未执行")}</dd></div>
       </dl>
       {task.lastError && (
         <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
@@ -2884,6 +2886,7 @@ function DeviceTaskCard({
 }
 
 export default function InkStudio() {
+  const { locale, setLocale, t } = useI18n();
   const [tab, setTab] = useState<Tab>("studio");
   const [prompt, setPrompt] = useState(starterPrompt);
   const [app, setApp] = useState<InkApp>(starterApp);
@@ -2896,7 +2899,7 @@ export default function InkStudio() {
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
   const [previewScale, setPreviewScale] = useState<35 | 50 | 75 | 100>(50);
   const [artworkCredit, setArtworkCredit] = useState<ArtworkCredit | null>(null);
-  const [preferredWeatherCity, setPreferredWeatherCity] = useState("上海");
+  const [preferredWeatherCity, setPreferredWeatherCity] = useState(tRuntime("上海"));
   const [calendarPreferences, setCalendarPreferences] = useState<CalendarPreferences>(DEFAULT_CALENDAR_PREFERENCES);
   const [calendarUrlDraft, setCalendarUrlDraft] = useState("");
   const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
@@ -2995,9 +2998,9 @@ export default function InkStudio() {
         textarea.remove();
         if (!copied) throw new Error("copy unavailable");
       }
-      showToast("创作台模版链接已复制", "success");
+      showToast(tRuntime("创作台模版链接已复制"), "success");
     } catch {
-      showToast("复制失败，请从浏览器地址栏复制", "error");
+      showToast(tRuntime("复制失败，请从浏览器地址栏复制"), "error");
     }
   }, [showToast]);
 
@@ -3060,7 +3063,7 @@ export default function InkStudio() {
       const records = await listEsp32Devices();
       return applyEsp32Records(records);
     } catch (error) {
-      if (notify) showToast(error instanceof Error ? error.message : "无法刷新 ESP32 设备", "error");
+      if (notify) showToast(error instanceof Error ? error.message : tRuntime("无法刷新 ESP32 设备"), "error");
       return null;
     }
   }, [applyEsp32Records, showToast]);
@@ -3165,7 +3168,7 @@ export default function InkStudio() {
       const cloned: InkApp = {
         ...upgraded,
         id: `app-${Date.now()}`,
-        author: "我",
+        author: tRuntime("我"),
         isPublic: false,
         createdAt: new Date().toISOString(),
       };
@@ -3173,7 +3176,7 @@ export default function InkStudio() {
       setPrompt(cloned.prompt);
       setElementSizeDrafts({});
       setTab("studio");
-      showToast("分享模版已载入创作台", "success");
+      showToast(tRuntime("分享模版已载入创作台"), "success");
     };
     const syncFromLocation = () => {
       controller?.abort();
@@ -3208,7 +3211,7 @@ export default function InkStudio() {
         })
         .catch((error) => {
           if (error instanceof DOMException && error.name === "AbortError") return;
-          showToast("这个分享模版暂时无法访问", "error");
+          showToast(tRuntime("这个分享模版暂时无法访问"), "error");
         });
     };
     syncFromLocation();
@@ -3285,7 +3288,7 @@ export default function InkStudio() {
   }, []);
 
   useEffect(() => {
-    const sample = "今日天气 12:34 专注当下 圆润手写";
+    const sample = tRuntime("今日天气 12:34 专注当下 圆润手写");
     Promise.all(Object.values(screenFonts).map((family) => document.fonts.load(`700 32px ${family}`, sample)))
       .then(() => setFontTick((value) => value + 1))
       .catch(() => undefined);
@@ -3348,13 +3351,13 @@ export default function InkStudio() {
       try {
         const response = await fetch("/api/map?mode=status", { signal: controller.signal, cache: "no-store" });
         const payload = await response.json() as MapResolvePayload;
-        if (!response.ok || payload.configured !== true) throw new Error(payload.error || "地图服务未配置");
+        if (!response.ok || payload.configured !== true) throw new Error(payload.error || tRuntime("地图服务未配置"));
         setMapServiceStatus("ready");
         setMapServiceMessage(null);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        const message = error instanceof Error ? error.message : "地图服务暂时不可用";
-        setMapServiceStatus(message.includes("BAIDU_MAP_AK") || message.includes("未配置") ? "missing" : "error");
+        const message = error instanceof Error ? error.message : tRuntime("地图服务暂时不可用");
+        setMapServiceStatus(message.includes("BAIDU_MAP_AK") || message.includes(tRuntime("未配置")) ? "missing" : "error");
         setMapServiceMessage(message);
       }
     };
@@ -3503,9 +3506,9 @@ export default function InkStudio() {
     try {
       const localImage = await prepareLocalImage(file);
       setApp((current) => ({ ...current, localImage }));
-      showToast("图片已贴入，生成后会自动参与排版", "success");
+      showToast(tRuntime("图片已贴入，生成后会自动参与排版"), "success");
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "图片处理失败", "error");
+      showToast(error instanceof Error ? error.message : tRuntime("图片处理失败"), "error");
     }
   };
 
@@ -3523,7 +3526,7 @@ export default function InkStudio() {
 
   const generate = async () => {
     if (!prompt.trim()) {
-      showToast("先描述你想让屏幕显示什么", "error");
+      showToast(tRuntime("先描述你想让屏幕显示什么"), "error");
       return;
     }
     setGenerating(true);
@@ -3540,20 +3543,20 @@ export default function InkStudio() {
         warning?: string;
         error?: string;
       };
-      if (!response.ok) throw new Error(result.error || "生成服务暂时不可用");
-      if (!result.app) throw new Error("生成结果不完整");
+      if (!response.ok) throw new Error(result.error || tRuntime("生成服务暂时不可用"));
+      if (!result.app) throw new Error(tRuntime("生成结果不完整"));
       setApp({ ...applyPreferredCityToGeneratedApp(result.app, prompt, preferredWeatherCity), localImage: app.localImage });
       if (result.mode === "llm") {
         setGeneratorStatus("online");
         showToast(`已由 ${result.model || "在线模型"} 生成应用`, "success");
       } else {
         setGeneratorStatus(generatorModels.length ? "online" : "local");
-        showToast(result.warning || "已使用本地模板生成", "info");
+        showToast(result.warning || tRuntime("已使用本地模板生成"), "info");
       }
     } catch (error) {
       setApp({ ...applyPreferredCityToGeneratedApp(generateInkApp(prompt), prompt, preferredWeatherCity), localImage: app.localImage });
       setGeneratorStatus(generatorModels.length ? "online" : "local");
-      showToast(error instanceof Error ? `${error.message}，已使用本地模板` : "已使用本地模板", "info");
+      showToast(error instanceof Error ? `${error.message}，已使用本地模板` : tRuntime("已使用本地模板"), "info");
     } finally {
       setGenerating(false);
     }
@@ -3566,20 +3569,20 @@ export default function InkStudio() {
   const addCalendarSource = () => {
     const url = calendarUrlDraft.trim();
     if (!url) {
-      showToast("先填写 iCal 地址", "error");
+      showToast(tRuntime("先填写 iCal 地址"), "error");
       return;
     }
     if (!/^(?:https|webcal):\/\//i.test(url)) {
-      showToast("请填写 HTTPS 或 webcal 开头的 iCal 地址", "error");
+      showToast(tRuntime("请填写 HTTPS 或 webcal 开头的 iCal 地址"), "error");
       return;
     }
     const normalizedUrl = url.replace(/^webcal:/i, "https:");
     if (calendarPreferences.sources.some((source) => source.url.replace(/^webcal:/i, "https:") === normalizedUrl)) {
-      showToast("这个日历已经添加过了", "info");
+      showToast(tRuntime("这个日历已经添加过了"), "info");
       return;
     }
     if (calendarPreferences.sources.length >= 5) {
-      showToast("最多可添加 5 个个人日历", "error");
+      showToast(tRuntime("最多可添加 5 个个人日历"), "error");
       return;
     }
     const source: CalendarSourcePreference = {
@@ -3591,7 +3594,7 @@ export default function InkStudio() {
     updateCalendarPreferences({ sources: [...calendarPreferences.sources, source] });
     setCalendarUrlDraft("");
     setCalendarNotice(null);
-    showToast("日历已添加，正在合并日程", "success");
+    showToast(tRuntime("日历已添加，正在合并日程"), "success");
   };
 
   const updateCalendarSource = (id: string, patch: Partial<CalendarSourcePreference>) => {
@@ -3637,7 +3640,7 @@ export default function InkStudio() {
           city: nextDisplay.weather || nextDisplay.weatherLarge
             ? current.spec.city || preferredWeatherCity || inferWeatherCity(current.prompt)
             : current.spec.city,
-          footer: nextDisplay.quote && !current.spec.footer ? "今天也要保持好心情" : current.spec.footer,
+          footer: nextDisplay.quote && !current.spec.footer ? tRuntime("今天也要保持好心情") : current.spec.footer,
           display: nextDisplay,
         },
       };
@@ -3703,16 +3706,16 @@ export default function InkStudio() {
     updateMap({
       ...point,
       locationMode: "picker",
-      address: "已调整位置",
+      address: tRuntime("已调整位置"),
       approximate: false,
-      statusMessage: "已通过预览拖拽调整位置",
+      statusMessage: tRuntime("已通过预览拖拽调整位置"),
     });
   };
 
   const handleMapPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const map = currentAppRef.current.spec.map;
     if (!map || typeof map.latitude !== "number" || typeof map.longitude !== "number") {
-      showToast("先输入地点或使用浏览器定位，再拖动地图", "info");
+      showToast(tRuntime("先输入地点或使用浏览器定位，再拖动地图"), "info");
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -3787,10 +3790,10 @@ export default function InkStudio() {
 
   const locateWithBrowser = () => {
     if (!navigator.geolocation) {
-      showToast("当前浏览器不支持位置授权", "error");
+      showToast(tRuntime("当前浏览器不支持位置授权"), "error");
       return;
     }
-    showToast("正在请求浏览器位置授权", "info");
+    showToast(tRuntime("正在请求浏览器位置授权"), "info");
     navigator.geolocation.getCurrentPosition((position) => {
       updateMap({
         locationMode: "browser",
@@ -3800,13 +3803,13 @@ export default function InkStudio() {
         query: "",
         address: undefined,
         approximate: false,
-        statusMessage: "浏览器位置已获取，正在转换地图坐标",
+        statusMessage: tRuntime("浏览器位置已获取，正在转换地图坐标"),
       });
-      showToast("已获取位置，地图正在刷新", "success");
+      showToast(tRuntime("已获取位置，地图正在刷新"), "success");
     }, (error) => {
       const message = error.code === error.PERMISSION_DENIED
-        ? "位置权限被拒绝，可输入地点或坐标"
-        : "暂时无法获取浏览器位置，可输入地点或使用 IP 粗定位";
+        ? tRuntime("位置权限被拒绝，可输入地点或坐标")
+        : tRuntime("暂时无法获取浏览器位置，可输入地点或使用 IP 粗定位");
       showToast(message, "error");
     }, {
       enableHighAccuracy: true,
@@ -3953,7 +3956,7 @@ export default function InkStudio() {
           },
         }
       : current);
-    showToast("正在按原主题重新生成图片素材", "info");
+    showToast(tRuntime("正在按原主题重新生成图片素材"), "info");
   };
 
   const hasWifiCredentials = (candidate: InkApp) => {
@@ -3988,23 +3991,23 @@ export default function InkStudio() {
     localStorage.setItem(LOCAL_APPS_KEY, JSON.stringify(next));
 
     if (publishToMarket && containsWifiAccess) {
-      showToast("已保存到本机；Wi-Fi 二维码不会公开，避免泄露网络密码", "info");
+      showToast(tRuntime("已保存到本机；Wi-Fi 二维码不会公开，避免泄露网络密码"), "info");
     } else if (publishToMarket) {
       try {
         const published = await publishTemplateRecord(saved, true);
         setPublicApps((items) => [published, ...items.filter((item) => item.id !== published.id)]);
-        showToast("已保存到本机，并发布到模板市场", "success");
+        showToast(tRuntime("已保存到本机，并发布到模板市场"), "success");
       } catch {
-        showToast("已保存到本机；公开发布暂时不可用", "info");
+        showToast(tRuntime("已保存到本机；公开发布暂时不可用"), "info");
       }
     } else {
-      showToast("模版已保存在这台设备上", "success");
+      showToast(tRuntime("模版已保存在这台设备上"), "success");
     }
   };
 
   const shareCurrentTemplate = async () => {
     if (hasWifiCredentials(app)) {
-      showToast("请先移除 Wi-Fi 凭据，再分享模版链接", "error");
+      showToast(tRuntime("请先移除 Wi-Fi 凭据，再分享模版链接"), "error");
       return;
     }
     try {
@@ -4016,7 +4019,7 @@ export default function InkStudio() {
       const shared = await publishTemplateRecord({ ...app, id: shareId, isPublic: false }, false);
       await copyTemplateLink(shared.id);
     } catch {
-      showToast("分享链接生成失败，请稍后重试", "error");
+      showToast(tRuntime("分享链接生成失败，请稍后重试"), "error");
     }
   };
 
@@ -4027,7 +4030,7 @@ export default function InkStudio() {
       else if (!existing.ok) throw new Error("template unavailable");
       await copyTemplateLink(selected.id);
     } catch {
-      showToast("分享链接生成失败，请稍后重试", "error");
+      showToast(tRuntime("分享链接生成失败，请稍后重试"), "error");
     }
   };
 
@@ -4036,7 +4039,7 @@ export default function InkStudio() {
     const cloned = {
       ...upgraded,
       id: `app-${Date.now()}`,
-      author: "我",
+      author: tRuntime("我"),
       isPublic: false,
       createdAt: new Date().toISOString(),
     };
@@ -4044,7 +4047,7 @@ export default function InkStudio() {
     setPrompt(cloned.prompt);
     setElementSizeDrafts({});
     navigateToTab("studio");
-    showToast("已复制到创作台，可以继续调整", "success");
+    showToast(tRuntime("已复制到创作台，可以继续调整"), "success");
   };
 
   const calculateNextDelay = useCallback((current: InkApp) => {
@@ -4060,7 +4063,7 @@ export default function InkStudio() {
   const selectNewBluetoothDevice = useCallback(async () => {
     const driver = new TodooCard(setProgress);
     if (!driver.supported) {
-      showToast("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站", "error");
+      showToast(tRuntime("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站"), "error");
       return null;
     }
     try {
@@ -4071,14 +4074,14 @@ export default function InkStudio() {
       return profile;
     } catch (error) {
       driver.disconnect();
-      showToast(error instanceof Error ? error.message : "没有选择设备", "error");
+      showToast(error instanceof Error ? error.message : tRuntime("没有选择设备"), "error");
       return null;
     }
   }, [rememberDevice, showToast]);
 
   const bindEsp32Device = useCallback(async () => {
     if (!/^\d{6}$/.test(deviceCode)) {
-      setDeviceFlowError("请输入设备屏幕上的六位设备码");
+      setDeviceFlowError(tRuntime("请输入设备屏幕上的六位设备码"));
       return;
     }
     setDeviceFlowBusy(true);
@@ -4094,7 +4097,7 @@ export default function InkStudio() {
       setAddDeviceOpen(false);
       showToast(`已绑定 ${profile.name}，设备端计划会自动同步`, "success");
     } catch (error) {
-      setDeviceFlowError(error instanceof Error ? error.message : "设备绑定失败");
+      setDeviceFlowError(error instanceof Error ? error.message : tRuntime("设备绑定失败"));
     } finally {
       setDeviceFlowBusy(false);
     }
@@ -4107,9 +4110,9 @@ export default function InkStudio() {
     try {
       await flashM5PaperColor(setFirmwareProgress);
       setAddDeviceStep("flash-complete");
-      showToast("M5 PaperColor 瘦客户端已写入", "success");
+      showToast(tRuntime("M5 PaperColor 瘦客户端已写入"), "success");
     } catch (error) {
-      setDeviceFlowError(error instanceof Error ? error.message : "设备刷机失败");
+      setDeviceFlowError(error instanceof Error ? error.message : tRuntime("设备刷机失败"));
     } finally {
       setDeviceFlowBusy(false);
     }
@@ -4136,7 +4139,7 @@ export default function InkStudio() {
     const existing = deviceDriversRef.current.get(device.id);
     if (existing) return existing;
     const driver = new TodooCard(setProgress);
-    if (!driver.supported) throw new Error("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站");
+    if (!driver.supported) throw new Error(tRuntime("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站"));
     const authorized = await driver.listAuthorizedDevices();
     const restored = authorized.find((item) => item.id === device.id);
     if (restored) {
@@ -4157,7 +4160,7 @@ export default function InkStudio() {
     const device = deviceProfilesRef.current.find((item) => item.id === calibrationDeviceId);
     if (!device) return;
     if (transferLocksRef.current.has(device.id)) {
-      setCalibrationError("这台设备正在写入，请等待当前任务完成后再校色");
+      setCalibrationError(tRuntime("这台设备正在写入，请等待当前任务完成后再校色"));
       return;
     }
     setCalibrationBusy(true);
@@ -4169,9 +4172,9 @@ export default function InkStudio() {
       await driver.writeCalibration(true);
       setCalibrationStep(2);
       setDeviceStatus(deviceTasksRef.current.some((task) => task.deviceId === device.id) ? "scheduled" : "ready");
-      showToast("标准六色色卡已写入；颜色稳定后请拍照", "success");
+      showToast(tRuntime("标准六色色卡已写入；颜色稳定后请拍照"), "success");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "标准色卡写入失败";
+      const message = error instanceof Error ? error.message : tRuntime("标准色卡写入失败");
       setCalibrationError(message);
       setDeviceStatus("error");
     } finally {
@@ -4190,7 +4193,7 @@ export default function InkStudio() {
       setCalibrationPhoto(analyzed.preview);
       setCalibrationStep(3);
     } catch (error) {
-      setCalibrationError(error instanceof Error ? error.message : "照片分析失败，请重新拍摄");
+      setCalibrationError(error instanceof Error ? error.message : tRuntime("照片分析失败，请重新拍摄"));
     } finally {
       setCalibrationBusy(false);
       if (calibrationFileInputRef.current) calibrationFileInputRef.current.value = "";
@@ -4205,14 +4208,14 @@ export default function InkStudio() {
     setCalibrationDeviceId(null);
     setCalibrationDraft(null);
     setCalibrationPhoto(null);
-    showToast("设备校色 Profile 已保存并启用", "success");
+    showToast(tRuntime("设备校色 Profile 已保存并启用"), "success");
   }, [calibrationDeviceId, calibrationDraft, commitDeviceProfiles, showToast]);
 
   const toggleDeviceColorCorrection = useCallback((deviceId: string, enabled: boolean) => {
     commitDeviceProfiles((current) => current.map((device) => device.id === deviceId
       ? { ...device, colorCorrectionEnabled: enabled }
       : device));
-    showToast(enabled ? "已开启设备色差纠正" : "已关闭设备色差纠正", "info");
+    showToast(enabled ? tRuntime("已开启设备色差纠正") : tRuntime("已关闭设备色差纠正"), "info");
   }, [commitDeviceProfiles, showToast]);
 
   const stopDeviceTask = useCallback(async (taskId: string, notify = true) => {
@@ -4224,12 +4227,12 @@ export default function InkStudio() {
       try {
         await deleteEsp32Task(task.deviceId, task.id);
         await refreshEsp32Devices();
-        if (notify) showToast("任务已从服务器删除；在线设备会在下一次同步时移除", "success");
+        if (notify) showToast(tRuntime("任务已从服务器删除；在线设备会在下一次同步时移除"), "success");
       } catch (error) {
         commitDeviceTasks((current) => current.map((item) => item.id === taskId
-          ? { ...item, status: "error", lastError: error instanceof Error ? error.message : "删除任务失败" }
+          ? { ...item, status: "error", lastError: error instanceof Error ? error.message : tRuntime("删除任务失败") }
           : item));
-        if (notify) showToast(error instanceof Error ? error.message : "删除任务失败", "error");
+        if (notify) showToast(error instanceof Error ? error.message : tRuntime("删除任务失败"), "error");
       }
       return;
     }
@@ -4238,13 +4241,13 @@ export default function InkStudio() {
     taskTimersRef.current.delete(taskId);
     commitDeviceTasks((current) => current.filter((task) => task.id !== taskId));
     if (deviceTasksRef.current.length <= 1) setDeviceStatus(deviceName ? "ready" : "idle");
-    if (notify) showToast("定时任务已停止", "info");
+    if (notify) showToast(tRuntime("定时任务已停止"), "info");
   }, [commitDeviceTasks, deviceName, refreshEsp32Devices, showToast]);
 
   const prepareEsp32Frame = useCallback(async (targetApp: InkApp) => {
     const editingCurrent = targetApp.id === currentAppRef.current.id;
     const currentCanvas = editingCurrent ? canvasRef.current : null;
-    if (editingCurrent && previewStatus === "loading") throw new Error("图片素材仍在加载，请稍候重试");
+    if (editingCurrent && previewStatus === "loading") throw new Error(tRuntime("图片素材仍在加载，请稍候重试"));
     const outputCanvas = currentCanvas ?? document.createElement("canvas");
     if (!currentCanvas) {
       const dimensions = screenDimensions(targetApp.spec);
@@ -4295,7 +4298,7 @@ export default function InkStudio() {
         : task));
     };
     if (!driver) {
-      const reason = "找不到这台设备的授权，请重新选择设备";
+      const reason = tRuntime("找不到这台设备的授权，请重新选择设备");
       markTaskFailure(reason);
       return false;
     }
@@ -4303,19 +4306,19 @@ export default function InkStudio() {
     const reuseCurrentPreview = Boolean(options.reusePreview && editingThisApp && canvas);
     const renderInPreview = editingThisApp && !taskId && Boolean(canvas) && !reuseCurrentPreview;
     if (reuseCurrentPreview && previewStatus === "loading") {
-      const reason = "图片素材仍在加载，请稍候重试";
+      const reason = tRuntime("图片素材仍在加载，请稍候重试");
       markTaskFailure(reason);
       showToast(reason, "info");
       return false;
     }
     if (transferLocksRef.current.has(deviceId)) {
-      const reason = "这台设备正在执行另一个写入任务，将在下一轮重试";
+      const reason = tRuntime("这台设备正在执行另一个写入任务，将在下一轮重试");
       markTaskFailure(reason);
       showToast(reason, "info");
       return false;
     }
     if (document.visibilityState !== "visible") {
-      const reason = "页面在后台，等待重新打开后重试";
+      const reason = tRuntime("页面在后台，等待重新打开后重试");
       markTaskFailure(reason);
       showToast(reason, "info");
       return false;
@@ -4367,10 +4370,10 @@ export default function InkStudio() {
         reconnect: () => driver.reconnect(),
         write: () => driver.writeCanvas(deviceCanvas, true, { palette: calibrationPalette }),
         onRecovering: () => {
-          if (!taskId) setProgress({ phase: "connecting", percent: 2, message: "连接中断，正在自动重连…" });
+          if (!taskId) setProgress({ phase: "connecting", percent: 2, message: tRuntime("连接中断，正在自动重连…") });
           if (taskId) {
             commitDeviceTasks((current) => current.map((task) => task.id === taskId
-              ? { ...task, status: "writing", lastError: "连接中断，正在自动重连…" }
+              ? { ...task, status: "writing", lastError: tRuntime("连接中断，正在自动重连…") }
               : task));
           }
         },
@@ -4394,15 +4397,15 @@ export default function InkStudio() {
           : task));
       }
       setDeviceStatus(taskId ? "scheduled" : "ready");
-      if (!taskId) showToast("帧已发送，墨水屏可能还会显色几分钟", "success");
+      if (!taskId) showToast(tRuntime("帧已发送，墨水屏可能还会显色几分钟"), "success");
       return true;
     } catch (error) {
-      const rawMessage = error instanceof Error ? error.message : "写入失败";
+      const rawMessage = error instanceof Error ? error.message : tRuntime("写入失败");
       const recoverable = isRecoverableBluetoothError(error);
       const message = recoverable
         ? taskId
-          ? "设备暂时离线，自动重连未成功；稍后将继续后台重试"
-          : "设备暂时离线，自动重连未成功；请靠近设备后重试"
+          ? tRuntime("设备暂时离线，自动重连未成功；稍后将继续后台重试")
+          : tRuntime("设备暂时离线，自动重连未成功；请靠近设备后重试")
         : rawMessage;
       driver.disconnect();
       markTaskFailure(message, lastCanvas);
@@ -4457,15 +4460,15 @@ export default function InkStudio() {
       commitDeviceTasks((current) => current.map((item) => item.id === taskId
         ? { ...item, status: "writing", lastError: null }
         : item));
-      showToast("正在更新服务器任务，设备联网后会自动同步", "info");
+      showToast(tRuntime("正在更新服务器任务，设备联网后会自动同步"), "info");
       try {
         await publishTaskToEsp32(profile, task.app);
-        showToast(profile.online ? "任务已更新，在线设备即将同步" : "任务已更新，设备开机后同步", "success");
+        showToast(profile.online ? tRuntime("任务已更新，在线设备即将同步") : tRuntime("任务已更新，设备开机后同步"), "success");
       } catch (error) {
         commitDeviceTasks((current) => current.map((item) => item.id === taskId
-          ? { ...item, status: "error", lastError: error instanceof Error ? error.message : "任务更新失败" }
+          ? { ...item, status: "error", lastError: error instanceof Error ? error.message : tRuntime("任务更新失败") }
           : item));
-        showToast(error instanceof Error ? error.message : "任务更新失败", "error");
+        showToast(error instanceof Error ? error.message : tRuntime("任务更新失败"), "error");
         setDeviceStatus("error");
       }
       return;
@@ -4473,7 +4476,7 @@ export default function InkStudio() {
     commitDeviceTasks((current) => current.map((item) => item.id === taskId
       ? { ...item, status: "writing", nextRunAt: null, lastError: null }
       : item));
-    showToast("正在重新连接设备并重试", "info");
+    showToast(tRuntime("正在重新连接设备并重试"), "info");
     const wrote = await runTransfer(task.app, task.deviceId, taskId, { reconnect: true });
     if (!deviceTasksRef.current.some((item) => item.id === taskId)) return;
     const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
@@ -4498,13 +4501,13 @@ export default function InkStudio() {
         await publishTaskToEsp32(selectedProfile, app);
         showToast(
           selectedProfile.online
-            ? "任务已保存，M5 PaperColor 将在下一次同步时拉取"
-            : "任务已保存；设备开机联网后会自动拉取",
+            ? tRuntime("任务已保存，M5 PaperColor 将在下一次同步时拉取")
+            : tRuntime("任务已保存；设备开机联网后会自动拉取"),
           "success",
         );
       } catch (error) {
         setDeviceStatus("error");
-        showToast(error instanceof Error ? error.message : "ESP32 任务下发失败", "error");
+        showToast(error instanceof Error ? error.message : tRuntime("ESP32 任务下发失败"), "error");
       }
       return;
     }
@@ -4514,7 +4517,7 @@ export default function InkStudio() {
       driverRef.current = driver;
     }
     if (!driver?.supported) {
-      showToast("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站", "error");
+      showToast(tRuntime("请在 HTTPS 下使用 Android 或桌面 Chromium 打开此网站"), "error");
       setDeviceStatus("error");
       return;
     }
@@ -4539,7 +4542,7 @@ export default function InkStudio() {
           `${resolvedDeviceName} 已有一个 ${conflicting.app.customMinutes} 分钟高频任务「${conflicting.app.title}」。\n\n五分钟以下的任务同一设备只能运行一个，是否停止原任务并替换？`,
         );
         if (!replace) {
-          showToast("已保留原来的高频任务", "info");
+          showToast(tRuntime("已保留原来的高频任务"), "info");
           return;
         }
         stopDeviceTask(conflicting.id, false);
@@ -4585,13 +4588,13 @@ export default function InkStudio() {
       const afterRun = deviceTasksRef.current.find((item) => item.id === taskId);
       scheduleDeviceTask(taskId, wrote ? undefined : retryDelayForFailures(afterRun?.consecutiveFailures ?? 1));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "没有选择设备";
+      const message = error instanceof Error ? error.message : tRuntime("没有选择设备");
       showToast(message, "error");
       setDeviceStatus("error");
     }
   };
 
-  const contentTitle = tab === "mine" ? "我的模版" : tab === "explore" ? "模板市场" : tab === "device" ? "设备中心" : null;
+  const contentTitle = tab === "mine" ? tRuntime("我的模版") : tab === "explore" ? tRuntime("模板市场") : tab === "device" ? tRuntime("设备中心") : null;
   const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
   const previewDimensions = screenDimensions(app.spec);
   const previewLandscape = screenOrientation(app.spec) === "landscape";
@@ -4629,7 +4632,7 @@ export default function InkStudio() {
     <main className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="sidebar-head">
-          <button className="brand" type="button" onClick={() => navigateToTab("studio")} aria-label="返回创作台">
+          <button className="brand" type="button" onClick={() => navigateToTab("studio")} aria-label={tRuntime("返回创作台")}>
             <span className="brand-mark">I</span>
             <span className="brand-name">Inkloop</span>
           </button>
@@ -4637,14 +4640,14 @@ export default function InkStudio() {
             type="button"
             className="sidebar-toggle"
             onClick={toggleSidebar}
-            aria-label={sidebarCollapsed ? "展开左侧边栏" : "收起左侧边栏"}
+            aria-label={sidebarCollapsed ? tRuntime("展开左侧边栏") : tRuntime("收起左侧边栏")}
             aria-expanded={!sidebarCollapsed}
-            title={sidebarCollapsed ? "展开边栏" : "收起边栏"}
+            title={sidebarCollapsed ? tRuntime("展开边栏") : tRuntime("收起边栏")}
           >
             <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
           </button>
         </div>
-        <nav aria-label="主导航">
+        <nav aria-label={tRuntime("主导航")}>
           {navItems.map((item) => (
             <button
               type="button"
@@ -4658,7 +4661,7 @@ export default function InkStudio() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-devices" aria-label="已选择的设备">
+        <div className="sidebar-devices" aria-label={tRuntime("已选择的设备")}>
           {deviceSummaries.length ? deviceSummaries.map((device) => (
             <button
               type="button"
@@ -4674,10 +4677,10 @@ export default function InkStudio() {
                 <strong>{device.name}</strong>
                 <small>{device.tasks.length
                   ? `${device.tasks.length} 个定时任务`
-                  : device.family === "esp32" ? (device.online ? "Wi‑Fi 在线" : "离线 · 开机后同步") : "已记住，可自动重连"}</small>
+                  : device.family === "esp32" ? (device.online ? tRuntime("Wi‑Fi 在线") : tRuntime("离线 · 开机后同步")) : tRuntime("已记住，可自动重连")}</small>
               </div>
               {device.tasks.length > 0 && <span className="task-count" aria-label={`${device.tasks.length} 个任务`}>{device.tasks.length}</span>}
-              {device.hasError && <span className="task-alert" aria-label="任务出现错误">!</span>}
+              {device.hasError && <span className="task-alert" aria-label={tRuntime("任务出现错误")}>!</span>}
               <span className="task-chevron" aria-hidden="true">›</span>
             </button>
           )) : (
@@ -4690,8 +4693,22 @@ export default function InkStudio() {
             <span aria-hidden="true">＋</span><span className="add-device-label">添加设备</span>
           </button>
         </div>
-        <a className="product-link" href="https://p.todoo.tech/?lang=zh" target="_blank" rel="noreferrer">
-          <span className="product-link-label">产品信息</span><span aria-hidden="true">↗</span>
+        <div className="sidebar-locale" role="group" aria-label={t("界面语言")}>
+          {localeOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={locale === option.value ? "active" : ""}
+              onClick={() => setLocale(option.value)}
+              aria-pressed={locale === option.value}
+              title={t("界面语言")}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <a className="product-link" href={`https://p.todoo.tech/?lang=${locale}`} target="_blank" rel="noreferrer">
+          <span className="product-link-label">{t("产品信息")}</span><span aria-hidden="true">↗</span>
         </a>
       </aside>
 
@@ -4717,7 +4734,7 @@ export default function InkStudio() {
                   <button
                     type="button"
                     className="save-menu-toggle"
-                    aria-label="打开保存选项"
+                    aria-label={tRuntime("打开保存选项")}
                     aria-haspopup="menu"
                     aria-expanded={saveMenuOpen}
                     onClick={() => setSaveMenuOpen((open) => !open)}
@@ -4763,7 +4780,7 @@ export default function InkStudio() {
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     onPaste={handlePromptPaste}
-                    placeholder="例如：每天早上 8 点显示上海天气…"
+                    placeholder={tRuntime("例如：每天早上 8 点显示上海天气…")}
                     rows={7}
                   />
                   <div className="prompt-counter">{prompt.length} / 300</div>
@@ -4799,12 +4816,12 @@ export default function InkStudio() {
                   <span>试试这些</span>
                   {samplePrompts.map((sample) => (
                     <button type="button" key={sample} onClick={() => setPrompt(sample)}>
-                      {sample.replace("每天 8 点", "天气").replace("显示", "").slice(0, 10)}
+                      {sample.replace(tRuntime("每天 8 点"), tRuntime("天气")).replace(tRuntime("显示"), "").slice(0, 10)}
                     </button>
                   ))}
                 </div>
                 <button className="generate-button" type="button" onClick={generate} disabled={generating}>
-                  <span>{generating ? (generatorStatus === "online" ? "模型编码中" : "生成中") : "✦ 生成应用"}</span>
+                  <span>{generating ? (generatorStatus === "online" ? tRuntime("模型编码中") : tRuntime("生成中")) : tRuntime("✦ 生成应用")}</span>
                   <i>{generating ? "•••" : "→"}</i>
                 </button>
                 <div className="generator-note">
@@ -4821,8 +4838,8 @@ export default function InkStudio() {
                           localStorage.setItem(GENERATOR_MODEL_KEY, nextModel);
                         }}
                         disabled={generating}
-                        aria-label="选择在线编码模型"
-                        title={generatorModel === "auto" ? "由服务自动选择模型" : generatorModel}
+                        aria-label={tRuntime("选择在线编码模型")}
+                        title={generatorModel === "auto" ? tRuntime("由服务自动选择模型") : generatorModel}
                       >
                         <option value="auto">自动选择模型</option>
                         {generatorModels.map((model) => (
@@ -4831,7 +4848,7 @@ export default function InkStudio() {
                       </select>
                     </p>
                   ) : (
-                    <p>{generatorStatus === "checking" ? "正在检查在线编码服务…" : "等待配置 LLM_API_KEY · 当前自动使用本地模板"}</p>
+                    <p>{generatorStatus === "checking" ? tRuntime("正在检查在线编码服务…") : tRuntime("等待配置 LLM_API_KEY · 当前自动使用本地模板")}</p>
                   )}
                 </div>
               </section>
@@ -4844,20 +4861,20 @@ export default function InkStudio() {
                       <h2>屏幕预览</h2>
                       <p>
                         {previewDimensions.width} × {previewDimensions.height} · {previewStatus === "loading"
-                          ? app.spec.kind === "map" ? "正在获取并转换静态地图" : "正在获取并转换图片素材"
+                          ? app.spec.kind === "map" ? tRuntime("正在获取并转换静态地图") : tRuntime("正在获取并转换图片素材")
                           : previewStatus === "fallback"
                             ? app.spec.kind === "map"
-                              ? "地图暂不可用，请查看右侧设置"
+                              ? tRuntime("地图暂不可用，请查看右侧设置")
                               : app.spec.artwork?.layout === "fullscreen"
-                              ? "图片暂不可用，已保持纯图片模式"
-                              : "素材暂不可用，已使用图形排版"
+                              ? tRuntime("图片暂不可用，已保持纯图片模式")
+                              : tRuntime("素材暂不可用，已使用图形排版")
                             : app.localImage
-                              ? "本机图片已转换为实际六色"
+                              ? tRuntime("本机图片已转换为实际六色")
                               : app.spec.kind === "map"
-                                ? "百度静态地图已转换为实际六色"
+                                ? tRuntime("百度静态地图已转换为实际六色")
                               : app.spec.artwork
-                                ? "图片已转换为实际六色"
-                              : "实际六色色板"}
+                                ? tRuntime("图片已转换为实际六色")
+                              : tRuntime("实际六色色板")}
                       </p>
                     </div>
                   </div>
@@ -4868,7 +4885,7 @@ export default function InkStudio() {
                         type="button"
                         onClick={regeneratePreviewArtwork}
                         disabled={!app.spec.artwork || Boolean(app.localImage) || previewStatus === "loading"}
-                        title={app.localImage ? "当前使用的是你贴入的图片" : app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : "当前应用没有图片素材"}
+                        title={app.localImage ? tRuntime("当前使用的是你贴入的图片") : app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : tRuntime("当前应用没有图片素材")}
                       >
                         ↻ 重新生成
                       </button>
@@ -4877,7 +4894,7 @@ export default function InkStudio() {
                       className="scale-chip"
                       value={previewScale}
                       onChange={(event) => setPreviewScale(Number(event.target.value) as 35 | 50 | 75 | 100)}
-                      aria-label="调整屏幕预览缩放"
+                      aria-label={tRuntime("调整屏幕预览缩放")}
                       title={`只调整网页预览大小，不影响 ${previewDimensions.width} × ${previewDimensions.height} 写入画质`}
                     >
                       {[35, 50, 75, 100].map((scale) => (
@@ -4909,9 +4926,9 @@ export default function InkStudio() {
                             ref={canvasRef}
                             width={previewDimensions.width}
                             height={previewDimensions.height}
-                            aria-label="电子墨水屏预览"
+                            aria-label={tRuntime("电子墨水屏预览")}
                           />
-                          {app.spec.kind !== "map" && <div className="screen-drag-layer" aria-label="拖拽画面元素调整位置">
+                          {app.spec.kind !== "map" && <div className="screen-drag-layer" aria-label={tRuntime("拖拽画面元素调整位置")}>
                             {screenElementOptions.filter(({ key }) => screenDisplay[key]).map((element) => {
                               const savedPosition = screenDisplay.positions[element.key];
                               const position = dragPreview?.element === element.key ? dragPreview : savedPosition;
@@ -4945,7 +4962,7 @@ export default function InkStudio() {
                               className={`map-preview-interaction${mapPanPreview ? " dragging" : ""}`}
                               role="application"
                               tabIndex={0}
-                              aria-label="地图预览：按住拖动并在松开后更新位置，滚轮缩放；方向键移动，加减键缩放"
+                              aria-label={tRuntime("地图预览：按住拖动并在松开后更新位置，滚轮缩放；方向键移动，加减键缩放")}
                               onPointerDown={handleMapPointerDown}
                               onPointerMove={handleMapPointerMove}
                               onPointerUp={finishMapDrag}
@@ -4953,7 +4970,7 @@ export default function InkStudio() {
                               onWheel={handleMapWheel}
                               onKeyDown={handleMapKeyDown}
                             >
-                              <span>{mapPanPreview ? "松开后更新地图" : "按住拖动 · 滚轮缩放"}{mapZoomPreview ? ` · ${mapZoomPreview} 级` : ""}</span>
+                              <span>{mapPanPreview ? tRuntime("松开后更新地图") : tRuntime("按住拖动 · 滚轮缩放")}{mapZoomPreview ? ` · ${mapZoomPreview} 级` : ""}</span>
                             </div>
                           )}
                         </div>
@@ -4962,14 +4979,14 @@ export default function InkStudio() {
                     </div>
                   </div>
                 </div>
-                <div className="palette-strip" aria-label="屏幕支持六种颜色">
+                <div className="palette-strip" aria-label={tRuntime("屏幕支持六种颜色")}>
                   {[
-                    ["黑", "#111"],
-                    ["白", EPAPER_WHITE],
-                    ["黄", "#e5c900"],
-                    ["红", "#dc3f2f"],
-                    ["蓝", "#2756c7"],
-                    ["绿", "#087c4e"],
+                    [tRuntime("黑"), "#111"],
+                    [tRuntime("白"), EPAPER_WHITE],
+                    [tRuntime("黄"), "#e5c900"],
+                    [tRuntime("红"), "#dc3f2f"],
+                    [tRuntime("蓝"), "#2756c7"],
+                    [tRuntime("绿"), "#087c4e"],
                   ].map(([label, color]) => (
                     <span key={label}><i style={{ background: color }} />{label}</span>
                   ))}
@@ -5015,12 +5032,12 @@ export default function InkStudio() {
                 </div>
                 <div className="display-editor">
                   <div className="settings-subhead">
-                    <strong>{app.spec.kind === "map" ? "地图画面" : app.spec.kind === "card" ? "卡片设计" : "画面元素"}</strong>
+                    <strong>{app.spec.kind === "map" ? tRuntime("地图画面") : app.spec.kind === "card" ? tRuntime("卡片设计") : tRuntime("画面元素")}</strong>
                     <small>{app.spec.kind === "map"
-                      ? "位置和样式都可在这里继续调整"
+                      ? tRuntime("位置和样式都可在这里继续调整")
                       : app.spec.kind === "card"
-                        ? "LLM 先生成数值与文案，你可以继续修改"
-                        : "勾选后可在预览中拖拽"}</small>
+                        ? tRuntime("LLM 先生成数值与文案，你可以继续修改")
+                        : tRuntime("勾选后可在预览中拖拽")}</small>
                   </div>
                   {app.spec.kind === "card" ? (
                     <div className="card-orientation-note">
@@ -5032,10 +5049,10 @@ export default function InkStudio() {
                       <strong>屏幕方向</strong>
                       <small>LLM 会先建议，你可以随时手动切换</small>
                     </div>
-                    <div className="orientation-options" role="group" aria-label="屏幕方向">
+                    <div className="orientation-options" role="group" aria-label={tRuntime("屏幕方向")}>
                       {([
-                        ["portrait", "竖版 528×792"],
-                        ["landscape", "横版 792×528"],
+                        ["portrait", tRuntime("竖版 528×792")],
+                        ["landscape", tRuntime("横版 792×528")],
                       ] as Array<[ScreenOrientation, string]>).map(([value, label]) => (
                         <button
                           type="button"
@@ -5053,14 +5070,14 @@ export default function InkStudio() {
                     </div>
                   </div>}
                   {app.spec.kind === "map" && app.spec.map && (
-                    <div className="map-editor" aria-label="地图设置">
+                    <div className="map-editor" aria-label={tRuntime("地图设置")}>
                       <div className={`map-service-state ${mapServiceStatus}`} role="status">
                         <i />
                         <span>{mapServiceStatus === "checking"
-                          ? "正在检查地图服务"
+                          ? tRuntime("正在检查地图服务")
                           : mapServiceStatus === "ready"
-                            ? "百度静态地图服务已就绪"
-                            : mapServiceMessage || "地图服务尚未配置"}</span>
+                            ? tRuntime("百度静态地图服务已就绪")
+                            : mapServiceMessage || tRuntime("地图服务尚未配置")}</span>
                       </div>
 
                       <div className="map-editor-group">
@@ -5068,7 +5085,7 @@ export default function InkStudio() {
                           <strong>定位方式</strong>
                           <small>按住预览拖动，松开后更新位置；IP 仅为城市级估算</small>
                         </div>
-                        <div className="map-location-options" role="group" aria-label="地图定位方式">
+                        <div className="map-location-options" role="group" aria-label={tRuntime("地图定位方式")}>
                           <button
                             type="button"
                             className={app.spec.map.locationMode === "browser" ? "selected" : ""}
@@ -5088,7 +5105,7 @@ export default function InkStudio() {
                                 coordinateType: "bd09ll",
                                 address: undefined,
                                 approximate: true,
-                                statusMessage: "正在按网络 IP 估算所在城市",
+                                statusMessage: tRuntime("正在按网络 IP 估算所在城市"),
                               });
                             }}
                           >
@@ -5100,7 +5117,7 @@ export default function InkStudio() {
                       <div className="map-editor-group">
                         <div className="map-editor-label">
                           <strong>地点与坐标</strong>
-                          <small>{app.spec.map.coordinateType === "wgs84ll" ? "浏览器 WGS84 · 预览时服务端转换" : "百度 BD-09 坐标"}</small>
+                          <small>{app.spec.map.coordinateType === "wgs84ll" ? tRuntime("浏览器 WGS84 · 预览时服务端转换") : tRuntime("百度 BD-09 坐标")}</small>
                         </div>
                         <label className="map-place-field">
                           <span>地点、地址或 POI</span>
@@ -5119,13 +5136,13 @@ export default function InkStudio() {
                                 coordinateType: "bd09ll",
                                 address: undefined,
                                 approximate: false,
-                                statusMessage: query ? "正在查找地点" : "请先输入地点或使用定位",
+                                statusMessage: query ? tRuntime("正在查找地点") : tRuntime("请先输入地点或使用定位"),
                               });
                             }}
                             onKeyDown={(event) => {
                               if (event.key === "Enter") event.currentTarget.blur();
                             }}
-                            placeholder="例如：上海市杨浦区公司北门"
+                            placeholder={tRuntime("例如：上海市杨浦区公司北门")}
                           />
                         </label>
                         <div className="map-coordinate-grid">
@@ -5173,7 +5190,7 @@ export default function InkStudio() {
                             onKeyDown={(event) => {
                               if (event.key === "Enter") event.currentTarget.blur();
                             }}
-                            placeholder={app.spec.map.address || app.spec.map.query || "例如：集合点"}
+                            placeholder={app.spec.map.address || app.spec.map.query || tRuntime("例如：集合点")}
                           />
                         </label>
                       </div>
@@ -5184,7 +5201,7 @@ export default function InkStudio() {
                           <small>拖动滑杆，或在预览上滚动鼠标 · 3—19</small>
                         </div>
                         <div className="map-zoom-control">
-                          <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel - 1 })} aria-label="缩小地图">−</button>
+                          <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel - 1 })} aria-label={tRuntime("缩小地图")}>−</button>
                           <input
                             type="range"
                             min={3}
@@ -5192,7 +5209,7 @@ export default function InkStudio() {
                             step={1}
                             value={app.spec.map.zoomLevel}
                             onChange={(event) => updateMap({ zoomLevel: Number(event.target.value) })}
-                            aria-label="地图缩放级别"
+                            aria-label={tRuntime("地图缩放级别")}
                           />
                           <input
                             type="number"
@@ -5201,17 +5218,17 @@ export default function InkStudio() {
                             step={1}
                             value={app.spec.map.zoomLevel}
                             onChange={(event) => updateMap({ zoomLevel: Number(event.target.value) || 3 })}
-                            aria-label="手动输入地图缩放级别"
+                            aria-label={tRuntime("手动输入地图缩放级别")}
                           />
-                          <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel + 1 })} aria-label="放大地图">＋</button>
+                          <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel + 1 })} aria-label={tRuntime("放大地图")}>＋</button>
                         </div>
                       </div>
 
                       <div className="map-toggle-list">
                         {([
-                          ["marker", "显示位置标记", "在地图中心标出目标位置"],
-                          ["showAddress", "显示名称", "优先显示自定义名称，否则使用解析地址"],
-                          ["showCoordinates", "显示坐标", "显示 BD-09 经纬度"],
+                          ["marker", tRuntime("显示位置标记"), tRuntime("在地图中心标出目标位置")],
+                          ["showAddress", tRuntime("显示名称"), tRuntime("优先显示自定义名称，否则使用解析地址")],
+                          ["showCoordinates", tRuntime("显示坐标"), tRuntime("显示 BD-09 经纬度")],
                         ] as Array<["marker" | "showAddress" | "showCoordinates", string, string]>).map(([key, label, detail]) => (
                           <label key={key}>
                             <span><strong>{label}</strong><small>{detail}</small></span>
@@ -5225,19 +5242,19 @@ export default function InkStudio() {
                       </div>
                       <p className={`map-location-note${app.spec.map.approximate ? " approximate" : ""}`}>
                         {app.spec.map.statusMessage || (app.spec.map.approximate
-                          ? "当前只是城市级估算，写入前建议在预览上拖动并松开以微调。"
-                          : "在屏幕预览上按住拖动，松开后更新地图；滚轮调整缩放。")}
+                          ? tRuntime("当前只是城市级估算，写入前建议在预览上拖动并松开以微调。")
+                          : tRuntime("在屏幕预览上按住拖动，松开后更新地图；滚轮调整缩放。"))}
                       </p>
                     </div>
                   )}
                   {app.spec.kind === "card" && app.spec.card && (
-                    <div className="card-editor" aria-label="卡片设计设置">
-                      <div className="card-rarity-options" role="group" aria-label="卡片稀有度">
+                    <div className="card-editor" aria-label={tRuntime("卡片设计设置")}>
+                      <div className="card-rarity-options" role="group" aria-label={tRuntime("卡片稀有度")}>
                         {([
-                          ["common", "普卡", "纸张"],
-                          ["silver", "银卡", "银箔"],
-                          ["gold", "金卡", "鎏金"],
-                          ["holo", "闪卡", "闪膜"],
+                          ["common", tRuntime("普卡"), tRuntime("纸张")],
+                          ["silver", tRuntime("银卡"), tRuntime("银箔")],
+                          ["gold", tRuntime("金卡"), tRuntime("鎏金")],
+                          ["holo", tRuntime("闪卡"), tRuntime("闪膜")],
                         ] as Array<[CardRarity, string, string]>).map(([value, label, detail]) => (
                           <button
                             type="button"
@@ -5367,7 +5384,7 @@ export default function InkStudio() {
                             </label>
                           )}
                           <label className={`component-size-control${key === "qr" ? " qr-size-control" : ""}`}>
-                            <span>{key === "qr" ? "尺寸" : "字号"}</span>
+                            <span>{key === "qr" ? tRuntime("尺寸") : tRuntime("字号")}</span>
                             <input
                               type="number"
                               min={key === "qr" ? 108 : 10}
@@ -5407,10 +5424,10 @@ export default function InkStudio() {
                       <div className="render-mode-heading">
                         <span>画面渲染</span>
                         <small>{app.spec.artwork || app.localImage
-                          ? "图片默认 Official Skill"
-                          : "纯文字默认 Inkloop text"}</small>
+                          ? tRuntime("图片默认 Official Skill")
+                          : tRuntime("纯文字默认 Inkloop text")}</small>
                       </div>
-                      <div className="render-mode-options" role="group" aria-label="画面渲染方式">
+                      <div className="render-mode-options" role="group" aria-label={tRuntime("画面渲染方式")}>
                         {renderModeOptions.map((mode) => (
                           <button
                             type="button"
@@ -5454,7 +5471,7 @@ export default function InkStudio() {
                               ...current,
                               spec: { ...current.spec, footer: event.target.value },
                             }))}
-                            placeholder="输入一句话"
+                            placeholder={tRuntime("输入一句话")}
                           />
                           <button type="button" onClick={randomizeQuote}>随机</button>
                         </div>
@@ -5467,14 +5484,14 @@ export default function InkStudio() {
                           value={screenDisplay.logoText}
                           maxLength={20}
                           onChange={(event) => updateDisplay({ logoText: event.target.value })}
-                          placeholder="例如 INKLOOP"
+                          placeholder={tRuntime("例如 INKLOOP")}
                         />
                       </label>
                     )}
                     {screenDisplay.qr && (
                       <div className="display-field qr-content-field">
                         <span>二维码内容</span>
-                        <div className="qr-mode-options" role="group" aria-label="二维码内容类型">
+                        <div className="qr-mode-options" role="group" aria-label={tRuntime("二维码内容类型")}>
                           <button
                             type="button"
                             className={screenDisplay.qrMode === "text" ? "selected" : ""}
@@ -5498,7 +5515,7 @@ export default function InkStudio() {
                                 value={screenDisplay.qrWifiSsid}
                                 maxLength={64}
                                 onChange={(event) => updateDisplay({ qrWifiSsid: event.target.value })}
-                                placeholder="例如 Home WiFi"
+                                placeholder={tRuntime("例如 Home WiFi")}
                               />
                             </label>
                             <label>
@@ -5523,7 +5540,7 @@ export default function InkStudio() {
                                   maxLength={128}
                                   autoComplete="off"
                                   onChange={(event) => updateDisplay({ qrWifiPassword: event.target.value })}
-                                  placeholder="只保存在当前浏览器"
+                                  placeholder={tRuntime("只保存在当前浏览器")}
                                 />
                               </label>
                             )}
@@ -5538,17 +5555,17 @@ export default function InkStudio() {
                           </div>
                         ) : (
                           <textarea
-                            aria-label="二维码文字或网址"
+                            aria-label={tRuntime("二维码文字或网址")}
                             value={screenDisplay.qrText}
                             maxLength={512}
                             rows={3}
                             onChange={(event) => updateDisplay({ qrText: event.target.value })}
-                            placeholder="输入网址或任意文字"
+                            placeholder={tRuntime("输入网址或任意文字")}
                           />
                         )}
                         <small>{screenDisplay.qrMode === "wifi"
-                          ? "密码仅保存在当前浏览器；包含 Wi-Fi 凭据的模版不能发布到模板市场。"
-                          : "内容只在本机生成二维码，不会发送到二维码服务；白色留边是扫码所必需。"}</small>
+                          ? tRuntime("密码仅保存在当前浏览器；包含 Wi-Fi 凭据的模版不能发布到模板市场。")
+                          : tRuntime("内容只在本机生成二维码，不会发送到二维码服务；白色留边是扫码所必需。")}</small>
                       </div>
                     )}
                     {(screenDisplay.weather || screenDisplay.weatherLarge) && (
@@ -5567,7 +5584,7 @@ export default function InkStudio() {
                             setPreferredWeatherCity(city);
                             localStorage.setItem(WEATHER_CITY_KEY, city);
                           }}
-                          placeholder="例如 上海"
+                          placeholder={tRuntime("例如 上海")}
                         />
                       </label>
                     )}
@@ -5575,16 +5592,16 @@ export default function InkStudio() {
                   </>)}
                 </div>
                 {app.spec.table?.type === "agenda" && (
-                  <section className="agenda-editor" aria-label="智能日程布局与范围">
+                  <section className="agenda-editor" aria-label={tRuntime("智能日程布局与范围")}>
                     <div className="calendar-source-heading">
                       <strong>智能日程布局</strong>
                       <small>空闲时间会自动压缩</small>
                     </div>
-                    <div className="agenda-view-options" role="group" aria-label="日程布局">
+                    <div className="agenda-view-options" role="group" aria-label={tRuntime("日程布局")}>
                       {([
-                        ["agenda", "智能议程"],
-                        ["three-day", "三日时间轴"],
-                        ["workweek", "五日时间轴"],
+                        ["agenda", tRuntime("智能议程")],
+                        ["three-day", tRuntime("三日时间轴")],
+                        ["workweek", tRuntime("五日时间轴")],
                       ] as Array<[AgendaView, string]>).map(([value, label]) => (
                         <button
                           type="button"
@@ -5653,11 +5670,11 @@ export default function InkStudio() {
                           max={100}
                           step={5}
                           value={app.spec.table.eventWidth ?? 100}
-                          aria-label="日程块宽度"
+                          aria-label={tRuntime("日程块宽度")}
                           onChange={(event) => updateAgendaTable({ eventWidth: Number(event.target.value) })}
                         />
                       </label>
-                      <div className="agenda-content-toggles" role="group" aria-label="日程显示内容">
+                      <div className="agenda-content-toggles" role="group" aria-label={tRuntime("日程显示内容")}>
                         <label>
                           <input
                             type="checkbox"
@@ -5679,7 +5696,7 @@ export default function InkStudio() {
                   </section>
                 )}
                 {(app.spec.table?.type === "calendar" || app.spec.table?.type === "agenda") && (
-                  <section className="calendar-source-editor" aria-label="在线日历数据">
+                  <section className="calendar-source-editor" aria-label={tRuntime("在线日历数据")}>
                     <div className="calendar-source-heading">
                       <strong>在线日历数据</strong>
                       <small>{calendarPreferences.sources.length} 个个人来源 · 仅保存在当前浏览器</small>
@@ -5705,14 +5722,14 @@ export default function InkStudio() {
                       </label>
                     </div>
                     {calendarPreferences.sources.length > 0 && (
-                      <div className="calendar-source-list" role="list" aria-label="已添加的个人日历">
+                      <div className="calendar-source-list" role="list" aria-label={tRuntime("已添加的个人日历")}>
                         {calendarPreferences.sources.map((source, index) => (
                           <div
                             key={source.id}
                             className={`calendar-source-item${source.enabled ? "" : " disabled"}`}
                             role="listitem"
                           >
-                            <label className="calendar-source-toggle" title={source.enabled ? "暂停读取此日历" : "启用此日历"}>
+                            <label className="calendar-source-toggle" title={source.enabled ? tRuntime("暂停读取此日历") : tRuntime("启用此日历")}>
                               <input
                                 type="checkbox"
                                 checked={source.enabled}
@@ -5764,7 +5781,7 @@ export default function InkStudio() {
                               addCalendarSource();
                             }
                           }}
-                          placeholder="https://…/basic.ics 或 webcal://…"
+                          placeholder={tRuntime("https://…/basic.ics 或 webcal://…")}
                           autoComplete="off"
                           spellCheck={false}
                         />
@@ -5772,17 +5789,17 @@ export default function InkStudio() {
                       </div>
                     </label>
                     <p className={calendarNotice ? "calendar-source-warning" : undefined}>
-                      {calendarNotice || "最多 5 个 Google、Apple 或 Outlook 只读日历；可分别暂停与改名。地址不会写入模版或发布到模板市场。"}
+                      {calendarNotice || tRuntime("最多 5 个 Google、Apple 或 Outlook 只读日历；可分别暂停与改名。地址不会写入模版或发布到模板市场。")}
                     </p>
                   </section>
                 )}
                 <label>刷新计划</label>
                 <div className="schedule-options">
                   {[
-                    ["once", "单次写入", "立即执行一次"],
-                    ["hourly", "每小时", "整点后循环"],
-                    ["daily", "每天", app.dailyTime],
-                    ["custom", "自定义", `${app.customMinutes} 分钟`],
+                    ["once", tRuntime("单次写入"), tRuntime("立即执行一次")],
+                    ["hourly", tRuntime("每小时"), tRuntime("整点后循环")],
+                    ["daily", tRuntime("每天"), app.dailyTime],
+                    ["custom", tRuntime("自定义"), `${app.customMinutes} 分钟`],
                   ].map(([value, title, detail]) => (
                     <button
                       type="button"
@@ -5837,10 +5854,10 @@ export default function InkStudio() {
                 <div className="run-status-copy">
                   <strong>
                     {deviceStatus === "writing"
-                      ? activeDevice?.family === "esp32" ? "正在保存设备任务" : progress?.message ?? "正在写入"
+                      ? activeDevice?.family === "esp32" ? tRuntime("正在保存设备任务") : progress?.message ?? tRuntime("正在写入")
                       : scheduleActive
-                        ? activeDevice?.family === "esp32" ? "设备端计划已就绪" : "定时任务运行中"
-                        : deviceName ?? "准备写入设备"}
+                        ? activeDevice?.family === "esp32" ? tRuntime("设备端计划已就绪") : tRuntime("定时任务运行中")
+                        : deviceName ?? tRuntime("准备写入设备")}
                   </strong>
                   {nextRun ? (
                     <div className="next-run-summary">
@@ -5850,8 +5867,8 @@ export default function InkStudio() {
                     </div>
                   ) : (
                     <small>{activeDevice?.family === "esp32"
-                      ? activeDevice.online ? "Wi‑Fi 在线 · 计划由设备端执行" : "设备离线 · 任务会在开机后同步"
-                      : deviceName ? "已授权设备不会再次弹出选择器" : "首次需要手动选择设备 · 之后自动重连"}</small>
+                      ? activeDevice.online ? tRuntime("Wi‑Fi 在线 · 计划由设备端执行") : tRuntime("设备离线 · 任务会在开机后同步")
+                      : deviceName ? tRuntime("已授权设备不会再次弹出选择器") : tRuntime("首次需要手动选择设备 · 之后自动重连")}</small>
                   )}
                 </div>
               </div>
@@ -5863,18 +5880,18 @@ export default function InkStudio() {
                   type="button"
                   className={`bluetooth-status-button ${activeDevice?.family === "esp32" ? activeDevice.online ? "ok" : "warn" : bluetoothSupported ? "ok" : "warn"}`}
                   onClick={openAddDevice}
-                  title="选择或添加设备"
+                  title={tRuntime("选择或添加设备")}
                 >
                   <i aria-hidden="true" />
                   {activeDevice?.family === "esp32"
-                    ? activeDevice.online ? "Wi‑Fi 在线" : "Wi‑Fi 离线"
-                    : bluetoothSupported ? "蓝牙可用" : "请使用 Chromium"}
+                    ? activeDevice.online ? tRuntime("Wi‑Fi 在线") : tRuntime("Wi‑Fi 离线")
+                    : bluetoothSupported ? tRuntime("蓝牙可用") : tRuntime("请使用 Chromium")}
                 </button>
                 {scheduleActive && <button type="button" className="stop-button" onClick={stopSchedule}>停止任务</button>}
                 <button type="button" className="start-button" onClick={start} disabled={deviceStatus === "writing"}>
                   <span>{deviceStatus === "writing"
-                    ? activeDevice?.family === "esp32" ? "正在保存" : "正在写入"
-                    : activeDevice?.family === "esp32" ? scheduleActive ? "更新设备任务" : "下发到设备" : scheduleActive ? "立即再写一次" : "开始写入"}</span>
+                    ? activeDevice?.family === "esp32" ? tRuntime("正在保存") : tRuntime("正在写入")
+                    : activeDevice?.family === "esp32" ? scheduleActive ? tRuntime("更新设备任务") : tRuntime("下发到设备") : scheduleActive ? tRuntime("立即再写一次") : tRuntime("开始写入")}</span>
                   <i>→</i>
                 </button>
               </div>
@@ -5936,11 +5953,11 @@ export default function InkStudio() {
               </div>
               <div className="connection-card">
                 <span className={`status-orb ${devices.length ? "connected" : ""}`}>⌁</span>
-                <strong>{activeDevice?.name ?? "尚未添加设备"}</strong>
+                <strong>{activeDevice?.name ?? tRuntime("尚未添加设备")}</strong>
                 <small>{devices.length
                   ? `已添加 ${devices.length} 台设备 · 写入任务按设备独立管理`
-                  : "支持 TodooCard 与 M5 PaperColor"}</small>
-                <button type="button" onClick={openAddDevice}>{devices.length ? "添加另一台设备" : "添加设备"}</button>
+                  : tRuntime("支持 TodooCard 与 M5 PaperColor")}</small>
+                <button type="button" onClick={openAddDevice}>{devices.length ? tRuntime("添加另一台设备") : tRuntime("添加设备")}</button>
               </div>
             </div>
             <section className="device-registry" aria-labelledby="device-registry-title">
@@ -5957,16 +5974,16 @@ export default function InkStudio() {
                   {deviceSummaries.map((device) => {
                     const expanded = expandedDeviceIds.has(device.id);
                     const statusLabel = device.hasError
-                      ? "任务异常"
+                      ? tRuntime("任务异常")
                       : device.status === "writing"
-                        ? "正在写入"
+                        ? tRuntime("正在写入")
                         : device.family === "esp32"
-                          ? device.online ? "Wi‑Fi 在线" : "离线 · 等待开机"
+                          ? device.online ? tRuntime("Wi‑Fi 在线") : tRuntime("离线 · 等待开机")
                         : device.tasks.length
-                          ? "定时刷新中"
+                          ? tRuntime("定时刷新中")
                           : device.authorized
-                            ? "浏览器已授权"
-                            : "历史设备";
+                            ? tRuntime("浏览器已授权")
+                            : tRuntime("历史设备");
                     return (
                       <article
                         className={`device-registry-item ${device.status}`}
@@ -5986,13 +6003,13 @@ export default function InkStudio() {
                           <span className={`status-dot ${device.status}`} aria-hidden="true" />
                           <span className="device-registry-copy">
                             <strong>{device.name}</strong>
-                            <small>{statusLabel}{device.family === "bluetooth" && !device.authorized ? " · 写入时可能需要重新选择" : ""}</small>
+                            <small>{statusLabel}{device.family === "bluetooth" && !device.authorized ? tRuntime(" · 写入时可能需要重新选择") : ""}</small>
                           </span>
                           <span className="device-registry-meta">
                             <b>{device.tasks.length}</b>
                             <small>刷新任务</small>
                           </span>
-                          {device.hasError && <span className="device-registry-alert" aria-label="任务出现错误">!</span>}
+                          {device.hasError && <span className="device-registry-alert" aria-label={tRuntime("任务出现错误")}>!</span>}
                           <span className="device-registry-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
                         </button>
                         {expanded && (
@@ -6008,12 +6025,12 @@ export default function InkStudio() {
                                       : <b>待校色</b>}
                                   </span>
                                   <small>{device.calibration
-                                    ? `${calibrationQualityLabel(device.calibration)} · ${new Date(device.calibration.createdAt).toLocaleDateString("zh-CN")}`
-                                    : "写入标准六色色卡并上传照片，建立这台设备专属的颜色 Profile。"}</small>
+                                    ? `${calibrationQualityLabel(device.calibration)} · ${new Date(device.calibration.createdAt).toLocaleDateString(activeLocaleTag())}`
+                                    : tRuntime("写入标准六色色卡并上传照片，建立这台设备专属的颜色 Profile。")}</small>
                                 </div>
                               </div>
                               {device.calibration && (
-                                <div className="device-calibration-swatches" aria-label="校色后测得的六色色板">
+                                <div className="device-calibration-swatches" aria-label={tRuntime("校色后测得的六色色板")}>
                                   {device.calibration.samples.map((sample) => (
                                     <span
                                       key={sample.key}
@@ -6030,10 +6047,10 @@ export default function InkStudio() {
                                   aria-checked={device.colorCorrectionEnabled}
                                   className={`switch ${device.colorCorrectionEnabled ? "on" : ""}`}
                                   onClick={() => toggleDeviceColorCorrection(device.id, !device.colorCorrectionEnabled)}
-                                  title={device.colorCorrectionEnabled ? "关闭设备色差纠正" : "开启设备色差纠正"}
+                                  title={device.colorCorrectionEnabled ? tRuntime("关闭设备色差纠正") : tRuntime("开启设备色差纠正")}
                                 ><span /></button>
                                 <button type="button" onClick={() => openDeviceCalibration(device.id)}>
-                                  {device.calibration ? "重新校色" : "开始校色"}
+                                  {device.calibration ? tRuntime("重新校色") : tRuntime("开始校色")}
                                 </button>
                               </div>
                             </section> : (
@@ -6047,7 +6064,7 @@ export default function InkStudio() {
                                   <div><dt>渲染</dt><dd>{deviceAdapter(device.skuId).taskStatusCopy}</dd></div>
                                   <div><dt>写入</dt><dd>设备 HTTPS 主动拉取</dd></div>
                                   <div><dt>同步</dt><dd>{device.appliedRevision ?? 0} / {device.desiredRevision ?? 0}</dd></div>
-                                  <div><dt>固件</dt><dd>{device.firmwareVersion ?? "待上报"}</dd></div>
+                                  <div><dt>固件</dt><dd>{device.firmwareVersion ?? tRuntime("待上报")}</dd></div>
                                 </dl>
                               </section>
                             )}
@@ -6123,11 +6140,11 @@ export default function InkStudio() {
               <div>
                 <span className="eyebrow">ADD DEVICE · ADAPTER READY</span>
                 <h2 id="add-device-title">
-                  {addDeviceStep === "family" ? "添加设备" : selectedDeviceSku?.displayName ?? "添加 ESP32 设备"}
+                  {addDeviceStep === "family" ? tRuntime("添加设备") : selectedDeviceSku?.displayName ?? tRuntime("添加 ESP32 设备")}
                 </h2>
                 <p>现有蓝牙流程保持不变；Wi‑Fi 设备绑定后由硬件端保存计划并主动同步。</p>
               </div>
-              <button type="button" onClick={closeAddDevice} disabled={deviceFlowBusy} aria-label="关闭添加设备">×</button>
+              <button type="button" onClick={closeAddDevice} disabled={deviceFlowBusy} aria-label={tRuntime("关闭添加设备")}>×</button>
             </header>
 
             {addDeviceStep === "family" && (
@@ -6136,7 +6153,7 @@ export default function InkStudio() {
                   <span className="device-choice-icon bluetooth">⌁</span>
                   <strong>蓝牙设备</strong>
                   <p>TodooCard · 浏览器直接写入，原有使用方式不变。</p>
-                  <small>{bluetoothSupported ? "当前浏览器蓝牙可用" : "需要桌面 Chrome / Edge 或 Android Chromium"}</small>
+                  <small>{bluetoothSupported ? tRuntime("当前浏览器蓝牙可用") : tRuntime("需要桌面 Chrome / Edge 或 Android Chromium")}</small>
                   <i>选择设备 →</i>
                 </button>
                 <button type="button" onClick={() => setAddDeviceStep("sku")}>
@@ -6160,7 +6177,7 @@ export default function InkStudio() {
                       setAddDeviceStep("method");
                     }}>
                       <span className="sku-screen"><b>M5</b><i>INKLOOP</i></span>
-                      <div><strong>{sku.displayName}</strong><p>{sku.description}</p><small>{sku.screen.width} × {sku.screen.height} · {sku.write.strategy === "https-image-pull" ? "Wi‑Fi 拉取" : sku.write.strategy}</small></div>
+                      <div><strong>{sku.displayName}</strong><p>{sku.description}</p><small>{sku.screen.width} × {sku.screen.height} · {sku.write.strategy === "https-image-pull" ? tRuntime("Wi‑Fi 拉取") : sku.write.strategy}</small></div>
                       <em>→</em>
                     </button>
                   ))}
@@ -6203,12 +6220,12 @@ export default function InkStudio() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter") void bindEsp32Device();
                   }}
-                  aria-label="六位设备码"
+                  aria-label={tRuntime("六位设备码")}
                   placeholder="000000"
                 />
                 {deviceFlowError && <p className="device-flow-error" role="alert">{deviceFlowError}</p>}
                 <button type="button" className="device-flow-primary" onClick={() => void bindEsp32Device()} disabled={deviceFlowBusy || deviceCode.length !== 6}>
-                  {deviceFlowBusy ? "正在绑定…" : "绑定设备"}
+                  {deviceFlowBusy ? tRuntime("正在绑定…") : tRuntime("绑定设备")}
                 </button>
               </div>
             )}
@@ -6231,7 +6248,7 @@ export default function InkStudio() {
                 )}
                 {deviceFlowError && <p className="device-flow-error" role="alert">{deviceFlowError}</p>}
                 <button type="button" className="device-flow-primary" onClick={() => void flashEsp32Device()} disabled={deviceFlowBusy}>
-                  {deviceFlowBusy ? "正在写入，请勿拔线…" : "选择串口并开始刷机"}
+                  {deviceFlowBusy ? tRuntime("正在写入，请勿拔线…") : tRuntime("选择串口并开始刷机")}
                 </button>
               </div>
             )}
@@ -6264,11 +6281,11 @@ export default function InkStudio() {
                 <h2 id="calibration-title">校准 {calibrationDevice.name}</h2>
                 <p>用一次标准色卡测量这台屏幕，再为后续写入自动修正六色量化。</p>
               </div>
-              <button type="button" onClick={closeDeviceCalibration} disabled={calibrationBusy} aria-label="关闭设备校色">×</button>
+              <button type="button" onClick={closeDeviceCalibration} disabled={calibrationBusy} aria-label={tRuntime("关闭设备校色")}>×</button>
             </header>
 
             <ol className="calibration-progress" aria-label={`校色进度：第 ${calibrationStep} 步，共 3 步`}>
-              {["写入色卡", "拍照上传", "确认 Profile"].map((label, index) => {
+              {[tRuntime("写入色卡"), tRuntime("拍照上传"), tRuntime("确认 Profile")].map((label, index) => {
                 const step = (index + 1) as 1 | 2 | 3;
                 return <li key={label} className={calibrationStep === step ? "current" : calibrationStep > step ? "complete" : ""}>
                   <b>{String(step).padStart(2, "0")}</b><span>{label}</span>
@@ -6278,7 +6295,7 @@ export default function InkStudio() {
 
             {calibrationStep === 1 && (
               <div className="calibration-step calibration-write-step">
-                <div className="calibration-card-preview" aria-label="标准六色色卡预览">
+                <div className="calibration-card-preview" aria-label={tRuntime("标准六色色卡预览")}>
                   {CALIBRATION_SWATCHES.map((swatch) => (
                     <div
                       key={swatch.key}
@@ -6297,12 +6314,12 @@ export default function InkStudio() {
                   </ul>
                   <div className="calibration-step-actions">
                     <button type="button" className="calibration-primary" onClick={() => void writeCalibrationCard()} disabled={calibrationBusy}>
-                      {calibrationBusy ? progress?.message || "正在写入标准色卡" : "写入标准色卡"}
+                      {calibrationBusy ? progress?.message || tRuntime("正在写入标准色卡") : tRuntime("写入标准色卡")}
                     </button>
                     <button
                       type="button"
                       className="calibration-secondary"
-                      aria-label="色卡已写入，跳过写入并进入拍照步骤"
+                      aria-label={tRuntime("色卡已写入，跳过写入并进入拍照步骤")}
                       onClick={() => {
                         setCalibrationError(null);
                         setCalibrationStep(2);
@@ -6355,9 +6372,9 @@ export default function InkStudio() {
             {calibrationStep === 3 && calibrationDraft && (
               <div className="calibration-step calibration-result-step">
                 <figure className="calibration-photo-preview">
-                  {calibrationPhoto && <img src={calibrationPhoto} alt="自动检测边缘、裁切和旋转后的设备校色色卡" />}
+                  {calibrationPhoto && <img src={calibrationPhoto} alt={tRuntime("自动检测边缘、裁切和旋转后的设备校色色卡")} />}
                   <figcaption>
-                    已自动检测边缘 · {calibrationDraft.capture?.axis === "vertical" ? "纵向色带" : "横向色带"}
+                    已自动检测边缘 · {calibrationDraft.capture?.axis === "vertical" ? tRuntime("纵向色带") : tRuntime("横向色带")}
                     {calibrationDraft.capture?.rotation ? ` · 已旋转 ${calibrationDraft.capture.rotation}°` : ""}
                     {calibrationDraft.capture?.confidence ? ` · 置信度 ${calibrationDraft.capture.confidence}%` : ""}
                   </figcaption>
@@ -6368,7 +6385,7 @@ export default function InkStudio() {
                     <div><small>平均色差</small><strong>ΔE {calibrationDraft.averageDeltaE}</strong></div>
                     <b className={calibrationDraft.quality}>{calibrationQualityLabel(calibrationDraft)}</b>
                   </div>
-                  <div className="calibration-comparison" aria-label="标准颜色与照片测量颜色对比">
+                  <div className="calibration-comparison" aria-label={tRuntime("标准颜色与照片测量颜色对比")}>
                     {calibrationDraft.samples.map((sample) => (
                       <div key={sample.key}>
                         <span>
@@ -6409,7 +6426,7 @@ export default function InkStudio() {
                 <h2 id="guide-title">三步用好 Inkloop</h2>
                 <p>先做一张满意的画面，再保存应用、选择刷新时间，最后写入屏幕。</p>
               </div>
-              <button type="button" className="guide-close" onClick={() => setGuideOpen(false)} aria-label="关闭使用说明">×</button>
+              <button type="button" className="guide-close" onClick={() => setGuideOpen(false)} aria-label={tRuntime("关闭使用说明")}>×</button>
             </div>
 
             <div className="guide-levels">

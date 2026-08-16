@@ -600,6 +600,37 @@ input:focus-visible {
   color: white;
 }
 
+.sidebar-locale {
+  margin-top: 14px;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+}
+
+.sidebar-locale button {
+  flex: 1;
+  padding: 5px 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #89958c;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sidebar-locale button:hover {
+  color: white;
+}
+
+.sidebar-locale button.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: white;
+}
+
 .workspace {
   grid-column: 2;
   min-width: 0;
@@ -5765,6 +5796,10 @@ input:focus-visible {
   .sidebar-collapsed .add-device-label,
   .sidebar-collapsed .product-link-label {
     display: none;
+  }
+
+  .sidebar-collapsed .sidebar-locale {
+    flex-direction: column;
   }
 
   .sidebar-collapsed .sidebar-toggle {

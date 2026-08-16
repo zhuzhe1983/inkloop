@@ -1,3 +1,4 @@
+import { t } from "./i18n-runtime";
 import CoreTodooCard, { TODOO_PROTOCOL as CORE_PROTOCOL } from "./todoo-card-core.js";
 
 export const TODOO_PROTOCOL = {
@@ -26,17 +27,17 @@ type WriteCanvasOptions = {
 };
 
 const stateProgress: Record<string, TodooProgress> = {
-  connecting: { phase: "connecting", percent: 4, message: "正在连接 TodooCard…" },
-  pairing: { phase: "pairing", percent: 4, message: "正在连接安全配对服务…" },
-  "verifying-pairing": { phase: "pairing", percent: 7, message: "请确认系统配对提示…" },
-  paired: { phase: "pairing", percent: 9, message: "安全配对完成" },
-  discovering: { phase: "connecting", percent: 6, message: "正在发现图像服务…" },
-  subscribing: { phase: "connecting", percent: 8, message: "正在订阅设备通知…" },
-  "handshake-init": { phase: "sending", percent: 10, message: "正在初始化写屏协议…" },
-  "handshake-length": { phase: "sending", percent: 11, message: "正在声明图像帧长度…" },
-  "handshake-ready": { phase: "sending", percent: 12, message: "设备已准备接收图像…" },
-  "waiting-complete": { phase: "refreshing", percent: 96, message: "设备已收帧，正在确认刷新…" },
-  complete: { phase: "complete", percent: 100, message: "写入完成" },
+  connecting: { phase: "connecting", percent: 4, message: t("正在连接 TodooCard…") },
+  pairing: { phase: "pairing", percent: 4, message: t("正在连接安全配对服务…") },
+  "verifying-pairing": { phase: "pairing", percent: 7, message: t("请确认系统配对提示…") },
+  paired: { phase: "pairing", percent: 9, message: t("安全配对完成") },
+  discovering: { phase: "connecting", percent: 6, message: t("正在发现图像服务…") },
+  subscribing: { phase: "connecting", percent: 8, message: t("正在订阅设备通知…") },
+  "handshake-init": { phase: "sending", percent: 10, message: t("正在初始化写屏协议…") },
+  "handshake-length": { phase: "sending", percent: 11, message: t("正在声明图像帧长度…") },
+  "handshake-ready": { phase: "sending", percent: 12, message: t("设备已准备接收图像…") },
+  "waiting-complete": { phase: "refreshing", percent: 96, message: t("设备已收帧，正在确认刷新…") },
+  complete: { phase: "complete", percent: 100, message: t("写入完成") },
 };
 
 /**
@@ -127,10 +128,10 @@ export class TodooCard {
   reconnect() {
     if (this.reconnectPromise) return this.reconnectPromise;
     this.reconnectPromise = (async () => {
-      this.onProgress?.({ phase: "connecting", percent: 2, message: "正在清理旧连接…" });
+      this.onProgress?.({ phase: "connecting", percent: 2, message: t("正在清理旧连接…") });
       this.core.disconnect();
       await new Promise((resolve) => setTimeout(resolve, 350));
-      this.onProgress?.({ phase: "connecting", percent: 4, message: "正在重新连接 TodooCard…" });
+      this.onProgress?.({ phase: "connecting", percent: 4, message: t("正在重新连接 TodooCard…") });
       await this.core.connect();
     })().finally(() => {
       this.reconnectPromise = null;
@@ -143,9 +144,9 @@ export class TodooCard {
   }
 
   async writeCanvas(canvas: HTMLCanvasElement, disconnectAfterWrite = true, options: WriteCanvasOptions = {}) {
-    this.onProgress?.({ phase: "encoding", percent: 8, message: "正在转换为六色电子纸帧…" });
+    this.onProgress?.({ phase: "encoding", percent: 8, message: t("正在转换为六色电子纸帧…") });
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("无法读取预览画布");
+    if (!context) throw new Error(t("无法读取预览画布"));
     return this.core.writeImageData(
       context.getImageData(0, 0, TODOO_PROTOCOL.width, TODOO_PROTOCOL.height),
       {
@@ -159,7 +160,7 @@ export class TodooCard {
   }
 
   async writeCalibration(disconnectAfterWrite = true) {
-    this.onProgress?.({ phase: "encoding", percent: 8, message: "正在生成标准六色色卡…" });
+    this.onProgress?.({ phase: "encoding", percent: 8, message: t("正在生成标准六色色卡…") });
     return this.core.writeCalibration({ disconnectAfterWrite });
   }
 }

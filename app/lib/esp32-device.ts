@@ -1,3 +1,4 @@
+import { t } from "./i18n-runtime";
 import type { InkApp } from "./app-model";
 import type { DeviceSkuId } from "./device-catalog";
 
@@ -44,7 +45,7 @@ async function deviceRequest<T>(url: string, init: RequestInit = {}) {
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(url, { ...init, headers, cache: "no-store" });
   const payload = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error || "设备服务暂时不可用");
+  if (!response.ok) throw new Error(payload.error || t("设备服务暂时不可用"));
   return payload;
 }
 
@@ -69,7 +70,7 @@ export async function publishEsp32Task(
   const frameDataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("无法读取设备画面"));
+    reader.onerror = () => reject(reader.error ?? new Error(t("无法读取设备画面")));
     reader.readAsDataURL(frame);
   });
   const payload = await deviceRequest<{ device: Esp32DeviceRecord; task: Esp32DeviceTask }>(
@@ -111,7 +112,7 @@ async function sha256Hex(bytes: Uint8Array) {
 function patchServerUrl(bytes: Uint8Array, slot: FirmwareManifest["serverSlot"], serverUrl: string) {
   const marker = new TextEncoder().encode(slot.marker);
   const target = new TextEncoder().encode(serverUrl);
-  if (target.length + 1 > slot.length) throw new Error("当前创作台地址过长，无法写入固件");
+  if (target.length + 1 > slot.length) throw new Error(t("当前创作台地址过长，无法写入固件"));
   let found = -1;
   for (let offset = 0; offset <= bytes.length - marker.length; offset += 1) {
     if (marker.every((part, index) => bytes[offset + index] === part)) {
@@ -119,7 +120,7 @@ function patchServerUrl(bytes: Uint8Array, slot: FirmwareManifest["serverSlot"],
       break;
     }
   }
-  if (found < 0 || found + slot.length > bytes.length) throw new Error("固件缺少服务器地址槽位");
+  if (found < 0 || found + slot.length > bytes.length) throw new Error(t("固件缺少服务器地址槽位"));
   bytes.fill(0, found, found + slot.length);
   bytes.set(target, found);
 }
@@ -130,11 +131,11 @@ export async function flashM5PaperColor(
   const serial = (navigator as Navigator & {
     serial?: { requestPort(options?: Record<string, unknown>): Promise<unknown> };
   }).serial;
-  if (!serial) throw new Error("当前浏览器不支持 USB 串口刷机，请使用桌面版 Chrome 或 Edge");
+  if (!serial) throw new Error(t("当前浏览器不支持 USB 串口刷机，请使用桌面版 Chrome 或 Edge"));
 
-  onProgress({ phase: "downloading", percent: 4, message: "正在准备瘦客户端固件…" });
+  onProgress({ phase: "downloading", percent: 4, message: t("正在准备瘦客户端固件…") });
   const manifestResponse = await fetch("/firmware/m5-papercolor/manifest.json", { cache: "no-store" });
-  if (!manifestResponse.ok) throw new Error("M5 PaperColor 固件尚未发布");
+  if (!manifestResponse.ok) throw new Error(t("M5 PaperColor 固件尚未发布"));
   const manifest = await manifestResponse.json() as FirmwareManifest;
   const files = await Promise.all(manifest.files.map(async (file) => {
     const response = await fetch(file.path, { cache: "no-store" });
@@ -149,7 +150,7 @@ export async function flashM5PaperColor(
     return { data: bytes, address: file.offset };
   }));
 
-  onProgress({ phase: "connecting", percent: 8, message: "请选择刚插入的 M5 PaperColor…" });
+  onProgress({ phase: "connecting", percent: 8, message: t("请选择刚插入的 M5 PaperColor…") });
   const port = await serial.requestPort({});
   const { ESPLoader, Transport } = await import("esptool-js");
   const transport = new Transport(port as ConstructorParameters<typeof Transport>[0], true);
@@ -160,7 +161,7 @@ export async function flashM5PaperColor(
       clean() {},
       writeLine(data: string) {
         if (data.includes("erase")) {
-          onProgress({ phase: "erasing", percent: 12, message: "正在清理设备 Flash…" });
+          onProgress({ phase: "erasing", percent: 12, message: t("正在清理设备 Flash…") });
         }
       },
       write() {},
@@ -181,7 +182,7 @@ export async function flashM5PaperColor(
       },
     });
     await loader.after();
-    onProgress({ phase: "complete", percent: 100, message: "刷机完成，设备正在重新启动" });
+    onProgress({ phase: "complete", percent: 100, message: t("刷机完成，设备正在重新启动") });
   } finally {
     await transport.disconnect().catch(() => undefined);
   }

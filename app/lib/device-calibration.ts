@@ -1,3 +1,4 @@
+import { t } from "./i18n-runtime";
 export type CalibrationRgb = [number, number, number];
 export type CalibrationPalette = Array<CalibrationRgb | null>;
 
@@ -29,12 +30,12 @@ export type CalibrationCapture = {
 };
 
 export const CALIBRATION_SWATCHES = [
-  { code: 1 as const, key: "white" as const, label: "白", expected: [255, 255, 255] as CalibrationRgb },
-  { code: 0 as const, key: "black" as const, label: "黑", expected: [0, 0, 0] as CalibrationRgb },
-  { code: 3 as const, key: "red" as const, label: "红", expected: [255, 0, 0] as CalibrationRgb },
-  { code: 2 as const, key: "yellow" as const, label: "黄", expected: [255, 255, 0] as CalibrationRgb },
-  { code: 6 as const, key: "green" as const, label: "绿", expected: [0, 160, 0] as CalibrationRgb },
-  { code: 5 as const, key: "blue" as const, label: "蓝", expected: [0, 0, 255] as CalibrationRgb },
+  { code: 1 as const, key: "white" as const, label: t("白"), expected: [255, 255, 255] as CalibrationRgb },
+  { code: 0 as const, key: "black" as const, label: t("黑"), expected: [0, 0, 0] as CalibrationRgb },
+  { code: 3 as const, key: "red" as const, label: t("红"), expected: [255, 0, 0] as CalibrationRgb },
+  { code: 2 as const, key: "yellow" as const, label: t("黄"), expected: [255, 255, 0] as CalibrationRgb },
+  { code: 6 as const, key: "green" as const, label: t("绿"), expected: [0, 160, 0] as CalibrationRgb },
+  { code: 5 as const, key: "blue" as const, label: t("蓝"), expected: [0, 0, 255] as CalibrationRgb },
 ] as const;
 
 const clampByte = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
@@ -77,7 +78,7 @@ function patchAverage(
       count += 1;
     }
   }
-  if (!count) throw new Error("照片中没有检测到完整色卡");
+  if (!count) throw new Error(t("照片中没有检测到完整色卡"));
   return [red / count, green / count, blue / count].map(clampByte) as CalibrationRgb;
 }
 
@@ -232,7 +233,7 @@ export function analyzeCalibrationCapture(
   createdAt = new Date().toISOString(),
 ): { profile: DeviceColorCalibration; detection: CalibrationCapture } {
   if (width < 120 || height < 120 || data.length < width * height * 4) {
-    throw new Error("照片分辨率太低，请靠近屏幕重新拍摄");
+    throw new Error(t("照片分辨率太低，请靠近屏幕重新拍摄"));
   }
   const candidates: CalibrationCandidate[] = [];
   for (const bounds of candidateBounds(width, height)) {
@@ -246,10 +247,10 @@ export function analyzeCalibrationCapture(
   candidates.sort((left, right) => left.score - right.score);
   const best = candidates[0];
   if (!best) {
-    throw new Error("没有识别到清晰的黑白色带与六色色卡，请让屏幕完整入镜并避开反光");
+    throw new Error(t("没有识别到清晰的黑白色带与六色色卡，请让屏幕完整入镜并避开反光"));
   }
   if (best.averageDeltaE > 68) {
-    throw new Error("六色色带没有正确对齐，请正对屏幕重拍；系统会自动旋转，无需手动处理照片");
+    throw new Error(t("六色色带没有正确对齐，请正对屏幕重拍；系统会自动旋转，无需手动处理照片"));
   }
   const confidence = Math.max(1, Math.min(99, Math.round(
     100 - best.averageDeltaE * 0.9 - Math.max(0, 70 - best.contrast) * 0.2,

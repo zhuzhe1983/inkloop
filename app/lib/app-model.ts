@@ -1,3 +1,4 @@
+import { t } from "./i18n-runtime";
 export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda" | "map" | "card";
 
 export type ScreenOrientation = "portrait" | "landscape";
@@ -210,21 +211,21 @@ export type InkApp = {
 const nowIso = () => new Date().toISOString();
 
 export const starterPrompt =
-  "显示今天最重要的一件事和一句简短的专注提醒。";
+  t("显示今天最重要的一件事和一句简短的专注提醒。");
 
 export const starterApp: InkApp = {
   id: "starter-focus",
-  title: "今日专注卡",
-  description: "把最重要的一件事留在屏幕上",
+  title: t("今日专注卡"),
+  description: t("把最重要的一件事留在屏幕上"),
   prompt: starterPrompt,
   spec: {
     kind: "focus",
     eyebrow: "ONE THING · TODAY",
-    title: "今天最重要",
-    value: "专注完成",
+    title: t("今天最重要"),
+    value: t("专注完成"),
     unit: "",
-    detail: "先完成，再完善",
-    footer: "一次只做一件事",
+    detail: t("先完成，再完善"),
+    footer: t("一次只做一件事"),
     accent: "blue",
   },
   code: `export async function render() {
@@ -240,7 +241,7 @@ export const starterApp: InkApp = {
   customMinutes: 30,
   dailyTime: "08:00",
   isPublic: false,
-  author: "我",
+  author: t("我"),
   createdAt: "2026-08-01T00:00:00.000Z",
 };
 
@@ -303,37 +304,37 @@ function promptSeed(source: string) {
 
 export function inferWeatherCity(source: string) {
   const namedCities = [
-    "上海", "北京", "深圳", "广州", "杭州", "成都", "重庆", "南京", "苏州", "武汉",
-    "西安", "天津", "青岛", "厦门", "长沙", "郑州", "昆明", "大连", "宁波", "香港",
-    "澳门", "台北", "东京", "大阪", "首尔", "新加坡", "伦敦", "巴黎", "纽约", "洛杉矶",
+    t("上海"), t("北京"), t("深圳"), t("广州"), t("杭州"), t("成都"), t("重庆"), t("南京"), t("苏州"), t("武汉"),
+    t("西安"), t("天津"), t("青岛"), t("厦门"), t("长沙"), t("郑州"), t("昆明"), t("大连"), t("宁波"), t("香港"),
+    t("澳门"), t("台北"), t("东京"), t("大阪"), t("首尔"), t("新加坡"), t("伦敦"), t("巴黎"), t("纽约"), t("洛杉矶"),
   ];
   const named = namedCities.find((city) => source.includes(city));
   if (named) return named;
   const matched = source.match(/([\u4e00-\u9fa5]{2,8})(?:市)?(?:天气|气温|温度)/)?.[1]
     ?.replace(/^(?:显示|查看|更新|刷新|今天|今日)/, "")
     .trim();
-  return matched?.slice(-6) || "上海";
+  return matched?.slice(-6) || t("上海");
 }
 
 function wantsFullscreenArtwork(source: string) {
-  const imageOnly = includesAny(source, ["不要任何其他", "不要其他", "不要文字", "只有图片", "只要图片", "纯图片", "纯图"]);
+  const imageOnly = includesAny(source, [t("不要任何其他"), t("不要其他"), t("不要文字"), t("只有图片"), t("只要图片"), t("纯图片"), t("纯图")]);
   return imageOnly && (
-    includesAny(source, ["全屏", "铺满", "满屏"])
-    || includesAny(source, ["图片", "照片", "海报", "插画"])
+    includesAny(source, [t("全屏"), t("铺满"), t("满屏")])
+    || includesAny(source, [t("图片"), t("照片"), t("海报"), t("插画")])
   );
 }
 
 function wantsBackgroundArtwork(source: string) {
-  return includesAny(source, ["背景", "背景图", "做背景", "作为背景"]);
+  return includesAny(source, [t("背景"), t("背景图"), t("做背景"), t("作为背景")]);
 }
 
 function inferArtworkStyle(source: string) {
-  if (includesAny(source, ["复古", "胶片", "怀旧"])) return "vintage film editorial";
-  if (includesAny(source, ["日系", "清新", "治愈"])) return "airy Japanese editorial";
-  if (includesAny(source, ["电影感", "光影", "戏剧感"])) return "cinematic dramatic lighting";
-  if (includesAny(source, ["极简", "简约", "留白"])) return "minimal clean composition";
-  if (includesAny(source, ["手绘", "水彩", "插画"])) return "bold editorial illustration";
-  if (includesAny(source, ["时尚", "穿搭", "OOTD", "ootd"])) return "fashion editorial photography";
+  if (includesAny(source, [t("复古"), t("胶片"), t("怀旧")])) return "vintage film editorial";
+  if (includesAny(source, [t("日系"), t("清新"), t("治愈")])) return "airy Japanese editorial";
+  if (includesAny(source, [t("电影感"), t("光影"), t("戏剧感")])) return "cinematic dramatic lighting";
+  if (includesAny(source, [t("极简"), t("简约"), t("留白")])) return "minimal clean composition";
+  if (includesAny(source, [t("手绘"), t("水彩"), t("插画")])) return "bold editorial illustration";
+  if (includesAny(source, [t("时尚"), t("穿搭"), "OOTD", "ootd"])) return "fashion editorial photography";
   return "editorial high contrast composition";
 }
 
@@ -342,15 +343,15 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
   const fullscreen = wantsFullscreenArtwork(source);
   const background = wantsBackgroundArtwork(source);
   const style = inferArtworkStyle(source);
-  const rotateOnRefresh = includesAny(source, ["随机", "每次换", "换一张", "轮换"]);
-  if (includesAny(source, ["漫威", "Marvel", "marvel", "蜘蛛侠", "钢铁侠", "美国队长", "复仇者联盟"])) {
-    const query = includesAny(source, ["蜘蛛侠"])
+  const rotateOnRefresh = includesAny(source, [t("随机"), t("每次换"), t("换一张"), t("轮换")]);
+  if (includesAny(source, [t("漫威"), "Marvel", "marvel", t("蜘蛛侠"), t("钢铁侠"), t("美国队长"), t("复仇者联盟")])) {
+    const query = includesAny(source, [t("蜘蛛侠")])
       ? "Spider-Man superhero movie poster"
-      : includesAny(source, ["钢铁侠"])
+      : includesAny(source, [t("钢铁侠")])
         ? "Iron Man superhero movie poster"
-        : includesAny(source, ["美国队长"])
+        : includesAny(source, [t("美国队长")])
           ? "Captain America superhero movie poster"
-          : includesAny(source, ["复仇者联盟"])
+          : includesAny(source, [t("复仇者联盟")])
             ? "Avengers superhero movie poster"
             : "Marvel superhero movie poster";
     return {
@@ -363,7 +364,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       rotateOnRefresh,
     };
   }
-  if (includesAny(source, ["边牧", "边境牧羊犬"])) {
+  if (includesAny(source, [t("边牧"), t("边境牧羊犬")])) {
     return {
       mode: "web",
       motif: "grid",
@@ -374,7 +375,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       rotateOnRefresh,
     };
   }
-  if (includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])) {
+  if (includesAny(source, [t("猫"), t("猫猫"), t("猫咪"), t("小猫")])) {
     return {
       mode: "web",
       motif: "grid",
@@ -385,7 +386,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       rotateOnRefresh,
     };
   }
-  if (includesAny(source, ["狗", "狗狗", "小狗", "宠物"])) {
+  if (includesAny(source, [t("狗"), t("狗狗"), t("小狗"), t("宠物")])) {
     return {
       mode: "web",
       motif: "grid",
@@ -396,15 +397,15 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       rotateOnRefresh,
     };
   }
-  if (includesAny(source, ["美女", "女性", "女孩", "人物时钟"])) {
-    const holdingBoard = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
+  if (includesAny(source, [t("美女"), t("女性"), t("女孩"), t("人物时钟")])) {
+    const holdingBoard = !includesAny(source, [t("没有画板"), t("不要画板"), t("无画板")]);
     return {
       mode: "web",
       motif: "grid",
       query: holdingBoard
         ? "fashion woman portrait"
         : "woman fashion editorial",
-      style: includesAny(source, ["复古", "胶片", "日系", "电影感", "极简"])
+      style: includesAny(source, [t("复古"), t("胶片"), t("日系"), t("电影感"), t("极简")])
         ? style
         : "fashion editorial studio lighting",
       layout: fullscreen ? "fullscreen" : "background",
@@ -412,7 +413,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       rotateOnRefresh: true,
     };
   }
-  if (includesAny(source, ["彩虹", "虹彩", "七彩"])) {
+  if (includesAny(source, [t("彩虹"), t("虹彩"), t("七彩")])) {
     return {
       mode: "generated",
       motif: "rainbow",
@@ -422,7 +423,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       seed,
     };
   }
-  if (includesAny(source, ["彩纸", "庆祝", "礼花"])) {
+  if (includesAny(source, [t("彩纸"), t("庆祝"), t("礼花")])) {
     return {
       mode: "generated",
       motif: "confetti",
@@ -432,7 +433,7 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       seed,
     };
   }
-  if (includesAny(source, ["太阳", "阳光", "放射"])) {
+  if (includesAny(source, [t("太阳"), t("阳光"), t("放射")])) {
     return {
       mode: "generated",
       motif: "sunburst",
@@ -442,14 +443,14 @@ function inferArtwork(source: string): ArtworkSpec | undefined {
       seed,
     };
   }
-  if (includesAny(source, ["图片", "照片", "摄影", "风景", "人物", "城市", "产品图", "背景图", "插画"])) {
-    const query = source.includes("城市")
+  if (includesAny(source, [t("图片"), t("照片"), t("摄影"), t("风景"), t("人物"), t("城市"), t("产品图"), t("背景图"), t("插画")])) {
+    const query = source.includes(t("城市"))
       ? "modern city architecture"
-      : source.includes("风景")
+      : source.includes(t("风景"))
         ? "beautiful nature landscape"
-        : source.includes("人物")
+        : source.includes(t("人物"))
           ? "people portrait lifestyle"
-          : source.includes("产品")
+          : source.includes(t("产品"))
             ? "minimal product photography"
             : "colorful editorial illustration";
     return {
@@ -483,9 +484,9 @@ function requestedCalendarEvents(source: string): CalendarEvent[] {
 }
 
 function fallbackTimetable(source: string): TimetableRow[] {
-  const knownSubjects = ["语文", "数学", "英语", "物理", "化学", "生物", "历史", "地理", "政治", "美术", "音乐", "体育", "编程"];
+  const knownSubjects = [t("语文"), t("数学"), t("英语"), t("物理"), t("化学"), t("生物"), t("历史"), t("地理"), t("政治"), t("美术"), t("音乐"), t("体育"), t("编程")];
   const subjects = knownSubjects.filter((subject) => source.includes(subject));
-  const pool = subjects.length ? subjects : ["语文", "数学", "英语", "科学", "体育"];
+  const pool = subjects.length ? subjects : [t("语文"), t("数学"), t("英语"), t("科学"), t("体育")];
   const labels = ["08:00", "09:00", "10:15", "13:30", "14:40", "15:50"];
   return labels.map((label, row) => ({
     label,
@@ -511,14 +512,14 @@ function inferMapQuery(source: string) {
 function inferMapZoomLevel(source: string) {
   const explicit = Number(source.match(/(?:zoomLevel|zoom|缩放(?:级别)?)[\s:=：]*(\d{1,2})/i)?.[1]);
   if (Number.isFinite(explicit) && explicit >= 3 && explicit <= 19) return Math.round(explicit);
-  if (includesAny(source, ["入口", "门口", "楼栋", "停车位"])) return 19;
-  if (includesAny(source, ["城市", "城区", "全市", "概览"])) return 12;
+  if (includesAny(source, [t("入口"), t("门口"), t("楼栋"), t("停车位")])) return 19;
+  if (includesAny(source, [t("城市"), t("城区"), t("全市"), t("概览")])) return 12;
   return 17;
 }
 
 function shouldShowMapCoordinates(source: string) {
   if (/(?:不|不要|无需|隐藏)(?:显示)?(?:地图)?(?:坐标|经纬度)/.test(source)) return false;
-  return includesAny(source, ["坐标", "经纬度"]);
+  return includesAny(source, [t("坐标"), t("经纬度")]);
 }
 
 function wantsTradingCard(source: string) {
@@ -582,26 +583,26 @@ function localCardRarity(source: string, seed: number): CardRarity {
 }
 
 function localCardType(source: string) {
-  if (/龙|巨龙/.test(source)) return "龙族 · 星辉";
-  if (/机甲|机械|机器人/.test(source)) return "机械 · 守护";
-  if (/骑士|战士/.test(source)) return "战士 · 星辉";
-  if (/魔法|法师|巫师/.test(source)) return "法术 · 秘仪";
-  if (/猫|狗|宠物|边牧/.test(source)) return "灵兽 · 同伴";
-  return "星辉 · 守护";
+  if (/龙|巨龙/.test(source)) return t("龙族 · 星辉");
+  if (/机甲|机械|机器人/.test(source)) return t("机械 · 守护");
+  if (/骑士|战士/.test(source)) return t("战士 · 星辉");
+  if (/魔法|法师|巫师/.test(source)) return t("法术 · 秘仪");
+  if (/猫|狗|宠物|边牧/.test(source)) return t("灵兽 · 同伴");
+  return t("星辉 · 守护");
 }
 
 function localCardName(source: string) {
-  const explicit = explicitText(source, ["卡名", "名称", "名字"], 20)
+  const explicit = explicitText(source, [t("卡名"), t("名称"), t("名字")], 20)
     || source.match(/(?:叫做|叫作|名为)\s*[「“\"]?([^，。；;\n」”\"]{1,20})/)?.[1]?.trim()
     || source.match(/[「“]([^」”]{1,20})[」”]/)?.[1]?.trim();
   if (explicit) return explicit;
-  if (/边牧|边境牧羊犬/.test(source)) return "星野边牧";
-  if (/猫|猫咪|小猫/.test(source)) return "月影灵猫";
-  if (/龙|巨龙/.test(source)) return "星穹曜龙";
-  if (/机甲|机械|机器人/.test(source)) return "星穹守望者";
-  if (/骑士|战士/.test(source)) return "暮光誓约骑士";
-  if (/魔法|法师|巫师/.test(source)) return "流光秘术师";
-  return "星穹守望者";
+  if (/边牧|边境牧羊犬/.test(source)) return t("星野边牧");
+  if (/猫|猫咪|小猫/.test(source)) return t("月影灵猫");
+  if (/龙|巨龙/.test(source)) return t("星穹曜龙");
+  if (/机甲|机械|机器人/.test(source)) return t("星穹守望者");
+  if (/骑士|战士/.test(source)) return t("暮光誓约骑士");
+  if (/魔法|法师|巫师/.test(source)) return t("流光秘术师");
+  return t("星穹守望者");
 }
 
 export function resolveCardSpec(
@@ -621,18 +622,18 @@ export function resolveCardSpec(
   const explicitAttack = source.match(/(?:ATK|攻击(?:力)?)\s*[：:=]?\s*(\d{1,5})/i)?.[1];
   const explicitDefense = source.match(/(?:DEF|防御(?:力)?)\s*[：:=]?\s*(\d{1,5})/i)?.[1];
   const explicitDescription = explicitCardDescription(source);
-  const explicitType = explicitText(source, ["卡片类型", "类型", "种族"], 24);
-  const explicitId = explicitText(source, ["卡号", "编号", "ID"], 18);
+  const explicitType = explicitText(source, [t("卡片类型"), t("类型"), t("种族")], 24);
+  const explicitId = explicitText(source, [t("卡号"), t("编号"), "ID"], 18);
   const defaultDescription = /边牧|狗/.test(source)
-    ? "入场时标记最需要守护的目标；每完成一次刷新，获得 1 层默契并提升守护值。"
+    ? t("入场时标记最需要守护的目标；每完成一次刷新，获得 1 层默契并提升守护值。")
     : /猫/.test(source)
-      ? "在安静回合中积蓄月光；当画面更新时，有概率复制上一张卡的微光效果。"
-      : "每当设备完成一次刷新，获得 1 层星辉。积满 3 层时清除错误状态，并强化下一次写入。";
+      ? t("在安静回合中积蓄月光；当画面更新时，有概率复制上一张卡的微光效果。")
+      : t("每当设备完成一次刷新，获得 1 层星辉。积满 3 层时清除错误状态，并强化下一次写入。");
   const requestedScale = source.match(/(?:主体|角色|人物|图片)(?:大小|缩放)?\s*[：:=]?\s*(\d{1,3})\s*%/)?.[1];
 
   return {
     rarity,
-    name: (explicitText(source, ["卡名", "名称", "名字"], 20) || candidate.name || fallback?.name || localCardName(source)).trim().slice(0, 20),
+    name: (explicitText(source, [t("卡名"), t("名称"), t("名字")], 20) || candidate.name || fallback?.name || localCardName(source)).trim().slice(0, 20),
     type: (explicitType || candidate.type || fallback?.type || localCardType(source)).trim().slice(0, 24),
     level: clampInteger(explicitLevel?.[1] || explicitLevel?.[2] || candidate.level, 1, 12, fallback?.level ?? (3 + seed % 7)),
     description: (explicitDescription || candidate.description || fallback?.description || defaultDescription).trim().slice(0, 120),
@@ -655,19 +656,19 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     customMinutes: 30,
     dailyTime: promptHour ? `${promptHour.padStart(2, "0")}:00` : "08:00",
     isPublic: false,
-    author: "我",
+    author: t("我"),
     createdAt: stableId ? "2026-08-01T00:00:00.000Z" : nowIso(),
   };
 
-  if (includesAny(source, ["地图", "位置图", "路线图", "导航图", "周边图"])) {
+  if (includesAny(source, [t("地图"), t("位置图"), t("路线图"), t("导航图"), t("周边图")])) {
     const query = inferMapQuery(source);
-    const orientation: ScreenOrientation = includesAny(source, ["横版", "横屏"])
+    const orientation: ScreenOrientation = includesAny(source, [t("横版"), t("横屏")])
       ? "landscape"
       : "portrait";
     return {
       ...base,
-      title: query ? `${query}地图` : "附近地图",
-      description: "选择位置并生成适合六色电子纸的静态地图",
+      title: query ? `${query}地图` : t("附近地图"),
+      description: t("选择位置并生成适合六色电子纸的静态地图"),
       scheduleMode: "once",
       spec: {
         kind: "map",
@@ -685,10 +686,10 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
           coordinateType: "bd09ll",
           zoomLevel: inferMapZoomLevel(source),
           style: "balanced",
-          marker: !includesAny(source, ["不要标记", "无标记", "隐藏标记"]),
+          marker: !includesAny(source, [t("不要标记"), t("无标记"), t("隐藏标记")]),
           showAddress: true,
           showCoordinates: shouldShowMapCoordinates(source),
-          statusMessage: query ? "正在查找地点；可在预览上拖拽微调" : "请先输入地点或使用定位",
+          statusMessage: query ? t("正在查找地点；可在预览上拖拽微调") : t("请先输入地点或使用定位"),
         },
         display: {
           ...displaySettings({
@@ -790,15 +791,15 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
   }
 
   if (artwork?.layout === "fullscreen") {
-    const subject = includesAny(source, ["猫", "猫猫", "猫咪", "小猫"])
-      ? "猫咪"
-      : includesAny(source, ["狗", "狗狗", "小狗", "宠物"])
-        ? "宠物"
-        : "主题";
+    const subject = includesAny(source, [t("猫"), t("猫猫"), t("猫咪"), t("小猫")])
+      ? t("猫咪")
+      : includesAny(source, [t("狗"), t("狗狗"), t("小狗"), t("宠物")])
+        ? t("宠物")
+        : t("主题");
     return {
       ...base,
       title: `随机${subject}全屏`,
-      description: "一张铺满屏幕、没有文字遮挡的随机图片",
+      description: t("一张铺满屏幕、没有文字遮挡的随机图片"),
       scheduleMode: "once",
       spec: {
         kind: "focus",
@@ -817,7 +818,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["苹果日历", "周日程", "日程安排", "智能日程", "未来安排", "行程表", "议程"])) {
+  if (includesAny(source, [t("苹果日历"), t("周日程"), t("日程安排"), t("智能日程"), t("未来安排"), t("行程表"), t("议程")])) {
     const start = new Date();
     start.setMinutes(Math.ceil(start.getMinutes() / 30) * 30, 0, 0);
     const eventAt = (offsetHours: number, durationHours: number, title: string, location: string) => {
@@ -832,26 +833,26 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
       };
     };
     const events = [
-      eventAt(1, 1, "项目同步", "线上会议"),
-      eventAt(4, 1.5, "方案评审", "会议室 A"),
-      eventAt(24, 1, "客户沟通", "视频会议"),
-      eventAt(29, 2, "专注工作", "工作室"),
-      eventAt(50, 1, "周计划复盘", "办公室"),
+      eventAt(1, 1, t("项目同步"), t("线上会议")),
+      eventAt(4, 1.5, t("方案评审"), t("会议室 A")),
+      eventAt(24, 1, t("客户沟通"), t("视频会议")),
+      eventAt(29, 2, t("专注工作"), t("工作室")),
+      eventAt(50, 1, t("周计划复盘"), t("办公室")),
     ];
     return {
       ...base,
-      title: "智能日程",
-      description: "从现在开始，只显示真正需要关注的日程",
+      title: t("智能日程"),
+      description: t("从现在开始，只显示真正需要关注的日程"),
       scheduleMode: "custom",
       customMinutes: 15,
       spec: {
         kind: "agenda",
         orientation: "landscape",
         eyebrow: "SMART CALENDAR",
-        title: "接下来三天",
+        title: t("接下来三天"),
         value: "",
         unit: "",
-        detail: "按时间自动压缩空闲区间",
+        detail: t("按时间自动压缩空闲区间"),
         footer: "",
         accent: "blue",
         table: {
@@ -890,14 +891,14 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["月历", "日历", "月度计划", "月计划"])) {
+  if (includesAny(source, [t("月历"), t("日历"), t("月度计划"), t("月计划")])) {
     const { year, month } = requestedCalendarMonth(source);
     const events = requestedCalendarEvents(source);
     return {
       ...base,
       title: `${year} 年 ${month} 月月历`,
-      description: "完整六周月历，可在日期中显示简短事项",
-      scheduleMode: includesAny(source, ["每天", "每日"]) ? "daily" : "once",
+      description: t("完整六周月历，可在日期中显示简短事项"),
+      scheduleMode: includesAny(source, [t("每天"), t("每日")]) ? "daily" : "once",
       dailyTime: "00:05",
       spec: {
         kind: "calendar",
@@ -906,10 +907,10 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
         title: `${year} 年 ${month} 月`,
         value: "",
         unit: "",
-        detail: events.length ? `${events.length} 个日程已标记` : "本月安排一览",
+        detail: events.length ? `${events.length} 个日程已标记` : t("本月安排一览"),
         footer: "",
         accent: "blue",
-        table: { type: "calendar", year, month, weekStartsOn: "monday", events, lunar: source.includes("农历") },
+        table: { type: "calendar", year, month, weekStartsOn: "monday", events, lunar: source.includes(t("农历")) },
         display: {
           ...displaySettings({
             kind: "calendar",
@@ -933,19 +934,19 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["课程表", "课表", "排课表", "时间表"])) {
-    const columns = ["周一", "周二", "周三", "周四", "周五"];
+  if (includesAny(source, [t("课程表"), t("课表"), t("排课表"), t("时间表")])) {
+    const columns = [t("周一"), t("周二"), t("周三"), t("周四"), t("周五")];
     const rows = fallbackTimetable(source);
     return {
       ...base,
-      title: "一周课程表",
-      description: "按星期和时段整理的一页课程安排",
+      title: t("一周课程表"),
+      description: t("按星期和时段整理的一页课程安排"),
       scheduleMode: "once",
       spec: {
         kind: "timetable",
         orientation: "landscape",
         eyebrow: "WEEKLY SCHEDULE",
-        title: "一周课程表",
+        title: t("一周课程表"),
         value: "",
         unit: "",
         detail: "",
@@ -975,22 +976,22 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["时钟", "时间", "几点", "钟表"])) {
-    const board = !includesAny(source, ["没有画板", "不要画板", "无画板"]);
+  if (includesAny(source, [t("时钟"), t("时间"), t("几点"), t("钟表")])) {
+    const board = !includesAny(source, [t("没有画板"), t("不要画板"), t("无画板")]);
     return {
       ...base,
-      title: includesAny(source, ["美女", "女性", "女孩"]) ? "美女时钟" : "主题时钟",
-      description: "每分钟更新日期与时间，并可轮换主题背景",
+      title: includesAny(source, [t("美女"), t("女性"), t("女孩")]) ? t("美女时钟") : t("主题时钟"),
+      description: t("每分钟更新日期与时间，并可轮换主题背景"),
       scheduleMode: "custom",
       customMinutes: 1,
       spec: {
         kind: "focus",
         eyebrow: "{{weekday}} · {{date}}",
-        title: "现在时间",
+        title: t("现在时间"),
         value: "{{time}}",
         unit: "",
-        detail: "{{year}}年{{month}}月{{day}}日",
-        footer: "愿今天的每一分钟都值得",
+        detail: t("{{year}}年{{month}}月{{day}}日"),
+        footer: t("愿今天的每一分钟都值得"),
         accent: "red",
         artwork: artwork ?? {
           mode: "generated",
@@ -1018,20 +1019,20 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["鼓励", "加油", "你很棒", "你超棒", "彩虹"])) {
+  if (includesAny(source, [t("鼓励"), t("加油"), t("你很棒"), t("你超棒"), t("彩虹")])) {
     return {
       ...base,
-      title: "彩虹鼓励卡",
-      description: "用醒目的图形和一句话给自己打气",
+      title: t("彩虹鼓励卡"),
+      description: t("用醒目的图形和一句话给自己打气"),
       scheduleMode: "once",
       spec: {
         kind: "focus",
         eyebrow: "A LITTLE BOOST · TODAY",
-        title: "你超棒",
-        value: "继续加油",
+        title: t("你超棒"),
+        value: t("继续加油"),
         unit: "",
-        detail: "每一天都是新的开始",
-        footer: "相信自己，你可以的！",
+        detail: t("每一天都是新的开始"),
+        footer: t("相信自己，你可以的！"),
         accent: "yellow",
         artwork: artwork ?? {
           mode: "generated",
@@ -1053,24 +1054,24 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["天气", "温度", "下雨", "通勤"])) {
+  if (includesAny(source, [t("天气"), t("温度"), t("下雨"), t("通勤")])) {
     const city = inferWeatherCity(source);
-    const explicitDaily = includesAny(source, ["每天", "早上", "上午", "下午", "晚上"]);
-    const explicitHourly = includesAny(source, ["每小时", "每个小时"]);
+    const explicitDaily = includesAny(source, [t("每天"), t("早上"), t("上午"), t("下午"), t("晚上")]);
+    const explicitHourly = includesAny(source, [t("每小时"), t("每个小时")]);
     return {
       ...base,
-      title: "天气通勤卡",
-      description: "天气、温度与出门建议一眼读完",
+      title: t("天气通勤卡"),
+      description: t("天气、温度与出门建议一眼读完"),
       scheduleMode: explicitDaily ? "daily" : explicitHourly ? "hourly" : "once",
       spec: {
         kind: "weather",
         city,
         eyebrow: `${city} · 今日`,
-        title: "出门天气",
+        title: t("出门天气"),
         value: "--",
         unit: "°C",
-        detail: "正在获取最新天气",
-        footer: "数据会在预览和写入前自动更新",
+        detail: t("正在获取最新天气"),
+        footer: t("数据会在预览和写入前自动更新"),
         accent: "red",
         artwork,
       },
@@ -1088,21 +1089,21 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["倒计时", "还有几天", "纪念日", "生日"])) {
-    const event = source.includes("生日") ? "生日" : source.includes("发布") ? "新品发布" : "重要日子";
+  if (includesAny(source, [t("倒计时"), t("还有几天"), t("纪念日"), t("生日")])) {
+    const event = source.includes(t("生日")) ? t("生日") : source.includes(t("发布")) ? t("新品发布") : t("重要日子");
     return {
       ...base,
       title: `${event}倒计时`,
-      description: "让期待的日子每天更近一点",
+      description: t("让期待的日子每天更近一点"),
       scheduleMode: "daily",
       spec: {
         kind: "countdown",
         eyebrow: "COUNTDOWN · 2026",
         title: event,
         value: "24",
-        unit: "天",
-        detail: "目标日 · 8月25日",
-        footer: "今天也向目标前进一步",
+        unit: t("天"),
+        detail: t("目标日 · 8月25日"),
+        footer: t("今天也向目标前进一步"),
         accent: "blue",
         artwork,
       },
@@ -1114,21 +1115,21 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["会议", "会议室", "访客", "门牌"])) {
+  if (includesAny(source, [t("会议"), t("会议室"), t("访客"), t("门牌")])) {
     return {
       ...base,
-      title: "会议室门牌",
-      description: "清晰展示当前会议与下一个空闲时段",
+      title: t("会议室门牌"),
+      description: t("清晰展示当前会议与下一个空闲时段"),
       scheduleMode: "custom",
       customMinutes: 15,
       spec: {
         kind: "meeting",
         eyebrow: "MEETING ROOM · 03",
-        title: "产品周会",
-        value: "进行中",
+        title: t("产品周会"),
+        value: t("进行中"),
         unit: "",
-        detail: "10:00—11:00 · 6 人",
-        footer: "下一空闲时段  11:00—13:30",
+        detail: t("10:00—11:00 · 6 人"),
+        footer: t("下一空闲时段  11:00—13:30"),
         accent: "green",
         artwork,
       },
@@ -1142,20 +1143,20 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
     };
   }
 
-  if (includesAny(source, ["销售", "数据", "目标", "营收", "进度"])) {
+  if (includesAny(source, [t("销售"), t("数据"), t("目标"), t("营收"), t("进度")])) {
     return {
       ...base,
-      title: "目标进度卡",
-      description: "关键指标无需点亮另一块屏幕",
+      title: t("目标进度卡"),
+      description: t("关键指标无需点亮另一块屏幕"),
       scheduleMode: "hourly",
       spec: {
         kind: "metric",
         eyebrow: "THIS MONTH · AUG",
-        title: "销售目标",
+        title: t("销售目标"),
         value: "76",
         unit: "%",
         detail: "¥ 380,240 / ¥ 500,000",
-        footer: "较昨日 +3.8% · 保持节奏",
+        footer: t("较昨日 +3.8% · 保持节奏"),
         accent: "yellow",
         artwork,
       },
@@ -1169,17 +1170,17 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
 
   return {
     ...base,
-    title: "今日专注卡",
-    description: "把最重要的一件事留在视线里",
+    title: t("今日专注卡"),
+    description: t("把最重要的一件事留在视线里"),
     scheduleMode: "once",
     spec: {
       kind: "focus",
       eyebrow: "ONE THING · TODAY",
-      title: "今日专注",
-      value: "深度工作",
+      title: t("今日专注"),
+      value: t("深度工作"),
       unit: "",
-      detail: "09:30—11:30 · 请勿打扰",
-      footer: source.slice(0, 28) || "完成比完美更重要",
+      detail: t("09:30—11:30 · 请勿打扰"),
+      footer: source.slice(0, 28) || t("完成比完美更重要"),
       accent: "blue",
       artwork,
     },
@@ -1197,30 +1198,30 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
 
 export const featuredApps: InkApp[] = [
   {
-    ...generateInkApp("显示上海天气和下雨提醒", "featured-weather"),
+    ...generateInkApp(t("显示上海天气和下雨提醒"), "featured-weather"),
     id: "featured-weather",
-    title: "通勤天气",
+    title: t("通勤天气"),
     author: "Han",
     isPublic: true,
   },
   {
-    ...generateInkApp("显示产品发布倒计时", "featured-countdown"),
+    ...generateInkApp(t("显示产品发布倒计时"), "featured-countdown"),
     id: "featured-countdown",
-    title: "发布倒计时",
+    title: t("发布倒计时"),
     author: "Jia",
     isPublic: true,
   },
   {
-    ...generateInkApp("显示会议室当前会议", "featured-meeting"),
+    ...generateInkApp(t("显示会议室当前会议"), "featured-meeting"),
     id: "featured-meeting",
-    title: "会议室状态",
+    title: t("会议室状态"),
     author: "Mori Studio",
     isPublic: true,
   },
   {
-    ...generateInkApp("显示本月销售目标进度", "featured-metric"),
+    ...generateInkApp(t("显示本月销售目标进度"), "featured-metric"),
     id: "featured-metric",
-    title: "目标进度",
+    title: t("目标进度"),
     author: "Lemon",
     isPublic: true,
   },
@@ -1234,8 +1235,8 @@ export function intervalFor(app: InkApp): number | null {
 }
 
 export function scheduleLabel(app: InkApp) {
-  if (app.scheduleMode === "once") return "仅写入一次";
-  if (app.scheduleMode === "hourly") return "每小时刷新";
+  if (app.scheduleMode === "once") return t("仅写入一次");
+  if (app.scheduleMode === "hourly") return t("每小时刷新");
   if (app.scheduleMode === "daily") return `每天 ${app.dailyTime}`;
   return `每 ${app.customMinutes} 分钟`;
 }
