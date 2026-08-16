@@ -2271,7 +2271,7 @@ function drawMapInformation(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
   ctx.restore();
 }
 
-async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
+async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, quantize = true) {
   const map = spec.map;
   if (!map || typeof map.latitude !== "number" || typeof map.longitude !== "number") {
     drawMapMessage(ctx, spec, map?.statusMessage || tRuntime("请先选择地图位置"));
@@ -2285,14 +2285,16 @@ async function drawMapScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec) {
     ctx.filter = "saturate(0.88) contrast(1.02) brightness(1.03)";
     ctx.drawImage(image, 0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.restore();
-    quantizeRegion(
-      ctx,
-      0,
-      0,
-      ctx.canvas.width,
-      ctx.canvas.height,
-      "official",
-    );
+    if (quantize) {
+      quantizeRegion(
+        ctx,
+        0,
+        0,
+        ctx.canvas.width,
+        ctx.canvas.height,
+        "official",
+      );
+    }
     drawMapInformation(ctx, spec);
     return true;
   } catch {
@@ -2373,7 +2375,12 @@ function drawCardStar(ctx: CanvasRenderingContext2D, x: number, y: number, radiu
   ctx.restore();
 }
 
-async function drawCardScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, localImage?: string) {
+async function drawCardScreen(
+  ctx: CanvasRenderingContext2D,
+  spec: ScreenSpec,
+  localImage?: string,
+  quantize = true,
+) {
   const card = spec.card;
   if (!card) return false;
   const family = screenFonts.sans;
@@ -2506,11 +2513,16 @@ async function drawCardScreen(ctx: CanvasRenderingContext2D, spec: ScreenSpec, l
   ctx.font = `900 25px ${screenFonts.mono}`;
   ctx.fillText(String(card.defense), 424, 758, 112);
   ctx.restore();
-  quantizeRegion(ctx, 0, 0, ctx.canvas.width, ctx.canvas.height, "official");
+  if (quantize) quantizeRegion(ctx, 0, 0, ctx.canvas.width, ctx.canvas.height, "official");
   return usedArtwork;
 }
 
-async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImage?: string) {
+async function drawScreen(
+  canvas: HTMLCanvasElement,
+  spec: ScreenSpec,
+  localImage?: string,
+  quantize = true,
+) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
   const { width, height } = screenDimensions(spec);
@@ -2524,16 +2536,16 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, width, height);
   if (spec.kind === "map") {
-    return drawMapScreen(ctx, spec);
+    return drawMapScreen(ctx, spec, quantize);
   }
   if (spec.kind === "card") {
-    return drawCardScreen(ctx, spec, localImage);
+    return drawCardScreen(ctx, spec, localImage, quantize);
   }
   if (spec.table) {
     drawStructuredTable(ctx, spec);
     drawDisplayMeta(ctx, spec, accent, false);
     if (display.border) drawOuterScreenBorder(ctx);
-    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    if (quantize) quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     drawQrElement(ctx, spec);
     return false;
   }
@@ -2567,7 +2579,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
       if (localImage || artwork.mode === "web") {
         const image = await loadArtwork(localImage || artworkUrl(artwork, screenOrientation(spec)));
         drawImageCover(ctx, image, area.x, area.y, area.width, area.height, display.renderMode);
-        quantizeRegion(ctx, area.x, area.y, area.width, area.height, display.renderMode);
+        if (quantize) quantizeRegion(ctx, area.x, area.y, area.width, area.height, display.renderMode);
       } else {
         drawGeneratedArtwork(ctx, artwork, area.x, area.y, area.width, area.height);
       }
@@ -2576,7 +2588,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
         // Text must stay crisp above the photo: quantize the picture first,
         // then draw overlay copy and only dither the copy as final layer.
         drawArtworkCopy(ctx, spec, accent, artwork.layout, Boolean(localImage) || artwork.mode === "web");
-        if (display.renderMode === "official") quantizeTextRegion(ctx, 0, 0, width, height);
+        if (quantize && display.renderMode === "official") quantizeTextRegion(ctx, 0, 0, width, height);
         if (display.border) drawOuterScreenBorder(ctx);
         drawQrElement(ctx, spec);
         return true;
@@ -2598,13 +2610,13 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
 
   if (spec.clock?.enabled) {
     if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
-    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    if (quantize) quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     drawQrElement(ctx, spec);
     return false;
   }
 
   if (spec.kind === "weather" && (display.weather || display.weatherLarge)) {
-    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    if (quantize) quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     drawQrElement(ctx, spec);
     return false;
   }
@@ -2625,7 +2637,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
     ctx.font = `700 22px ${family}`;
     ctx.fillText(spec.detail.slice(0, 54), margin, 438, width - margin * 2);
     if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
-    quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+    if (quantize) quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
     drawQrElement(ctx, spec);
     return false;
   }
@@ -2677,7 +2689,7 @@ async function drawScreen(canvas: HTMLCanvasElement, spec: ScreenSpec, localImag
   ctx.font = `700 24px ${family}`;
   ctx.fillText(spec.detail, 48, 552);
   if (display.timeLarge) drawClockCopy(ctx, spec, accent, false);
-  quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
+  if (quantize) quantizeRegion(ctx, 0, 0, width, height, display.renderMode);
   drawQrElement(ctx, spec);
 
   return false;
@@ -3486,7 +3498,7 @@ export default function InkStudio() {
     setPreviewStatus(hasArtwork ? "loading" : "ready");
     const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork, screenOrientation(app.spec)) : null;
     setArtworkCredit(null);
-    resolveRuntimeScreen(app, new Date(), calendarPreferences, setCalendarNotice).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage)).then((usedArtwork) => {
+    resolveRuntimeScreen(app, new Date(), calendarPreferences, setCalendarNotice).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage, false)).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
       if (canvas.width !== dimensions.width || canvas.height !== dimensions.height) {
         canvas.width = dimensions.width;
@@ -4869,11 +4881,11 @@ export default function InkStudio() {
                               ? tRuntime("图片暂不可用，已保持纯图片模式")
                               : tRuntime("素材暂不可用，已使用图形排版")
                             : app.localImage
-                              ? tRuntime("本机图片已转换为实际六色")
+                              ? tRuntime("本机图片原图预览，写入时转换为六色")
                               : app.spec.kind === "map"
-                                ? tRuntime("百度静态地图已转换为实际六色")
+                                ? tRuntime("百度静态地图原图预览，写入时转换为六色")
                               : app.spec.artwork
-                                ? tRuntime("图片已转换为实际六色")
+                                ? tRuntime("图片原图预览，写入时转换为六色")
                               : tRuntime("实际六色色板")}
                       </p>
                     </div>

@@ -192,6 +192,9 @@ const en: Record<string, string> = {
   "静态地图暂时无法获取；请检查服务端配置或稍后重试": "The static map is unavailable; check the server configuration or try again later",
   "请先选择地图位置": "Choose a map location first",
   "等待位置": "Waiting for location",
+  "本机图片原图预览，写入时转换为六色": "Original local image preview; converted to six colors when writing",
+  "百度静态地图原图预览，写入时转换为六色": "Original Baidu static map preview; converted to six colors when writing",
+  "图片原图预览，写入时转换为六色": "Original image preview; converted to six colors when writing",
 
   // Calendar & weather
   "日历来源": "Calendar sources",
