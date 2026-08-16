@@ -10,32 +10,12 @@ import {
 } from "react";
 import en from "./i18n/en";
 import ja from "./i18n/ja";
+import type { Locale } from "./i18n-types";
+import { localeOptions, localeTags, LOCALE_STORAGE_KEY, normalizeLocale } from "./i18n-types";
 import { setRuntimeLocale } from "./i18n-runtime";
 
-export type Locale = "zh" | "en" | "ja";
-
-export const localeOptions: Array<{ value: Locale; label: string }> = [
-  { value: "zh", label: "中文" },
-  { value: "en", label: "English" },
-  { value: "ja", label: "日本語" },
-];
-
-export const localeTags: Record<Locale, string> = {
-  zh: "zh-CN",
-  en: "en-US",
-  ja: "ja-JP",
-};
-
-export const LOCALE_STORAGE_KEY = "inkloop-locale-v1";
-
-export function normalizeLocale(value: string | null | undefined): Locale | null {
-  if (!value) return null;
-  const lower = value.toLowerCase();
-  if (lower.startsWith("zh")) return "zh";
-  if (lower.startsWith("ja")) return "ja";
-  if (lower.startsWith("en")) return "en";
-  return null;
-}
+export type { Locale };
+export { localeOptions, localeTags };
 
 export function detectLocale(): Locale {
   if (typeof window === "undefined") return "zh";

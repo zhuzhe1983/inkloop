@@ -1,4 +1,4 @@
-import { t } from "./i18n-runtime";
+import { t } from "./i18n-runtime.ts";
 import type { InkApp } from "./app-model";
 import type { DeviceSkuId } from "./device-catalog";
 

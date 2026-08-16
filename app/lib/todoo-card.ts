@@ -1,4 +1,4 @@
-import { t } from "./i18n-runtime";
+import { t } from "./i18n-runtime.ts";
 import CoreTodooCard, { TODOO_PROTOCOL as CORE_PROTOCOL } from "./todoo-card-core.js";
 
 export const TODOO_PROTOCOL = {

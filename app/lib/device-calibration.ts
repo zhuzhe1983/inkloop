@@ -1,4 +1,4 @@
-import { t } from "./i18n-runtime";
+import { t } from "./i18n-runtime.ts";
 export type CalibrationRgb = [number, number, number];
 export type CalibrationPalette = Array<CalibrationRgb | null>;
 

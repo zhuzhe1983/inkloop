@@ -1,4 +1,4 @@
-import { t } from "./i18n-runtime";
+import { t } from "./i18n-runtime.ts";
 export type ScreenKind = "weather" | "focus" | "countdown" | "meeting" | "metric" | "calendar" | "timetable" | "agenda" | "map" | "card";
 
 export type ScreenOrientation = "portrait" | "landscape";
