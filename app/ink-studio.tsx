@@ -303,7 +303,7 @@ function calendarSourceName(url: string, position: number) {
           : hostname.replace(/^www\./, "");
     return position === 0 ? provider : `${provider} ${position + 1}`;
   } catch {
-    return `个人日历 ${position + 1}`;
+    return `${tRuntime("个人日历")} ${position + 1}`;
   }
 }
 
@@ -380,7 +380,7 @@ function applyPreferredCityToGeneratedApp(generated: InkApp, sourcePrompt: strin
     ...generated,
     spec: {
       ...generated.spec,
-      city: explicitCity || preferredCity || generated.spec.city || tRuntime("上海"),
+      city: explicitCity || preferredCity || generated.spec.city || "上海",
     },
   };
 }
@@ -2780,7 +2780,7 @@ function MiniScreen({ app }: { app: InkApp }) {
   }, [app, dimensions.height, dimensions.width]);
 
   return (
-    <div className={`mini-screen${landscape ? " landscape" : ""}`} aria-label={`${app.title} 保存时的画布预览`}>
+    <div className={`mini-screen${landscape ? " landscape" : ""}`} aria-label={`${app.title} ${tRuntime("保存时的画布预览")}`}>
       <canvas ref={thumbnailRef} width={dimensions.width} height={dimensions.height} />
     </div>
   );
@@ -2815,19 +2815,19 @@ function AppCard({
       <MiniScreen app={app} />
       <div className="app-card-copy">
         <div className="app-card-meta">
-          <span>{local ? "本机" : `by ${app.author}`}</span>
+          <span>{local ? tRuntime("本机") : `by ${app.author}`}</span>
           <span>{scheduleLabel(app)}</span>
         </div>
         <h3>{app.title}</h3>
         <p>{app.description}</p>
         <div className="app-card-actions">
           {!local && onShare && (
-            <button type="button" className="app-card-share" onClick={onShare} aria-label={`分享模版${app.title}`}>
-              <span aria-hidden="true">↗</span> 分享模版
+            <button type="button" className="app-card-share" onClick={onShare} aria-label={`${tRuntime("分享模版")}${app.title}`}>
+              <span aria-hidden="true">↗</span> {tRuntime("分享模版")}
             </button>
           )}
-          <button type="button" className="app-card-use" onClick={onUse} aria-label={`立即使用${app.title}`}>
-            <span className="app-card-cta-label"><i>✦</i> 立即使用模版</span>
+          <button type="button" className="app-card-use" onClick={onUse} aria-label={`${tRuntime("立即使用")}${app.title}`}>
+            <span className="app-card-cta-label"><i>✦</i> {tRuntime("立即使用模版")}</span>
             <span className="app-card-cta-arrow" aria-hidden="true">→</span>
           </button>
         </div>
@@ -2865,9 +2865,9 @@ function DeviceTaskCard({
             onClick={() => void onRetry(task.id)}
             disabled={task.status === "writing"}
           >
-            立即重试
+            {tRuntime("立即重试")}
           </button>
-          <button type="button" onClick={() => void onStop(task.id)}>停止</button>
+          <button type="button" onClick={() => void onStop(task.id)}>{tRuntime("停止")}</button>
         </div>
       </div>
       <div className="task-countdown">
@@ -2878,20 +2878,20 @@ function DeviceTaskCard({
           : task.nextRunAt ? formatExactTime(task.nextRunAt) : tRuntime("首次写入完成后开始计时")}</small>
       </div>
       <dl className="task-stats">
-        <div><dt>成功</dt><dd>{task.successCount}</dd></div>
-        <div><dt>失败</dt><dd>{task.failureCount}</dd></div>
-        <div><dt>最近刷新</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : tRuntime("尚未执行")}</dd></div>
+        <div><dt>{tRuntime("成功")}</dt><dd>{task.successCount}</dd></div>
+        <div><dt>{tRuntime("失败")}</dt><dd>{task.failureCount}</dd></div>
+        <div><dt>{tRuntime("最近刷新")}</dt><dd>{task.lastRunAt ? formatExactTime(task.lastRunAt) : tRuntime("尚未执行")}</dd></div>
       </dl>
       {task.lastError && (
         <p className="task-error" role="alert"><b>!</b><span>{task.lastError}</span></p>
       )}
       {task.lastCanvas ? (
         <figure className="task-canvas">
-          <img src={task.lastCanvas} alt={`${task.app.title} 最近一次刷新的画面`} />
-          <figcaption>最近一次刷新的 Canvas</figcaption>
+          <img src={task.lastCanvas} alt={`${task.app.title} ${tRuntime("最近一次刷新的画面")}`} />
+          <figcaption>{tRuntime("最近一次刷新的 Canvas")}</figcaption>
         </figure>
       ) : (
-        <div className="task-canvas-empty">写入完成后，这里会保留最近画面</div>
+        <div className="task-canvas-empty">{tRuntime("写入完成后，这里会保留最近画面")}</div>
       )}
     </article>
   );
@@ -3568,7 +3568,7 @@ export default function InkStudio() {
     } catch (error) {
       setApp({ ...applyPreferredCityToGeneratedApp(generateInkApp(prompt), prompt, preferredWeatherCity), localImage: app.localImage });
       setGeneratorStatus(generatorModels.length ? "online" : "local");
-      showToast(error instanceof Error ? `${error.message}，已使用本地模板` : tRuntime("已使用本地模板"), "info");
+      showToast(error instanceof Error ? `${error.message}，${t("已使用本地模板")}` : tRuntime("已使用本地模板"), "info");
     } finally {
       setGenerating(false);
     }
@@ -3620,7 +3620,7 @@ export default function InkStudio() {
     const source = calendarPreferences.sources.find((item) => item.id === id);
     updateCalendarPreferences({ sources: calendarPreferences.sources.filter((item) => item.id !== id) });
     setCalendarNotice(null);
-    showToast(`${source?.name || "个人日历"}已移除`, "success");
+    showToast(`${source?.name || t("个人日历")}${t("已移除")}`, "success");
   };
 
   const updateDisplay = (patch: Partial<ScreenDisplay>) => {
@@ -3697,7 +3697,7 @@ export default function InkStudio() {
       return {
         ...current,
         title: card.name,
-        description: `${card.type} · ${card.level} 星 · ATK ${card.attack}`,
+        description: `${card.type} · ${card.level} ${t("星")} · ATK ${card.attack}`,
         spec: {
           ...current.spec,
           orientation: "portrait",
@@ -4081,7 +4081,7 @@ export default function InkStudio() {
     try {
       const device = await driver.requestDevice();
       const profile = rememberDevice(driver, device);
-      showToast(`已添加设备 ${profile.name}，尚未执行写入`, "success");
+      showToast(`${t("已添加设备")} ${profile.name}${t("，尚未执行写入")}`, "success");
       setAddDeviceOpen(false);
       return profile;
     } catch (error) {
@@ -4162,7 +4162,7 @@ export default function InkStudio() {
     const selected = await driver.requestDevice();
     if (selected.id !== device.id) {
       driver.disconnect();
-      throw new Error(`请选择设备“${device.name}”；刚才选择的是另一台设备`);
+      throw new Error(`${t("请选择设备")}“${device.name}”；${t("刚才选择的是另一台设备")}`);
     }
     rememberDevice(driver, selected);
     return driver;
@@ -4551,7 +4551,7 @@ export default function InkStudio() {
         : undefined;
       if (conflicting) {
         const replace = window.confirm(
-          `${resolvedDeviceName} 已有一个 ${conflicting.app.customMinutes} 分钟高频任务「${conflicting.app.title}」。\n\n五分钟以下的任务同一设备只能运行一个，是否停止原任务并替换？`,
+          `${resolvedDeviceName} ${t("已有一个")} ${conflicting.app.customMinutes} ${t("分钟高频任务")}「${conflicting.app.title}」。\n\n${t("五分钟以下的任务同一设备只能运行一个，是否停止原任务并替换？")}`,
         );
         if (!replace) {
           showToast(tRuntime("已保留原来的高频任务"), "info");
@@ -4682,27 +4682,27 @@ export default function InkStudio() {
               onClick={() => openDeviceCenter(device)}
               aria-expanded={tab === "device" && expandedDeviceIds.has(device.id)}
               aria-controls={`device-card-${device.id}`}
-              title={sidebarCollapsed ? `${device.name} · ${device.tasks.length} 个刷新任务` : undefined}
+              title={sidebarCollapsed ? `${device.name} · ${device.tasks.length} ${t("个刷新任务")}` : undefined}
             >
               <span className={`status-dot ${device.status}`} />
               <div className="sidebar-device-copy">
                 <strong>{device.name}</strong>
                 <small>{device.tasks.length
-                  ? `${device.tasks.length} 个定时任务`
+                  ? `${device.tasks.length} ${t("个定时任务")}`
                   : device.family === "esp32" ? (device.online ? tRuntime("Wi‑Fi 在线") : tRuntime("离线 · 开机后同步")) : tRuntime("已记住，可自动重连")}</small>
               </div>
-              {device.tasks.length > 0 && <span className="task-count" aria-label={`${device.tasks.length} 个任务`}>{device.tasks.length}</span>}
+              {device.tasks.length > 0 && <span className="task-count" aria-label={`${device.tasks.length} ${t("个任务")}`}>{device.tasks.length}</span>}
               {device.hasError && <span className="task-alert" aria-label={tRuntime("任务出现错误")}>!</span>}
               <span className="task-chevron" aria-hidden="true">›</span>
             </button>
           )) : (
             <div className="sidebar-device empty">
               <span className="status-dot idle" />
-              <div className="sidebar-device-copy"><strong>未连接设备</strong><small>TodooCard · BLE</small></div>
+              <div className="sidebar-device-copy"><strong>{t("未连接设备")}</strong><small>TodooCard · BLE</small></div>
             </div>
           )}
           <button type="button" className="add-device-button" onClick={openAddDevice}>
-            <span aria-hidden="true">＋</span><span className="add-device-label">添加设备</span>
+            <span aria-hidden="true">＋</span><span className="add-device-label">{t("添加设备")}</span>
           </button>
         </div>
         <div className="sidebar-locale" role="group" aria-label={t("界面语言")}>
@@ -4732,16 +4732,16 @@ export default function InkStudio() {
           </div>
           <div className="topbar-actions">
             <button type="button" className="guide-button" onClick={() => setGuideOpen(true)}>
-              <span>?</span> 使用说明
+              <span>?</span> {t("使用说明")}
             </button>
             {tab === "studio" && (
               <div className="template-top-actions">
                 <button type="button" className="share-template-button" onClick={() => void shareCurrentTemplate()}>
-                  <span aria-hidden="true">↗</span> 分享模版
+                  <span aria-hidden="true">↗</span> {t("分享模版")}
                 </button>
                 <div className="save-split" ref={saveMenuRef}>
                   <button type="button" className="save-button" onClick={() => void saveApp(false)}>
-                    保存模版
+                    {t("保存模版")}
                   </button>
                   <button
                     type="button"
@@ -4763,8 +4763,8 @@ export default function InkStudio() {
                           void saveApp(true);
                         }}
                       >
-                        <strong>保存并发布到市场</strong>
-                        <small>保存到本机，同时出现在模板市场</small>
+                        <strong>{t("保存并发布到市场")}</strong>
+                        <small>{t("保存到本机，同时出现在模板市场")}</small>
                       </button>
                     </div>
                   )}
@@ -4781,11 +4781,11 @@ export default function InkStudio() {
                 <div className="panel-heading">
                   <span className="step-number">01</span>
                   <div>
-                    <h2>描述你想看到的内容</h2>
-                    <p>说人话就好，生成器会补全数据与排版逻辑。</p>
+                    <h2>{t("描述你想看到的内容")}</h2>
+                    <p>{t("说人话就好，生成器会补全数据与排版逻辑。")}</p>
                   </div>
                 </div>
-                <label htmlFor="app-prompt">应用需求</label>
+                <label htmlFor="app-prompt">{t("应用需求")}</label>
                 <div className="prompt-box">
                   <textarea
                     id="app-prompt"
@@ -4812,20 +4812,20 @@ export default function InkStudio() {
                       <span
                         className="attached-image-thumb"
                         role="img"
-                        aria-label="已贴入的图片缩略图"
+                        aria-label={t("已贴入的图片缩略图")}
                         style={{ backgroundImage: `url(${app.localImage})` }}
                       />
-                      <span className="attached-image-copy"><strong>图片已贴入</strong><small>将转换成六色参与排版</small></span>
-                      <button type="button" onClick={() => setApp((current) => ({ ...current, localImage: undefined }))}>移除</button>
+                      <span className="attached-image-copy"><strong>{t("图片已贴入")}</strong><small>{t("将转换成六色参与排版")}</small></span>
+                      <button type="button" onClick={() => setApp((current) => ({ ...current, localImage: undefined }))}>{t("移除")}</button>
                     </div>
                   ) : (
                     <button type="button" className="attach-button" onClick={() => fileInputRef.current?.click()}>
-                      <span>＋</span> 选择图片 <small>也可直接粘贴</small>
+                      <span>＋</span> {t("选择图片")} <small>{t("也可直接粘贴")}</small>
                     </button>
                   )}
                 </div>
                 <div className="suggestions">
-                  <span>试试这些</span>
+                  <span>{t("试试这些")}</span>
                   {samplePrompts.map((sample) => (
                     <button type="button" key={sample} onClick={() => setPrompt(sample)}>
                       {sample.replace(tRuntime("每天 8 点"), tRuntime("天气")).replace(tRuntime("显示"), "").slice(0, 10)}
@@ -4840,7 +4840,7 @@ export default function InkStudio() {
                   <span className={generatorStatus === "online" ? "online" : ""}>LLM</span>
                   {generatorStatus === "online" ? (
                     <p className="generator-ready">
-                      <span>在线编码已就绪 ·</span>
+                      <span>{t("在线编码已就绪 ·")}</span>
                       <select
                         className="generator-model-select"
                         value={generatorModel}
@@ -4853,7 +4853,7 @@ export default function InkStudio() {
                         aria-label={tRuntime("选择在线编码模型")}
                         title={generatorModel === "auto" ? tRuntime("由服务自动选择模型") : generatorModel}
                       >
-                        <option value="auto">自动选择模型</option>
+                        <option value="auto">{t("自动选择模型")}</option>
                         {generatorModels.map((model) => (
                           <option value={model} key={model}>{model}</option>
                         ))}
@@ -4870,7 +4870,7 @@ export default function InkStudio() {
                   <div>
                     <span className="step-number">02</span>
                     <div>
-                      <h2>屏幕预览</h2>
+                      <h2>{t("屏幕预览")}</h2>
                       <p>
                         {previewDimensions.width} × {previewDimensions.height} · {previewStatus === "loading"
                           ? app.spec.kind === "map" ? tRuntime("正在获取并转换静态地图") : tRuntime("正在获取并转换图片素材")
@@ -4897,9 +4897,9 @@ export default function InkStudio() {
                         type="button"
                         onClick={regeneratePreviewArtwork}
                         disabled={!app.spec.artwork || Boolean(app.localImage) || previewStatus === "loading"}
-                        title={app.localImage ? tRuntime("当前使用的是你贴入的图片") : app.spec.artwork ? `保持主题：${app.spec.artwork.query}` : tRuntime("当前应用没有图片素材")}
+                        title={app.localImage ? tRuntime("当前使用的是你贴入的图片") : app.spec.artwork ? `${t("保持主题：")}${app.spec.artwork.query}` : tRuntime("当前应用没有图片素材")}
                       >
-                        ↻ 重新生成
+                        ↻ {t("重新生成")}
                       </button>
                     )}
                     <select
@@ -4907,7 +4907,7 @@ export default function InkStudio() {
                       value={previewScale}
                       onChange={(event) => setPreviewScale(Number(event.target.value) as 35 | 50 | 75 | 100)}
                       aria-label={tRuntime("调整屏幕预览缩放")}
-                      title={`只调整网页预览大小，不影响 ${previewDimensions.width} × ${previewDimensions.height} 写入画质`}
+                      title={`${t("只调整网页预览大小，不影响")} ${previewDimensions.width} × ${previewDimensions.height} ${t("写入画质")}`}
                     >
                       {[35, 50, 75, 100].map((scale) => (
                         <option value={scale} key={scale}>{scale}%</option>
@@ -4957,7 +4957,7 @@ export default function InkStudio() {
                                     width: `${(elementWidth / previewDimensions.width) * 100}%`,
                                     height: `${(elementHeight / previewDimensions.height) * 100}%`,
                                   }}
-                                  aria-label={`拖拽调整${element.label}位置，方向键可微调`}
+                                  aria-label={`${t("拖拽调整")}${element.label}${t("位置，方向键可微调")}`}
                                   onPointerDown={(event) => handleElementPointerDown(element.key, event)}
                                   onPointerMove={handleElementPointerMove}
                                   onPointerUp={finishElementDrag}
@@ -4982,7 +4982,7 @@ export default function InkStudio() {
                               onWheel={handleMapWheel}
                               onKeyDown={handleMapKeyDown}
                             >
-                              <span>{mapPanPreview ? tRuntime("松开后更新地图") : tRuntime("按住拖动 · 滚轮缩放")}{mapZoomPreview ? ` · ${mapZoomPreview} 级` : ""}</span>
+                              <span>{mapPanPreview ? tRuntime("松开后更新地图") : tRuntime("按住拖动 · 滚轮缩放")}{mapZoomPreview ? ` · ${mapZoomPreview} ${t("级")}` : ""}</span>
                             </div>
                           )}
                         </div>
@@ -5005,30 +5005,30 @@ export default function InkStudio() {
                 </div>
                 {app.spec.kind === "map" && (
                   <div className="preview-source-note map-source-note">
-                    <p><strong>地图来源</strong> 百度静态地图 · 服务端代理</p>
-                    <p>浏览器精确定位需你授权；IP 定位只用于城市级估算。</p>
+                    <p><strong>{t("地图来源")}</strong> {t("百度静态地图 · 服务端代理")}</p>
+                    <p>{t("浏览器精确定位需你授权；IP 定位只用于城市级估算。")}</p>
                   </div>
                 )}
                 {(app.spec.artwork || app.localImage) && (
                   <div className="preview-source-note">
                     {app.spec.artwork?.mode === "web" && (
-                      <p>如果图片主题与要求不符，请点击“重新生成”。</p>
+                      <p>{t("如果图片主题与要求不符，请点击“重新生成”。")}</p>
                     )}
                     {app.localImage ? (
-                      <p><strong>图片来源</strong> 本机上传（无外部地址）</p>
+                      <p><strong>{t("图片来源")}</strong> {t("本机上传（无外部地址）")}</p>
                     ) : artworkCredit ? (
                       <p>
-                        <strong>图片来源</strong> {artworkCredit.provider === "loremflickr"
+                        <strong>{t("图片来源")}</strong> {artworkCredit.provider === "loremflickr"
                           ? "LoremFlickr"
                           : artworkCredit.provider === "wikimedia-commons"
                             ? "Wikimedia Commons"
                             : artworkCredit.provider === "picsum"
                               ? "Picsum"
                               : artworkCredit.provider}
-                        <a href={artworkCredit.url} target="_blank" rel="noreferrer">查看真实图片地址 ↗</a>
+                        <a href={artworkCredit.url} target="_blank" rel="noreferrer">{t("查看真实图片地址")} ↗</a>
                       </p>
                     ) : app.spec.artwork?.mode === "generated" ? (
-                      <p><strong>图片来源</strong> Inkloop 生成图形</p>
+                      <p><strong>{t("图片来源")}</strong> {t("Inkloop 生成图形")}</p>
                     ) : null}
                   </div>
                 )}
@@ -5038,8 +5038,8 @@ export default function InkStudio() {
                 <div className="panel-heading compact">
                   <span className="step-number">03</span>
                   <div>
-                    <h2>画面、保存与刷新</h2>
-                    <p>生成后可继续手动调整画面元素。</p>
+                    <h2>{t("画面、保存与刷新")}</h2>
+                    <p>{t("生成后可继续手动调整画面元素。")}</p>
                   </div>
                 </div>
                 <div className="display-editor">
@@ -5053,13 +5053,13 @@ export default function InkStudio() {
                   </div>
                   {app.spec.kind === "card" ? (
                     <div className="card-orientation-note">
-                      <strong>固定竖版 528×792</strong>
-                      <small>四种材质共用同一坐标网格，切换稀有度不会改变内容位置</small>
+                      <strong>{t("固定竖版 528×792")}</strong>
+                      <small>{t("四种材质共用同一坐标网格，切换稀有度不会改变内容位置")}</small>
                     </div>
                   ) : <div className="orientation-field">
                     <div>
-                      <strong>屏幕方向</strong>
-                      <small>LLM 会先建议，你可以随时手动切换</small>
+                      <strong>{t("屏幕方向")}</strong>
+                      <small>{t("LLM 会先建议，你可以随时手动切换")}</small>
                     </div>
                     <div className="orientation-options" role="group" aria-label={tRuntime("屏幕方向")}>
                       {([
@@ -5094,8 +5094,8 @@ export default function InkStudio() {
 
                       <div className="map-editor-group">
                         <div className="map-editor-label">
-                          <strong>定位方式</strong>
-                          <small>按住预览拖动，松开后更新位置；IP 仅为城市级估算</small>
+                          <strong>{t("定位方式")}</strong>
+                          <small>{t("按住预览拖动，松开后更新位置；IP 仅为城市级估算")}</small>
                         </div>
                         <div className="map-location-options" role="group" aria-label={tRuntime("地图定位方式")}>
                           <button
@@ -5103,7 +5103,7 @@ export default function InkStudio() {
                             className={app.spec.map.locationMode === "browser" ? "selected" : ""}
                             onClick={locateWithBrowser}
                           >
-                            <strong>浏览器定位</strong><small>需要位置授权</small>
+                            <strong>{t("浏览器定位")}</strong><small>{t("需要位置授权")}</small>
                           </button>
                           <button
                             type="button"
@@ -5121,18 +5121,18 @@ export default function InkStudio() {
                               });
                             }}
                           >
-                            <strong>IP 粗定位</strong><small>城市级兜底</small>
+                            <strong>{t("IP 粗定位")}</strong><small>{t("城市级兜底")}</small>
                           </button>
                         </div>
                       </div>
 
                       <div className="map-editor-group">
                         <div className="map-editor-label">
-                          <strong>地点与坐标</strong>
+                          <strong>{t("地点与坐标")}</strong>
                           <small>{app.spec.map.coordinateType === "wgs84ll" ? tRuntime("浏览器 WGS84 · 预览时服务端转换") : tRuntime("百度 BD-09 坐标")}</small>
                         </div>
                         <label className="map-place-field">
-                          <span>地点、地址或 POI</span>
+                          <span>{t("地点、地址或 POI")}</span>
                           <input
                             key={`${app.id}:${app.spec.map.query}`}
                             defaultValue={app.spec.map.query}
@@ -5159,7 +5159,7 @@ export default function InkStudio() {
                         </label>
                         <div className="map-coordinate-grid">
                           <label>
-                            <span>经度</span>
+                            <span>{t("经度")}</span>
                             <input
                               type="number"
                               min={-180}
@@ -5175,7 +5175,7 @@ export default function InkStudio() {
                             />
                           </label>
                           <label>
-                            <span>纬度</span>
+                            <span>{t("纬度")}</span>
                             <input
                               type="number"
                               min={-90}
@@ -5193,7 +5193,7 @@ export default function InkStudio() {
                         </div>
                         {app.spec.map.address && <p className="map-current-address">{app.spec.map.address}</p>}
                         <label className="map-place-field">
-                          <span>自定义显示名称（可选）</span>
+                          <span>{t("自定义显示名称（可选）")}</span>
                           <input
                             key={`${app.id}:${app.spec.map.displayName || "display-name"}`}
                             defaultValue={app.spec.map.displayName || ""}
@@ -5209,8 +5209,8 @@ export default function InkStudio() {
 
                       <div className="map-editor-group map-zoom-group">
                         <div className="map-editor-label">
-                          <strong>地图缩放</strong>
-                          <small>拖动滑杆，或在预览上滚动鼠标 · 3—19</small>
+                          <strong>{t("地图缩放")}</strong>
+                          <small>{t("拖动滑杆，或在预览上滚动鼠标 · 3—19")}</small>
                         </div>
                         <div className="map-zoom-control">
                           <button type="button" onClick={() => updateMap({ zoomLevel: app.spec.map!.zoomLevel - 1 })} aria-label={tRuntime("缩小地图")}>−</button>
@@ -5281,15 +5281,15 @@ export default function InkStudio() {
 
                       <div className="card-fields-grid">
                         <label className="card-field card-name-field">
-                          <span>卡名</span>
+                          <span>{t("卡名")}</span>
                           <input value={app.spec.card.name} maxLength={20} onChange={(event) => updateCard({ name: event.target.value })} />
                         </label>
                         <label className="card-field">
-                          <span>类型</span>
+                          <span>{t("类型")}</span>
                           <input value={app.spec.card.type} maxLength={24} onChange={(event) => updateCard({ type: event.target.value })} />
                         </label>
                         <label className="card-field compact">
-                          <span>等级</span>
+                          <span>{t("等级")}</span>
                           <input type="number" min={1} max={12} value={app.spec.card.level} onChange={(event) => updateCard({ level: Number(event.target.value) || 1 })} />
                         </label>
                         <label className="card-field compact">
@@ -5301,44 +5301,44 @@ export default function InkStudio() {
                           <input type="number" min={0} max={9999} value={app.spec.card.defense} onChange={(event) => updateCard({ defense: Number(event.target.value) || 0 })} />
                         </label>
                         <label className="card-field compact">
-                          <span>编号</span>
+                          <span>{t("编号")}</span>
                           <input value={app.spec.card.cardId} maxLength={18} onChange={(event) => updateCard({ cardId: event.target.value })} />
                         </label>
                         <label className="card-field card-description-field">
-                          <span>效果描述</span>
+                          <span>{t("效果描述")}</span>
                           <textarea value={app.spec.card.description} maxLength={120} rows={3} onChange={(event) => updateCard({ description: event.target.value })} />
                         </label>
                       </div>
 
                       <div className="card-subject-editor">
                         <div className="card-editor-heading">
-                          <div><strong>主角画面</strong><small>保持卡框不动，只调整中间主角</small></div>
+                          <div><strong>{t("主角画面")}</strong><small>{t("保持卡框不动，只调整中间主角")}</small></div>
                           <div className="card-subject-actions">
                             <label>
-                              上传图片
+                              {t("上传图片")}
                               <input type="file" accept="image/*" onChange={(event) => void attachLocalImage(event.target.files?.[0])} />
                             </label>
-                            <button type="button" onClick={regeneratePreviewArtwork} disabled={!app.spec.artwork || Boolean(app.localImage)}>随机主角</button>
-                            {app.localImage && <button type="button" onClick={() => setApp((current) => ({ ...current, localImage: undefined }))}>恢复网络图</button>}
+                            <button type="button" onClick={regeneratePreviewArtwork} disabled={!app.spec.artwork || Boolean(app.localImage)}>{t("随机主角")}</button>
+                            {app.localImage && <button type="button" onClick={() => setApp((current) => ({ ...current, localImage: undefined }))}>{t("恢复网络图")}</button>}
                           </div>
                         </div>
                         <label className="card-range-field">
-                          <span>主体大小</span>
+                          <span>{t("主体大小")}</span>
                           <input type="range" min={0.7} max={2.2} step={0.05} value={app.spec.card.subjectScale} onChange={(event) => updateCard({ subjectScale: Number(event.target.value) })} />
                           <input type="number" min={70} max={220} value={Math.round(app.spec.card.subjectScale * 100)} onChange={(event) => updateCard({ subjectScale: (Number(event.target.value) || 100) / 100 })} />
                           <em>%</em>
                         </label>
                         <label className="card-range-field">
-                          <span>水平位置</span>
+                          <span>{t("水平位置")}</span>
                           <input type="range" min={-100} max={100} value={app.spec.card.subjectX} onChange={(event) => updateCard({ subjectX: Number(event.target.value) })} />
                           <input type="number" min={-100} max={100} value={app.spec.card.subjectX} onChange={(event) => updateCard({ subjectX: Number(event.target.value) || 0 })} />
                         </label>
                         <label className="card-range-field">
-                          <span>垂直位置</span>
+                          <span>{t("垂直位置")}</span>
                           <input type="range" min={-100} max={100} value={app.spec.card.subjectY} onChange={(event) => updateCard({ subjectY: Number(event.target.value) })} />
                           <input type="number" min={-100} max={100} value={app.spec.card.subjectY} onChange={(event) => updateCard({ subjectY: Number(event.target.value) || 0 })} />
                         </label>
-                        <button type="button" className="card-subject-reset" onClick={() => updateCard({ subjectScale: 1, subjectX: 0, subjectY: 0 })}>主角位置复位</button>
+                        <button type="button" className="card-subject-reset" onClick={() => updateCard({ subjectScale: 1, subjectX: 0, subjectY: 0 })}>{t("主角位置复位")}</button>
                       </div>
                     </div>
                   )}
@@ -5368,15 +5368,15 @@ export default function InkStudio() {
                             type="button"
                             onClick={() => resetElementPosition(key)}
                             disabled={!screenDisplay[key]}
-                            aria-label={`复位${label}位置`}
+                            aria-label={`${t("复位")}${label}${t("位置")}`}
                           >
-                            位置复位
+                            {t("位置复位")}
                           </button>
                         </div>
                         <div className={`component-type-controls${key === "qr" ? " qr-component-controls" : ""}`}>
                           {key !== "qr" && (
                             <label>
-                              <span>字体</span>
+                              <span>{t("字体")}</span>
                               <select
                                 value={screenDisplay.elementFonts[key] ?? ""}
                                 onChange={(event) => updateDisplay({
@@ -5385,10 +5385,10 @@ export default function InkStudio() {
                                     [key]: event.target.value || undefined,
                                   } as ScreenDisplay["elementFonts"],
                                 })}
-                                aria-label={`${label}字体`}
+                                aria-label={`${label}${t("字体")}`}
                                 disabled={!screenDisplay[key]}
                               >
-                                <option value="">跟随默认字体</option>
+                                <option value="">{t("跟随默认字体")}</option>
                                 {screenFontOptions.map((font) => (
                                   <option value={font.value} key={font.value}>{font.label}</option>
                                 ))}
@@ -5412,7 +5412,7 @@ export default function InkStudio() {
                               onKeyDown={(event) => {
                                 if (event.key === "Enter") event.currentTarget.blur();
                               }}
-                              aria-label={`${label}${key === "qr" ? "尺寸" : "字号"}`}
+                              aria-label={`${label}${key === "qr" ? tRuntime("尺寸") : tRuntime("字号")}`}
                               disabled={!screenDisplay[key]}
                             />
                           </label>
@@ -5426,15 +5426,15 @@ export default function InkStudio() {
                           checked={screenDisplay.border}
                           onChange={(event) => updateDisplay({ border: event.target.checked })}
                         />
-                        <span>屏幕外框</span>
+                        <span>{t("屏幕外框")}</span>
                       </label>
-                      <small>只绘制最外侧细框</small>
+                      <small>{t("只绘制最外侧细框")}</small>
                     </div>
                   </div>
                   <div className="display-fields">
                     <div className="render-mode-field">
                       <div className="render-mode-heading">
-                        <span>画面渲染</span>
+                        <span>{t("画面渲染")}</span>
                         <small>{app.spec.artwork || app.localImage
                           ? tRuntime("图片默认 Official Skill")
                           : tRuntime("纯文字默认 Inkloop text")}</small>
@@ -5455,7 +5455,7 @@ export default function InkStudio() {
                       <p>{renderModeOptions.find((mode) => mode.value === screenDisplay.renderMode)?.description}</p>
                     </div>
                     <label className="display-field">
-                      <span>画面默认字体</span>
+                      <span>{t("画面默认字体")}</span>
                       <select
                         value={screenDisplay.font}
                         onChange={(event) => updateDisplay({ font: event.target.value as ScreenFont })}
@@ -5469,12 +5469,12 @@ export default function InkStudio() {
                         style={{ fontFamily: screenFonts[screenDisplay.font] }}
                         aria-hidden="true"
                       >
-                        今日天气 · 12:34 · 专注当下
+                        {t("今日天气 · 12:34 · 专注当下")}
                       </span>
                     </label>
                     {screenDisplay.quote && (
                       <label className="display-field">
-                        <span>今日名言</span>
+                        <span>{t("今日名言")}</span>
                         <div className="quote-input-row">
                           <input
                             value={app.spec.footer}
@@ -5485,13 +5485,13 @@ export default function InkStudio() {
                             }))}
                             placeholder={tRuntime("输入一句话")}
                           />
-                          <button type="button" onClick={randomizeQuote}>随机</button>
+                          <button type="button" onClick={randomizeQuote}>{t("随机")}</button>
                         </div>
                       </label>
                     )}
                     {screenDisplay.logo && (
                       <label className="display-field">
-                        <span>LOGO 文字</span>
+                        <span>{t("LOGO 文字")}</span>
                         <input
                           value={screenDisplay.logoText}
                           maxLength={20}
@@ -5502,14 +5502,14 @@ export default function InkStudio() {
                     )}
                     {screenDisplay.qr && (
                       <div className="display-field qr-content-field">
-                        <span>二维码内容</span>
+                        <span>{t("二维码内容")}</span>
                         <div className="qr-mode-options" role="group" aria-label={tRuntime("二维码内容类型")}>
                           <button
                             type="button"
                             className={screenDisplay.qrMode === "text" ? "selected" : ""}
                             onClick={() => updateDisplay({ qrMode: "text" })}
                           >
-                            文字 / 网址
+                            {t("文字 / 网址")}
                           </button>
                           <button
                             type="button"
@@ -5522,7 +5522,7 @@ export default function InkStudio() {
                         {screenDisplay.qrMode === "wifi" ? (
                           <div className="qr-wifi-fields">
                             <label>
-                              <span>Wi-Fi 名称（SSID）</span>
+                              <span>{t("Wi-Fi 名称（SSID）")}</span>
                               <input
                                 value={screenDisplay.qrWifiSsid}
                                 maxLength={64}
@@ -5531,7 +5531,7 @@ export default function InkStudio() {
                               />
                             </label>
                             <label>
-                              <span>安全类型</span>
+                              <span>{t("安全类型")}</span>
                               <select
                                 value={screenDisplay.qrWifiSecurity}
                                 onChange={(event) => updateDisplay({
@@ -5540,12 +5540,12 @@ export default function InkStudio() {
                               >
                                 <option value="WPA">WPA / WPA2 / WPA3</option>
                                 <option value="WEP">WEP</option>
-                                <option value="nopass">无密码</option>
+                                <option value="nopass">{t("无密码")}</option>
                               </select>
                             </label>
                             {screenDisplay.qrWifiSecurity !== "nopass" && (
                               <label className="qr-password-field">
-                                <span>Wi-Fi 密码</span>
+                                <span>{t("Wi-Fi 密码")}</span>
                                 <input
                                   type="password"
                                   value={screenDisplay.qrWifiPassword}
@@ -5562,7 +5562,7 @@ export default function InkStudio() {
                                 checked={screenDisplay.qrWifiHidden}
                                 onChange={(event) => updateDisplay({ qrWifiHidden: event.target.checked })}
                               />
-                              <span>这是隐藏网络</span>
+                              <span>{t("这是隐藏网络")}</span>
                             </label>
                           </div>
                         ) : (
@@ -5582,7 +5582,7 @@ export default function InkStudio() {
                     )}
                     {(screenDisplay.weather || screenDisplay.weatherLarge) && (
                       <label className="display-field">
-                        <span>天气城市</span>
+                        <span>{t("天气城市")}</span>
                         <input
                           value={app.spec.city || ""}
                           maxLength={20}
@@ -5606,8 +5606,8 @@ export default function InkStudio() {
                 {app.spec.table?.type === "agenda" && (
                   <section className="agenda-editor" aria-label={tRuntime("智能日程布局与范围")}>
                     <div className="calendar-source-heading">
-                      <strong>智能日程布局</strong>
-                      <small>空闲时间会自动压缩</small>
+                      <strong>{t("智能日程布局")}</strong>
+                      <small>{t("空闲时间会自动压缩")}</small>
                     </div>
                     <div className="agenda-view-options" role="group" aria-label={tRuntime("日程布局")}>
                       {([
@@ -5629,7 +5629,7 @@ export default function InkStudio() {
                     </div>
                     <div className="agenda-range-grid">
                       <label>
-                        <span>时间范围</span>
+                        <span>{t("时间范围")}</span>
                         <select
                           value={app.spec.table.rangeMode === "rolling" ? String(app.spec.table.rangeHours) : app.spec.table.rangeMode}
                           onChange={(event) => {
@@ -5638,21 +5638,21 @@ export default function InkStudio() {
                             else updateAgendaTable({ rangeMode: "rolling", rangeHours: Number(value) || 72 });
                           }}
                         >
-                          <option value="4">接下来 4 小时</option>
-                          <option value="8">接下来 8 小时</option>
-                          <option value="12">接下来 12 小时</option>
-                          <option value="24">接下来 24 小时</option>
-                          <option value="72">接下来 3 天</option>
-                          <option value="120">接下来 5 天</option>
-                          <option value="168">接下来 7 天</option>
-                          <option value="today">今天</option>
-                          <option value="custom">自定义</option>
+                          <option value="4">{t("接下来 4 小时")}</option>
+                          <option value="8">{t("接下来 8 小时")}</option>
+                          <option value="12">{t("接下来 12 小时")}</option>
+                          <option value="24">{t("接下来 24 小时")}</option>
+                          <option value="72">{t("接下来 3 天")}</option>
+                          <option value="120">{t("接下来 5 天")}</option>
+                          <option value="168">{t("接下来 7 天")}</option>
+                          <option value="today">{t("今天")}</option>
+                          <option value="custom">{t("自定义")}</option>
                         </select>
                       </label>
                       {app.spec.table.rangeMode === "custom" && (
                         <>
                           <label>
-                            <span>开始</span>
+                            <span>{t("开始")}</span>
                             <input
                               type="datetime-local"
                               value={app.spec.table.customStart || ""}
@@ -5660,7 +5660,7 @@ export default function InkStudio() {
                             />
                           </label>
                           <label>
-                            <span>结束</span>
+                            <span>{t("结束")}</span>
                             <input
                               type="datetime-local"
                               value={app.spec.table.customEnd || ""}
@@ -5673,7 +5673,7 @@ export default function InkStudio() {
                     <div className="agenda-density-controls">
                       <label className="agenda-width-control">
                         <span>
-                          <strong>日程块宽度</strong>
+                          <strong>{t("日程块宽度")}</strong>
                           <output>{Math.round(app.spec.table.eventWidth ?? 100)}%</output>
                         </span>
                         <input
@@ -5693,7 +5693,7 @@ export default function InkStudio() {
                             checked={app.spec.table.showEndTime !== false}
                             onChange={(event) => updateAgendaTable({ showEndTime: event.target.checked })}
                           />
-                          <span>结束时间</span>
+                          <span>{t("结束时间")}</span>
                         </label>
                         <label>
                           <input
@@ -5701,7 +5701,7 @@ export default function InkStudio() {
                             checked={app.spec.table.showLocation !== false}
                             onChange={(event) => updateAgendaTable({ showLocation: event.target.checked })}
                           />
-                          <span>地点</span>
+                          <span>{t("地点")}</span>
                         </label>
                       </div>
                     </div>
@@ -5710,8 +5710,8 @@ export default function InkStudio() {
                 {(app.spec.table?.type === "calendar" || app.spec.table?.type === "agenda") && (
                   <section className="calendar-source-editor" aria-label={tRuntime("在线日历数据")}>
                     <div className="calendar-source-heading">
-                      <strong>在线日历数据</strong>
-                      <small>{calendarPreferences.sources.length} 个个人来源 · 仅保存在当前浏览器</small>
+                      <strong>{t("在线日历数据")}</strong>
+                      <small>{calendarPreferences.sources.length} {t("个个人来源 · 仅保存在当前浏览器")}</small>
                     </div>
                     <div className="calendar-source-options">
                       {app.spec.table.type === "calendar" && (
@@ -5721,7 +5721,7 @@ export default function InkStudio() {
                             checked={calendarPreferences.lunar}
                             onChange={(event) => updateCalendarPreferences({ lunar: event.target.checked })}
                           />
-                          <span><strong>农历日期</strong><small>内置换算，无需联网</small></span>
+                          <span><strong>{t("农历日期")}</strong><small>{t("内置换算，无需联网")}</small></span>
                         </label>
                       )}
                       <label>
@@ -5730,7 +5730,7 @@ export default function InkStudio() {
                           checked={calendarPreferences.chinaHolidays}
                           onChange={(event) => updateCalendarPreferences({ chinaHolidays: event.target.checked })}
                         />
-                        <span><strong>中国公众假期</strong><small>读取公开 iCal 日历</small></span>
+                        <span><strong>{t("中国公众假期")}</strong><small>{t("读取公开 iCal 日历")}</small></span>
                       </label>
                     </div>
                     {calendarPreferences.sources.length > 0 && (
@@ -5746,7 +5746,7 @@ export default function InkStudio() {
                                 type="checkbox"
                                 checked={source.enabled}
                                 onChange={(event) => updateCalendarSource(source.id, { enabled: event.target.checked })}
-                                aria-label={`${source.enabled ? "停用" : "启用"}${source.name}`}
+                                aria-label={`${source.enabled ? tRuntime("停用") : tRuntime("启用")}${source.name}`}
                               />
                               <span
                                 className="calendar-source-swatch"
@@ -5762,7 +5762,7 @@ export default function InkStudio() {
                                   event.target.value = name;
                                   if (name !== source.name) updateCalendarSource(source.id, { name });
                                 }}
-                                aria-label={`日历 ${index + 1} 名称`}
+                                aria-label={`${t("日历")} ${index + 1} ${t("名称")}`}
                                 maxLength={24}
                               />
                               <small title={source.url}>{source.url.replace(/^webcal:\/\//i, "")}</small>
@@ -5770,16 +5770,16 @@ export default function InkStudio() {
                             <button
                               type="button"
                               onClick={() => removeCalendarSource(source.id)}
-                              aria-label={`移除${source.name}`}
+                              aria-label={`${t("移除")}${source.name}`}
                             >
-                              移除
+                              {t("移除")}
                             </button>
                           </div>
                         ))}
                       </div>
                     )}
                     <label className="calendar-url-field" htmlFor="calendar-ical-url">
-                      <span>添加 iCal 地址</span>
+                      <span>{t("添加 iCal 地址")}</span>
                       <div className="calendar-url-row">
                         <input
                           id="calendar-ical-url"
@@ -5797,7 +5797,7 @@ export default function InkStudio() {
                           autoComplete="off"
                           spellCheck={false}
                         />
-                        <button type="button" onClick={addCalendarSource}>添加</button>
+                        <button type="button" onClick={addCalendarSource}>{t("添加")}</button>
                       </div>
                     </label>
                     <p className={calendarNotice ? "calendar-source-warning" : undefined}>
@@ -5805,13 +5805,13 @@ export default function InkStudio() {
                     </p>
                   </section>
                 )}
-                <label>刷新计划</label>
+                <label>{t("刷新计划")}</label>
                 <div className="schedule-options">
                   {[
                     ["once", tRuntime("单次写入"), tRuntime("立即执行一次")],
                     ["hourly", tRuntime("每小时"), tRuntime("整点后循环")],
                     ["daily", tRuntime("每天"), app.dailyTime],
-                    ["custom", tRuntime("自定义"), `${app.customMinutes} 分钟`],
+                    ["custom", tRuntime("自定义"), `${app.customMinutes} ${t("分钟")}`],
                   ].map(([value, title, detail]) => (
                     <button
                       type="button"
@@ -5826,7 +5826,7 @@ export default function InkStudio() {
                 </div>
                 {app.scheduleMode === "daily" && (
                   <div className="inline-field">
-                    <label htmlFor="daily-time">每天执行时间</label>
+                    <label htmlFor="daily-time">{t("每天执行时间")}</label>
                     <input
                       id="daily-time"
                       type="time"
@@ -5837,7 +5837,7 @@ export default function InkStudio() {
                 )}
                 {app.scheduleMode === "custom" && (
                   <div className="inline-field">
-                    <label htmlFor="custom-minutes">间隔分钟（最短 1 分钟）</label>
+                    <label htmlFor="custom-minutes">{t("间隔分钟（最短 1 分钟）")}</label>
                     <input
                       id="custom-minutes"
                       type="number"
@@ -5854,7 +5854,7 @@ export default function InkStudio() {
                   </div>
                 )}
                 <button type="button" className="code-toggle" onClick={() => setCodeOpen((open) => !open)}>
-                  <span><i>&lt;/&gt;</i> 查看生成逻辑</span><b>{codeOpen ? "−" : "+"}</b>
+                  <span><i>&lt;/&gt;</i> {t("查看生成逻辑")}</span><b>{codeOpen ? "−" : "+"}</b>
                 </button>
                 {codeOpen && <pre className="code-preview"><code>{app.code}</code></pre>}
               </section>
@@ -5873,7 +5873,7 @@ export default function InkStudio() {
                   </strong>
                   {nextRun ? (
                     <div className="next-run-summary">
-                      <span>下次执行</span>
+                      <span>{t("下次执行")}</span>
                       <b>{formatExactTime(nextRun)}</b>
                       <em>{formatRemaining(nextRun, secondTick)}</em>
                     </div>
@@ -5899,7 +5899,7 @@ export default function InkStudio() {
                     ? activeDevice.online ? tRuntime("Wi‑Fi 在线") : tRuntime("Wi‑Fi 离线")
                     : bluetoothSupported ? tRuntime("蓝牙可用") : tRuntime("请使用 Chromium")}
                 </button>
-                {scheduleActive && <button type="button" className="stop-button" onClick={stopSchedule}>停止任务</button>}
+                {scheduleActive && <button type="button" className="stop-button" onClick={stopSchedule}>{t("停止任务")}</button>}
                 <button type="button" className="start-button" onClick={start} disabled={deviceStatus === "writing"}>
                   <span>{deviceStatus === "writing"
                     ? activeDevice?.family === "esp32" ? tRuntime("正在保存") : tRuntime("正在写入")
@@ -5915,9 +5915,9 @@ export default function InkStudio() {
           <section className="collection-view">
             <div className="collection-hero">
               <span className="eyebrow">LOCAL LIBRARY</span>
-              <h1>我的模版</h1>
-              <p>这些模版保存在浏览器本机，不上传个人数据。清理浏览器数据会一并删除。</p>
-              <button type="button" onClick={() => navigateToTab("studio")}>＋ 创建新模版</button>
+              <h1>{t("我的模版")}</h1>
+              <p>{t("这些模版保存在浏览器本机，不上传个人数据。清理浏览器数据会一并删除。")}</p>
+              <button type="button" onClick={() => navigateToTab("studio")}>＋ {t("创建新模版")}</button>
             </div>
             {localApps.length ? (
               <div className="card-grid">
@@ -5925,7 +5925,7 @@ export default function InkStudio() {
               </div>
             ) : (
               <div className="empty-state">
-                <span>▦</span><h2>还没有保存的模版</h2><p>在创作台生成并保存，第一个模版就会出现在这里。</p>
+                <span>▦</span><h2>{t("还没有保存的模版")}</h2><p>{t("在创作台生成并保存，第一个模版就会出现在这里。")}</p>
               </div>
             )}
           </section>
@@ -5936,12 +5936,12 @@ export default function InkStudio() {
             <div className="collection-hero split">
               <div>
                 <span className="eyebrow">PUBLIC GALLERY</span>
-                <h1>模板市场</h1>
-                <p>所有模板都能一键复制到创作台，再按自己的数据与频率修改。</p>
+                <h1>{t("模板市场")}</h1>
+                <p>{t("所有模板都能一键复制到创作台，再按自己的数据与频率修改。")}</p>
               </div>
-              <div className="gallery-stat"><b>{publicApps.length}</b><span>公开模板</span></div>
+              <div className="gallery-stat"><b>{publicApps.length}</b><span>{t("公开模板")}</span></div>
             </div>
-            <div className="filter-row"><button className="active">精选</button><button>生活</button><button>效率</button><button>数据</button></div>
+            <div className="filter-row"><button className="active">{t("精选")}</button><button>{t("生活")}</button><button>{t("效率")}</button><button>{t("数据")}</button></div>
             <div className="card-grid">
               {publicApps.map((item) => (
                 <AppCard
@@ -5960,14 +5960,14 @@ export default function InkStudio() {
             <div className="device-hero">
               <div>
                 <span className="eyebrow">BLUETOOTH + ESP32 · ONE DEVICE CENTER</span>
-                <h1>同一个创作台，两种无痛写入方式。</h1>
-                <p>TodooCard 延续浏览器蓝牙写入；M5 PaperColor 在设备端保存计划并主动联网拉取，浏览器关闭也不会丢失任务。</p>
+                <h1>{t("同一个创作台，两种无痛写入方式。")}</h1>
+                <p>{t("TodooCard 延续浏览器蓝牙写入；M5 PaperColor 在设备端保存计划并主动联网拉取，浏览器关闭也不会丢失任务。")}</p>
               </div>
               <div className="connection-card">
                 <span className={`status-orb ${devices.length ? "connected" : ""}`}>⌁</span>
                 <strong>{activeDevice?.name ?? tRuntime("尚未添加设备")}</strong>
                 <small>{devices.length
-                  ? `已添加 ${devices.length} 台设备 · 写入任务按设备独立管理`
+                  ? `${t("已添加")} ${devices.length} ${t("台设备 · 写入任务按设备独立管理")}`
                   : tRuntime("支持 TodooCard 与 M5 PaperColor")}</small>
                 <button type="button" onClick={openAddDevice}>{devices.length ? tRuntime("添加另一台设备") : tRuntime("添加设备")}</button>
               </div>
@@ -5976,10 +5976,10 @@ export default function InkStudio() {
               <header>
                 <div>
                   <span className="eyebrow">AUTHORIZED DEVICES</span>
-                  <h2 id="device-registry-title">连接过的设备</h2>
-                  <p>蓝牙任务在当前页面调度；ESP32 任务持久化在服务器与设备上。点开设备即可查看其执行方式与同步状态。</p>
+                  <h2 id="device-registry-title">{t("连接过的设备")}</h2>
+                  <p>{t("蓝牙任务在当前页面调度；ESP32 任务持久化在服务器与设备上。点开设备即可查看其执行方式与同步状态。")}</p>
                 </div>
-                <button type="button" onClick={openAddDevice}>添加设备</button>
+                <button type="button" onClick={openAddDevice}>{t("添加设备")}</button>
               </header>
               {deviceSummaries.length ? (
                 <div className="device-registry-list">
@@ -6019,22 +6019,22 @@ export default function InkStudio() {
                           </span>
                           <span className="device-registry-meta">
                             <b>{device.tasks.length}</b>
-                            <small>刷新任务</small>
+                            <small>{t("刷新任务")}</small>
                           </span>
                           {device.hasError && <span className="device-registry-alert" aria-label={tRuntime("任务出现错误")}>!</span>}
                           <span className="device-registry-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
                         </button>
                         {expanded && (
                           <div className="device-registry-tasks" id={`device-history-${device.id}`}>
-                            {deviceAdapter(device.skuId).supportsCalibration ? <section className={`device-calibration-panel${device.calibration ? " calibrated" : ""}`} aria-label={`${device.name} 设备校色`}>
+                            {deviceAdapter(device.skuId).supportsCalibration ? <section className={`device-calibration-panel${device.calibration ? " calibrated" : ""}`} aria-label={`${device.name} ${t("设备校色")}`}>
                               <div className="device-calibration-copy">
                                 <span className="device-calibration-mark" aria-hidden="true">C</span>
                                 <div>
                                   <span className="device-calibration-title">
-                                    <strong>设备色差纠正</strong>
+                                    <strong>{t("设备色差纠正")}</strong>
                                     {device.calibration
                                       ? <b>ΔE {device.calibration.averageDeltaE}</b>
-                                      : <b>待校色</b>}
+                                      : <b>{t("待校色")}</b>}
                                   </span>
                                   <small>{device.calibration
                                     ? `${calibrationQualityLabel(device.calibration)} · ${new Date(device.calibration.createdAt).toLocaleDateString(activeLocaleTag())}`
@@ -6066,17 +6066,17 @@ export default function InkStudio() {
                                 </button>
                               </div>
                             </section> : (
-                              <section className="device-adapter-panel" aria-label={`${device.name} 设备信息`}>
+                              <section className="device-adapter-panel" aria-label={`${device.name} ${t("设备信息")}`}>
                                 <div>
                                   <span className="device-calibration-mark" aria-hidden="true">W</span>
                                   <div><strong>{deviceSku(device.skuId)?.displayName ?? device.name}</strong><small>{deviceSku(device.skuId)?.description}</small></div>
                                 </div>
                                 <dl>
-                                  <div><dt>适配器</dt><dd>{deviceAdapter(device.skuId).id}</dd></div>
-                                  <div><dt>渲染</dt><dd>{deviceAdapter(device.skuId).taskStatusCopy}</dd></div>
-                                  <div><dt>写入</dt><dd>设备 HTTPS 主动拉取</dd></div>
-                                  <div><dt>同步</dt><dd>{device.appliedRevision ?? 0} / {device.desiredRevision ?? 0}</dd></div>
-                                  <div><dt>固件</dt><dd>{device.firmwareVersion ?? tRuntime("待上报")}</dd></div>
+                                  <div><dt>{t("适配器")}</dt><dd>{deviceAdapter(device.skuId).id}</dd></div>
+                                  <div><dt>{t("渲染")}</dt><dd>{deviceAdapter(device.skuId).taskStatusCopy}</dd></div>
+                                  <div><dt>{t("写入")}</dt><dd>{t("设备 HTTPS 主动拉取")}</dd></div>
+                                  <div><dt>{t("同步")}</dt><dd>{device.appliedRevision ?? 0} / {device.desiredRevision ?? 0}</dd></div>
+                                  <div><dt>{t("固件")}</dt><dd>{device.firmwareVersion ?? tRuntime("待上报")}</dd></div>
                                 </dl>
                               </section>
                             )}
@@ -6094,8 +6094,8 @@ export default function InkStudio() {
                               </div>
                             ) : (
                               <div className="device-history-empty">
-                                <strong>暂无运行中的刷新任务</strong>
-                                <p>在创作台选择每小时、每天或自定义计划并开始写入后，任务会显示在这里。</p>
+                                <strong>{t("暂无运行中的刷新任务")}</strong>
+                                <p>{t("在创作台选择每小时、每天或自定义计划并开始写入后，任务会显示在这里。")}</p>
                               </div>
                             )}
                           </div>
@@ -6107,37 +6107,37 @@ export default function InkStudio() {
               ) : (
                 <div className="device-registry-empty">
                   <span className="status-dot idle" aria-hidden="true" />
-                  <div><strong>还没有连接过设备</strong><p>点击“添加设备”，授权后会保留在这个列表中。</p></div>
-                  <button type="button" onClick={openAddDevice}>添加设备</button>
+                  <div><strong>{t("还没有连接过设备")}</strong><p>{t("点击“添加设备”，授权后会保留在这个列表中。")}</p></div>
+                  <button type="button" onClick={openAddDevice}>{t("添加设备")}</button>
                 </div>
               )}
             </section>
             <div className="feasibility-grid">
               <article className="verdict-card yes">
-                <span>可以做到</span>
-                <h2>同一会话自动重连</h2>
-                <p>保留 BluetoothDevice，定时到点后连接 GATT、写入、断开。支持 getDevices() 时，下次访问也可找回已授权设备。</p>
+                <span>{t("可以做到")}</span>
+                <h2>{t("同一会话自动重连")}</h2>
+                <p>{t("保留 BluetoothDevice，定时到点后连接 GATT、写入、断开。支持 getDevices() 时，下次访问也可找回已授权设备。")}</p>
               </article>
               <article className="verdict-card caution">
-                <span>ESP32 模式</span>
-                <h2>设备主动同步</h2>
-                <p>计划保存在设备端；开机联网后每 15 秒同步变更，按本机时钟执行并拉取最新画面。</p>
+                <span>{t("ESP32 模式")}</span>
+                <h2>{t("设备主动同步")}</h2>
+                <p>{t("计划保存在设备端；开机联网后每 15 秒同步变更，按本机时钟执行并拉取最新画面。")}</p>
               </article>
               <article className="verdict-card no">
-                <span>无法保证</span>
-                <h2>蓝牙仍依赖浏览器</h2>
-                <p>TodooCard 的定时任务仍受后台节流、系统休眠与设备唤醒影响；已有操作习惯保持不变。</p>
+                <span>{t("无法保证")}</span>
+                <h2>{t("蓝牙仍依赖浏览器")}</h2>
+                <p>{t("TodooCard 的定时任务仍受后台节流、系统休眠与设备唤醒影响；已有操作习惯保持不变。")}</p>
               </article>
             </div>
             <div className="protocol-table">
-              <div><span>传输协议</span><strong>BLE GATT</strong></div>
-              <div><span>设备服务</span><strong>FEF0 · FEF1 · FEF2</strong></div>
-              <div><span>单次数据</span><strong>219,120 bytes · 913 包</strong></div>
-              <div><span>显色时间</span><strong>复杂画面可能约 3 分钟</strong></div>
+              <div><span>{t("传输协议")}</span><strong>BLE GATT</strong></div>
+              <div><span>{t("设备服务")}</span><strong>FEF0 · FEF1 · FEF2</strong></div>
+              <div><span>{t("单次数据")}</span><strong>{t("219,120 bytes · 913 包")}</strong></div>
+              <div><span>{t("显色时间")}</span><strong>{t("复杂画面可能约 3 分钟")}</strong></div>
             </div>
             <div className="reliability-note">
-              <span>长期无人值守建议</span>
-              <p>M5 PaperColor 已采用设备侧调度；离线期间不会抓取，重新开机联网后会同步服务器上的新增、更新与删除。</p>
+              <span>{t("长期无人值守建议")}</span>
+              <p>{t("M5 PaperColor 已采用设备侧调度；离线期间不会抓取，重新开机联网后会同步服务器上的新增、更新与删除。")}</p>
             </div>
           </section>
         )}
@@ -6154,7 +6154,7 @@ export default function InkStudio() {
                 <h2 id="add-device-title">
                   {addDeviceStep === "family" ? tRuntime("添加设备") : selectedDeviceSku?.displayName ?? tRuntime("添加 ESP32 设备")}
                 </h2>
-                <p>现有蓝牙流程保持不变；Wi‑Fi 设备绑定后由硬件端保存计划并主动同步。</p>
+                <p>{t("现有蓝牙流程保持不变；Wi‑Fi 设备绑定后由硬件端保存计划并主动同步。")}</p>
               </div>
               <button type="button" onClick={closeAddDevice} disabled={deviceFlowBusy} aria-label={tRuntime("关闭添加设备")}>×</button>
             </header>
@@ -6163,25 +6163,25 @@ export default function InkStudio() {
               <div className="device-family-grid">
                 <button type="button" onClick={() => void selectNewBluetoothDevice()}>
                   <span className="device-choice-icon bluetooth">⌁</span>
-                  <strong>蓝牙设备</strong>
-                  <p>TodooCard · 浏览器直接写入，原有使用方式不变。</p>
+                  <strong>{t("蓝牙设备")}</strong>
+                  <p>{t("TodooCard · 浏览器直接写入，原有使用方式不变。")}</p>
                   <small>{bluetoothSupported ? tRuntime("当前浏览器蓝牙可用") : tRuntime("需要桌面 Chrome / Edge 或 Android Chromium")}</small>
-                  <i>选择设备 →</i>
+                  <i>{t("选择设备")} →</i>
                 </button>
                 <button type="button" onClick={() => setAddDeviceStep("sku")}>
                   <span className="device-choice-icon wifi">W</span>
-                  <strong>ESP32 设备</strong>
-                  <p>通过 Wi‑Fi 拉取任务，关掉创作台后仍由设备按计划运行。</p>
-                  <small>支持设备码绑定与 USB 在线刷机</small>
-                  <i>选择型号 →</i>
+                  <strong>{t("ESP32 设备")}</strong>
+                  <p>{t("通过 Wi‑Fi 拉取任务，关掉创作台后仍由设备按计划运行。")}</p>
+                  <small>{t("支持设备码绑定与 USB 在线刷机")}</small>
+                  <i>{t("选择型号")} →</i>
                 </button>
               </div>
             )}
 
             {addDeviceStep === "sku" && (
               <div className="device-flow-panel">
-                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("family")}>← 返回设备类型</button>
-                <h3>选择具体型号</h3>
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("family")}>← {t("返回设备类型")}</button>
+                <h3>{t("选择具体型号")}</h3>
                 <div className="device-sku-grid">
                   {deviceSkusForFamily("esp32").map((sku) => (
                     <button type="button" key={sku.id} onClick={() => {
@@ -6199,14 +6199,14 @@ export default function InkStudio() {
 
             {addDeviceStep === "method" && selectedDeviceSku && (
               <div className="device-flow-panel">
-                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("sku")}>← 返回型号</button>
-                <h3>这台设备准备好了吗？</h3>
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("sku")}>← {t("返回型号")}</button>
+                <h3>{t("这台设备准备好了吗？")}</h3>
                 <div className="device-method-grid">
                   <button type="button" onClick={() => setAddDeviceStep("claim")}>
-                    <b>01</b><strong>输入六位设备码</strong><p>瘦客户端已运行，屏幕上正在显示绑定码。</p><i>立即绑定 →</i>
+                    <b>01</b><strong>{t("输入六位设备码")}</strong><p>{t("瘦客户端已运行，屏幕上正在显示绑定码。")}</p><i>{t("立即绑定")} →</i>
                   </button>
                   <button type="button" onClick={() => setAddDeviceStep("flash")}>
-                    <b>02</b><strong>给设备刷机</strong><p>通过 USB 写入 Inkloop 瘦客户端，首次启动后再绑定。</p><i>开始刷机 →</i>
+                    <b>02</b><strong>{t("给设备刷机")}</strong><p>{t("通过 USB 写入 Inkloop 瘦客户端，首次启动后再绑定。")}</p><i>{t("开始刷机")} →</i>
                   </button>
                 </div>
               </div>
@@ -6214,10 +6214,10 @@ export default function InkStudio() {
 
             {addDeviceStep === "claim" && (
               <div className="device-flow-panel device-code-panel">
-                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("method")}>← 返回连接方式</button>
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("method")}>← {t("返回连接方式")}</button>
                 <span className="device-code-mark">6</span>
-                <h3>输入屏幕上的六位设备码</h3>
-                <p>保持 M5 PaperColor 开机并联网。绑定成功后，任务会存储到设备端。</p>
+                <h3>{t("输入屏幕上的六位设备码")}</h3>
+                <p>{t("保持 M5 PaperColor 开机并联网。绑定成功后，任务会存储到设备端。")}</p>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -6244,13 +6244,13 @@ export default function InkStudio() {
 
             {addDeviceStep === "flash" && (
               <div className="device-flow-panel device-flash-panel">
-                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("method")} disabled={deviceFlowBusy}>← 返回连接方式</button>
-                <h3>插入 M5 PaperColor</h3>
-                <p>使用可传输数据的 USB 线连接设备和电脑。浏览器会在下一步让你选择串口，写入过程中不要拔线。</p>
+                <button type="button" className="device-flow-back" onClick={() => setAddDeviceStep("method")} disabled={deviceFlowBusy}>← {t("返回连接方式")}</button>
+                <h3>{t("插入 M5 PaperColor")}</h3>
+                <p>{t("使用可传输数据的 USB 线连接设备和电脑。浏览器会在下一步让你选择串口，写入过程中不要拔线。")}</p>
                 <ol>
-                  <li><b>1</b><span><strong>连接设备</strong><small>请使用桌面版 Chrome 或 Edge</small></span></li>
-                  <li><b>2</b><span><strong>写入瘦客户端</strong><small>不会读取电脑上的其他文件</small></span></li>
-                  <li><b>3</b><span><strong>配置 Wi‑Fi 并绑定</strong><small>首次启动屏幕会给出引导和六位码</small></span></li>
+                  <li><b>1</b><span><strong>{t("连接设备")}</strong><small>{t("请使用桌面版 Chrome 或 Edge")}</small></span></li>
+                  <li><b>2</b><span><strong>{t("写入瘦客户端")}</strong><small>{t("不会读取电脑上的其他文件")}</small></span></li>
+                  <li><b>3</b><span><strong>{t("配置 Wi‑Fi 并绑定")}</strong><small>{t("首次启动屏幕会给出引导和六位码")}</small></span></li>
                 </ol>
                 {firmwareProgress && (
                   <div className="firmware-progress" aria-live="polite">
@@ -6268,14 +6268,14 @@ export default function InkStudio() {
             {addDeviceStep === "flash-complete" && (
               <div className="device-flow-panel device-flash-complete">
                 <span>✓</span>
-                <h3>瘦客户端已经写入</h3>
-                <p>设备重启后会显示 Wi‑Fi 配网指引；完成配网后，屏幕会显示六位硬件码和“请通过 Inkloop 添加设备绑定”。</p>
+                <h3>{t("瘦客户端已经写入")}</h3>
+                <p>{t("设备重启后会显示 Wi‑Fi 配网指引；完成配网后，屏幕会显示六位硬件码和“请通过 Inkloop 添加设备绑定”。")}</p>
                 <button type="button" className="device-flow-primary" onClick={() => {
                   setDeviceCode("");
                   setDeviceFlowError(null);
                   setAddDeviceStep("claim");
-                }}>我看到六位设备码了</button>
-                <button type="button" className="device-flow-secondary" onClick={closeAddDevice}>稍后再绑定</button>
+                }}>{t("我看到六位设备码了")}</button>
+                <button type="button" className="device-flow-secondary" onClick={closeAddDevice}>{t("稍后再绑定")}</button>
               </div>
             )}
           </section>
@@ -6290,13 +6290,13 @@ export default function InkStudio() {
             <header className="calibration-header">
               <div>
                 <span className="eyebrow">DEVICE COLOR PROFILE</span>
-                <h2 id="calibration-title">校准 {calibrationDevice.name}</h2>
-                <p>用一次标准色卡测量这台屏幕，再为后续写入自动修正六色量化。</p>
+                <h2 id="calibration-title">{t("校准")} {calibrationDevice.name}</h2>
+                <p>{t("用一次标准色卡测量这台屏幕，再为后续写入自动修正六色量化。")}</p>
               </div>
               <button type="button" onClick={closeDeviceCalibration} disabled={calibrationBusy} aria-label={tRuntime("关闭设备校色")}>×</button>
             </header>
 
-            <ol className="calibration-progress" aria-label={`校色进度：第 ${calibrationStep} 步，共 3 步`}>
+            <ol className="calibration-progress" aria-label={`${t("校色进度：第")} ${calibrationStep} ${t("步，共 3 步")}`}>
               {[tRuntime("写入色卡"), tRuntime("拍照上传"), tRuntime("确认 Profile")].map((label, index) => {
                 const step = (index + 1) as 1 | 2 | 3;
                 return <li key={label} className={calibrationStep === step ? "current" : calibrationStep > step ? "complete" : ""}>
@@ -6317,12 +6317,12 @@ export default function InkStudio() {
                   ))}
                 </div>
                 <div className="calibration-instructions">
-                  <span className="calibration-step-number">步骤 1</span>
-                  <h3>先把标准色卡写入屏幕</h3>
-                  <p>保持设备在电脑附近。写入完成后，等待屏幕颜色完全稳定，再进入拍照步骤。</p>
+                  <span className="calibration-step-number">{t("步骤 1")}</span>
+                  <h3>{t("先把标准色卡写入屏幕")}</h3>
+                  <p>{t("保持设备在电脑附近。写入完成后，等待屏幕颜色完全稳定，再进入拍照步骤。")}</p>
                   <ul>
-                    <li>使用协议原生六色色带，不受当前应用与校色 Profile 影响。</li>
-                    <li>写入约需 1 分钟，电子纸继续显色可能再等几分钟。</li>
+                    <li>{t("使用协议原生六色色带，不受当前应用与校色 Profile 影响。")}</li>
+                    <li>{t("写入约需 1 分钟，电子纸继续显色可能再等几分钟。")}</li>
                   </ul>
                   <div className="calibration-step-actions">
                     <button type="button" className="calibration-primary" onClick={() => void writeCalibrationCard()} disabled={calibrationBusy}>
@@ -6337,7 +6337,7 @@ export default function InkStudio() {
                         setCalibrationStep(2);
                       }}
                       disabled={calibrationBusy}
-                    >已写入</button>
+                    >{t("已写入")}</button>
                   </div>
                 </div>
               </div>
@@ -6351,16 +6351,16 @@ export default function InkStudio() {
                       <i key={swatch.key} style={{ background: `rgb(${swatch.expected.join(",")})` }} />
                     ))}
                   </div>
-                  <span>让屏幕边缘贴近取景框</span>
+                  <span>{t("让屏幕边缘贴近取景框")}</span>
                 </div>
                 <div className="calibration-instructions">
-                  <span className="calibration-step-number">步骤 2</span>
-                  <h3>正对屏幕拍一张照片</h3>
-                  <p>让屏幕完整出现在画面中央，避免灯光反射；横拍、竖拍都可以，系统会自动找边缘并旋转。</p>
+                  <span className="calibration-step-number">{t("步骤 2")}</span>
+                  <h3>{t("正对屏幕拍一张照片")}</h3>
+                  <p>{t("让屏幕完整出现在画面中央，避免灯光反射；横拍、竖拍都可以，系统会自动找边缘并旋转。")}</p>
                   <ul>
-                    <li>自动裁掉屏幕外区域，并把检测到的画面缩放到标准尺寸。</li>
-                    <li>系统会用黑、白色带抵消曝光和相机白平衡。</li>
-                    <li>照片只在当前浏览器分析，不上传也不保存。</li>
+                    <li>{t("自动裁掉屏幕外区域，并把检测到的画面缩放到标准尺寸。")}</li>
+                    <li>{t("系统会用黑、白色带抵消曝光和相机白平衡。")}</li>
+                    <li>{t("照片只在当前浏览器分析，不上传也不保存。")}</li>
                   </ul>
                   <input
                     ref={calibrationFileInputRef}
@@ -6375,8 +6375,8 @@ export default function InkStudio() {
                     className="calibration-primary"
                     onClick={() => calibrationFileInputRef.current?.click()}
                     disabled={calibrationBusy}
-                  >{calibrationBusy ? "正在分析照片" : "拍照或选择照片"}</button>
-                  <button type="button" className="calibration-secondary" onClick={() => setCalibrationStep(1)} disabled={calibrationBusy}>重新写入色卡</button>
+                  >{calibrationBusy ? t("正在分析照片") : t("拍照或选择照片")}</button>
+                  <button type="button" className="calibration-secondary" onClick={() => setCalibrationStep(1)} disabled={calibrationBusy}>{t("重新写入色卡")}</button>
                 </div>
               </div>
             )}
@@ -6386,37 +6386,37 @@ export default function InkStudio() {
                 <figure className="calibration-photo-preview">
                   {calibrationPhoto && <img src={calibrationPhoto} alt={tRuntime("自动检测边缘、裁切和旋转后的设备校色色卡")} />}
                   <figcaption>
-                    已自动检测边缘 · {calibrationDraft.capture?.axis === "vertical" ? tRuntime("纵向色带") : tRuntime("横向色带")}
-                    {calibrationDraft.capture?.rotation ? ` · 已旋转 ${calibrationDraft.capture.rotation}°` : ""}
-                    {calibrationDraft.capture?.confidence ? ` · 置信度 ${calibrationDraft.capture.confidence}%` : ""}
+                    {t("已自动检测边缘")} · {calibrationDraft.capture?.axis === "vertical" ? tRuntime("纵向色带") : tRuntime("横向色带")}
+                    {calibrationDraft.capture?.rotation ? ` · ${t("已旋转")} ${calibrationDraft.capture.rotation}°` : ""}
+                    {calibrationDraft.capture?.confidence ? ` · ${t("置信度")} ${calibrationDraft.capture.confidence}%` : ""}
                   </figcaption>
                 </figure>
                 <div className="calibration-result">
-                  <span className="calibration-step-number">步骤 3</span>
+                  <span className="calibration-step-number">{t("步骤 3")}</span>
                   <div className="calibration-score">
-                    <div><small>平均色差</small><strong>ΔE {calibrationDraft.averageDeltaE}</strong></div>
+                    <div><small>{t("平均色差")}</small><strong>ΔE {calibrationDraft.averageDeltaE}</strong></div>
                     <b className={calibrationDraft.quality}>{calibrationQualityLabel(calibrationDraft)}</b>
                   </div>
                   <div className="calibration-comparison" aria-label={tRuntime("标准颜色与照片测量颜色对比")}>
                     {calibrationDraft.samples.map((sample) => (
                       <div key={sample.key}>
                         <span>
-                          <i style={{ background: `rgb(${sample.expected.join(",")})` }} title={`${sample.label}标准色`} />
-                          <i style={{ background: `rgb(${sample.measured.join(",")})` }} title={`${sample.label}测量色`} />
+                          <i style={{ background: `rgb(${sample.expected.join(",")})` }} title={`${sample.label}${t("标准色")}`} />
+                          <i style={{ background: `rgb(${sample.measured.join(",")})` }} title={`${sample.label}${t("测量色")}`} />
                         </span>
                         <strong>{sample.label}</strong>
                         <small>ΔE {sample.deltaE}</small>
                       </div>
                     ))}
                   </div>
-                  <p>保存后，这台设备的图片会按照实测六色重新分配颜色；纯色颜料本身不会被软件改变。</p>
+                  <p>{t("保存后，这台设备的图片会按照实测六色重新分配颜色；纯色颜料本身不会被软件改变。")}</p>
                   <div className="calibration-result-actions">
                     <button type="button" className="calibration-secondary" onClick={() => {
                       setCalibrationStep(2);
                       setCalibrationDraft(null);
                       setCalibrationPhoto(null);
-                    }}>重新拍照</button>
-                    <button type="button" className="calibration-primary" onClick={saveDeviceCalibration}>保存并启用</button>
+                    }}>{t("重新拍照")}</button>
+                    <button type="button" className="calibration-primary" onClick={saveDeviceCalibration}>{t("保存并启用")}</button>
                   </div>
                 </div>
               </div>
@@ -6435,8 +6435,8 @@ export default function InkStudio() {
             <div className="guide-header">
               <div>
                 <span className="eyebrow">FROM FIRST SCREEN TO AUTOMATION</span>
-                <h2 id="guide-title">三步用好 Inkloop</h2>
-                <p>先做一张满意的画面，再保存应用、选择刷新时间，最后写入屏幕。</p>
+                <h2 id="guide-title">{t("三步用好 Inkloop")}</h2>
+                <p>{t("先做一张满意的画面，再保存应用、选择刷新时间，最后写入屏幕。")}</p>
               </div>
               <button type="button" className="guide-close" onClick={() => setGuideOpen(false)} aria-label={tRuntime("关闭使用说明")}>×</button>
             </div>
@@ -6455,13 +6455,13 @@ export default function InkStudio() {
             <div className="bluetooth-guide">
               <div className="bluetooth-guide-icon">⌁</div>
               <div>
-                <strong>写入前，把设备放在电脑附近</strong>
-                <p>建议保持在 1–3 米蓝牙范围内并唤醒屏幕。首次点击“开始写入”后选择 PICKSMART；之后保持这个页面打开、电脑不要休眠，就能按计划自动重连。</p>
+                <strong>{t("写入前，把设备放在电脑附近")}</strong>
+                <p>{t("建议保持在 1–3 米蓝牙范围内并唤醒屏幕。首次点击“开始写入”后选择 PICKSMART；之后保持这个页面打开、电脑不要休眠，就能按计划自动重连。")}</p>
               </div>
-              <button type="button" onClick={() => { setGuideOpen(false); navigateToTab("device"); }}>查看设备说明</button>
+              <button type="button" onClick={() => { setGuideOpen(false); navigateToTab("device"); }}>{t("查看设备说明")}</button>
             </div>
 
-            <p className="guide-footnote">本机图片随应用保存在当前浏览器；公开分享时不会上传你的私人图片，而会保留可复用的版式和主题。</p>
+            <p className="guide-footnote">{t("本机图片随应用保存在当前浏览器；公开分享时不会上传你的私人图片，而会保留可复用的版式和主题。")}</p>
           </section>
         </div>
       )}

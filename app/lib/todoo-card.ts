@@ -66,7 +66,7 @@ export class TodooCard {
       this.onProgress?.({
         phase: "sending",
         percent,
-        message: `正在发送 ${sentPackets} / ${totalPackets} 包`,
+        message: `${t("正在发送")} ${sentPackets} / ${totalPackets} ${t("包")}`,
       });
     });
   }

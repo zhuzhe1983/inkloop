@@ -139,10 +139,10 @@ export async function flashM5PaperColor(
   const manifest = await manifestResponse.json() as FirmwareManifest;
   const files = await Promise.all(manifest.files.map(async (file) => {
     const response = await fetch(file.path, { cache: "no-store" });
-    if (!response.ok) throw new Error(`无法下载固件文件：${file.path}`);
+    if (!response.ok) throw new Error(`${t("无法下载固件文件：")}${file.path}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!/^[a-f0-9]{64}$/i.test(file.sha256) || await sha256Hex(bytes) !== file.sha256.toLowerCase()) {
-      throw new Error(`固件校验失败：${file.path}`);
+      throw new Error(`${t("固件校验失败：")}${file.path}`);
     }
     if (file.path.endsWith("/firmware.bin")) {
       patchServerUrl(bytes, manifest.serverSlot, new URL("/api/devices", window.location.origin).toString());
@@ -178,7 +178,7 @@ export async function flashM5PaperColor(
       compress: true,
       reportProgress: (_fileIndex: number, written: number, total: number) => {
         const percent = 15 + Math.round((written / Math.max(1, total)) * 82);
-        onProgress({ phase: "writing", percent, message: `正在写入瘦客户端 ${percent}%` });
+        onProgress({ phase: "writing", percent, message: `${t("正在写入瘦客户端")} ${percent}%` });
       },
     });
     await loader.after();
