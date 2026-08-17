@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { generateInkApp, normalizeMapType } from "../app/lib/app-model.ts";
+import { generateInkApp } from "../app/lib/app-model.ts";
 
 test("地图需求生成独立地图应用，并把精确操作留给预览拖拽", () => {
   const app = generateInkApp("显示公司附近地图，标出入口");
@@ -9,7 +9,6 @@ test("地图需求生成独立地图应用，并把精确操作留给预览拖�
   assert.equal(app.spec.map.locationMode, "picker");
   assert.equal(app.spec.map.query, "公司");
   assert.equal(app.spec.map.zoomLevel, 19);
-  assert.equal(app.spec.map.mapType, 0);
   assert.equal(app.spec.map.style, "balanced");
   assert.equal(app.spec.map.marker, true);
   assert.equal(app.spec.map.showAddress, true);
@@ -41,17 +40,3 @@ test("地图模板识别不显示坐标的否定指令", () => {
   assert.equal(app.spec.map.showCoordinates, false);
 });
 
-test("地图模板能从提示词识别卫星与混合图层", () => {
-  assert.equal(generateInkApp("生成西湖卫星地图").spec.map.mapType, 1);
-  assert.equal(generateInkApp("公司门口卫星+道路地图").spec.map.mapType, 2);
-  assert.equal(generateInkApp("生成校园混合地图").spec.map.mapType, 2);
-  assert.equal(generateInkApp("生成普通道路地图").spec.map.mapType, 0);
-});
-
-test("normalizeMapType 接受数字与别名", () => {
-  assert.equal(normalizeMapType(1), 1);
-  assert.equal(normalizeMapType("2"), 2);
-  assert.equal(normalizeMapType("satellite"), 1);
-  assert.equal(normalizeMapType("hybrid"), 2);
-  assert.equal(normalizeMapType("nope", 0), 0);
-});

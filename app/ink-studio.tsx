@@ -22,8 +22,6 @@ import {
   generateInkApp,
   inferWeatherCity,
   intervalFor,
-  MAP_TYPE_OPTIONS,
-  normalizeMapType,
   scheduleLabel,
   starterApp,
   starterPrompt,
@@ -239,7 +237,6 @@ function mapApiParams(map: MapSpec, mode: "resolve" | "image", orientation?: Scr
     coordtype: map.coordinateType,
     zoom: String(map.zoomLevel),
     marker: String(map.marker),
-    t: String(normalizeMapType(map.mapType)),
   });
   if (typeof map.latitude === "number") params.set("lat", String(map.latitude));
   if (typeof map.longitude === "number") params.set("lng", String(map.longitude));
@@ -433,7 +430,6 @@ function upgradeLegacyApp(savedApp: InkApp): InkApp {
         ? {
             ...savedApp.spec.map,
             style: "balanced",
-            mapType: normalizeMapType(savedApp.spec.map.mapType),
           }
         : undefined,
     },
@@ -3712,9 +3708,6 @@ export default function InkStudio() {
         zoomLevel: patch.zoomLevel === undefined
           ? current.spec.map.zoomLevel
           : Math.min(19, Math.max(3, Math.round(patch.zoomLevel))),
-        mapType: patch.mapType === undefined
-          ? normalizeMapType(current.spec.map.mapType)
-          : normalizeMapType(patch.mapType),
       };
       return {
         ...current,
@@ -5237,26 +5230,6 @@ export default function InkStudio() {
                             placeholder={app.spec.map.address || app.spec.map.query || tRuntime("例如：集合点")}
                           />
                         </label>
-                      </div>
-
-                      <div className="map-editor-group">
-                        <div className="map-editor-label">
-                          <strong>{t("地图类型")}</strong>
-                          <small>{t("道路图、卫星图，或卫星叠加道路")}</small>
-                        </div>
-                        <div className="map-location-options map-type-options" role="group" aria-label={tRuntime("地图类型")}>
-                          {MAP_TYPE_OPTIONS.map((option) => (
-                            <button
-                              key={option.value}
-                              type="button"
-                              className={normalizeMapType(app.spec.map.mapType) === option.value ? "selected" : ""}
-                              onClick={() => updateMap({ mapType: option.value })}
-                            >
-                              <strong>{t(option.label)}</strong>
-                              <small>{t(option.detail)}</small>
-                            </button>
-                          ))}
-                        </div>
                       </div>
 
                       <div className="map-editor-group map-zoom-group">

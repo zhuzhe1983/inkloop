@@ -296,8 +296,6 @@ function staticMapUrl(ak: string, url: URL, point: MapPoint) {
   imageUrl.searchParams.set("zoom", String(zoom));
   imageUrl.searchParams.set("coordtype", "bd09ll");
   imageUrl.searchParams.set("copyright", "1");
-  const mapType = Number(url.searchParams.get("t") ?? url.searchParams.get("mapType"));
-  imageUrl.searchParams.set("t", mapType === 1 || mapType === 2 ? String(mapType) : "0");
   if (marker) {
     imageUrl.searchParams.set("markers", center);
     imageUrl.searchParams.set("markerStyles", "l,P,0x151816");

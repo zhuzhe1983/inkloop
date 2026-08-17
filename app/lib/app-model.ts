@@ -27,30 +27,6 @@ export type ScreenRenderMode = "official" | "inkloop-text";
 
 export type MapLocationMode = "picker" | "browser" | "ip";
 export type MapStyle = "balanced";
-export type MapType = 0 | 1 | 2;
-
-export const MAP_TYPE_OPTIONS = [
-  { value: 0, label: "普通地图", detail: "默认道路地图" },
-  { value: 1, label: "卫星地图", detail: "卫星影像" },
-  { value: 2, label: "卫星+道路", detail: "影像叠加道路" },
-] as const;
-
-export function normalizeMapType(value: unknown, fallback: MapType = 0): MapType {
-  if (value === 0 || value === 1 || value === 2) return value;
-  if (value === "0" || value === "roadmap" || value === "normal" || value === "road") return 0;
-  if (value === "1" || value === "satellite") return 1;
-  if (value === "2" || value === "hybrid" || value === "satellite+road" || value === "satellite_road") return 2;
-  const numeric = Number(value);
-  if (numeric === 0 || numeric === 1 || numeric === 2) return numeric;
-  return fallback;
-}
-
-export function inferMapType(source: string): MapType | undefined {
-  if (/(卫星\s*[+＋及和]?\s*道路|卫星道路|混合地图|hybrid)/i.test(source)) return 2;
-  if (/(卫星|satellite|aerial)/i.test(source)) return 1;
-  if (/(普通地图|道路地图|roadmap)/i.test(source)) return 0;
-  return undefined;
-}
 
 export type MapSpec = {
   locationMode: MapLocationMode;
@@ -59,7 +35,6 @@ export type MapSpec = {
   longitude?: number;
   coordinateType: "bd09ll" | "wgs84ll";
   zoomLevel: number;
-  mapType: MapType;
   style: MapStyle;
   marker: boolean;
   showAddress: boolean;
@@ -710,7 +685,6 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
           query,
           coordinateType: "bd09ll",
           zoomLevel: inferMapZoomLevel(source),
-          mapType: inferMapType(source) ?? 0,
           style: "balanced",
           marker: !includesAny(source, [t("不要标记"), t("无标记"), t("隐藏标记")]),
           showAddress: true,
@@ -744,7 +718,7 @@ export function generateInkApp(prompt: string, stableId?: string): InkApp {
       },
       code: `export async function render(ctx) {
   const location = await ctx.map.resolve({ mode: "picker", query: ${JSON.stringify(query)} });
-  return { type: "map", location, zoomLevel: ${inferMapZoomLevel(source)}, mapType: ${inferMapType(source) ?? 0}, marker: true };
+  return { type: "map", location, zoomLevel: ${inferMapZoomLevel(source)}, marker: true };
 }`,
     };
   }
