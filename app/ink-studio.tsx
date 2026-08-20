@@ -53,6 +53,7 @@ import {
   listEsp32Devices,
   publishEsp32Task,
   type Esp32DeviceRecord,
+  type FirmwareDeviceEvent,
   type FirmwareProgress,
 } from "./lib/esp32-device";
 import {
@@ -2980,6 +2981,9 @@ export default function InkStudio() {
   const [deviceFlowBusy, setDeviceFlowBusy] = useState(false);
   const [deviceFlowError, setDeviceFlowError] = useState<string | null>(null);
   const [firmwareProgress, setFirmwareProgress] = useState<FirmwareProgress | null>(null);
+  const [firmwareLogs, setFirmwareLogs] = useState<string[]>([]);
+  const [firmwareAccessPoint, setFirmwareAccessPoint] = useState<string | null>(null);
+  const [firmwareMonitoring, setFirmwareMonitoring] = useState(false);
   const [calibrationDeviceId, setCalibrationDeviceId] = useState<string | null>(null);
   const [calibrationStep, setCalibrationStep] = useState<1 | 2 | 3>(1);
   const [calibrationBusy, setCalibrationBusy] = useState(false);
@@ -3018,6 +3022,7 @@ export default function InkStudio() {
   } | null>(null);
   const mapWheelZoomRef = useRef<number | null>(null);
   const mapWheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firmwareStopRef = useRef<(() => void) | null>(null);
 
   const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     setToast({ message, tone });
@@ -3121,17 +3126,25 @@ export default function InkStudio() {
   }, [applyEsp32Records, showToast]);
 
   const openAddDevice = useCallback(() => {
+    firmwareStopRef.current?.();
+    firmwareStopRef.current = null;
     setAddDeviceStep("family");
     setSelectedDeviceSkuId(null);
     setDeviceCode("");
     setDeviceFlowBusy(false);
     setDeviceFlowError(null);
     setFirmwareProgress(null);
+    setFirmwareLogs([]);
+    setFirmwareAccessPoint(null);
+    setFirmwareMonitoring(false);
     setAddDeviceOpen(true);
   }, []);
 
   const closeAddDevice = useCallback(() => {
     if (deviceFlowBusy) return;
+    firmwareStopRef.current?.();
+    firmwareStopRef.current = null;
+    setFirmwareMonitoring(false);
     setAddDeviceOpen(false);
     setDeviceFlowError(null);
   }, [deviceFlowBusy]);
@@ -4146,6 +4159,9 @@ export default function InkStudio() {
       setDeviceName(profile.name);
       setDeviceStatus(profile.online ? "ready" : "idle");
       setExpandedDeviceIds((current) => new Set(current).add(profile.id));
+      firmwareStopRef.current?.();
+      firmwareStopRef.current = null;
+      setFirmwareMonitoring(false);
       setAddDeviceOpen(false);
       showToast(`已绑定 ${profile.name}，设备端计划会自动同步`, "success");
     } catch (error) {
@@ -4156,13 +4172,38 @@ export default function InkStudio() {
   }, [deviceCode, refreshEsp32Devices, showToast]);
 
   const flashEsp32Device = useCallback(async () => {
+    firmwareStopRef.current?.();
+    firmwareStopRef.current = null;
     setDeviceFlowBusy(true);
     setDeviceFlowError(null);
     setFirmwareProgress(null);
+    setFirmwareLogs([]);
+    setFirmwareAccessPoint(null);
+    setFirmwareMonitoring(false);
+    setDeviceCode("");
+    const onDeviceEvent = (event: FirmwareDeviceEvent) => {
+      setFirmwareLogs((current) => [...current, event.message].slice(-120));
+      if (event.accessPoint) setFirmwareAccessPoint(event.accessPoint);
+      if (event.pairingCode) setDeviceCode(event.pairingCode);
+    };
     try {
-      await flashM5PaperColor(setFirmwareProgress);
+      const session = await flashM5PaperColor(setFirmwareProgress, onDeviceEvent);
+      firmwareStopRef.current = session.stopMonitoring;
+      setFirmwareMonitoring(true);
       setAddDeviceStep("flash-complete");
       showToast(tRuntime("M5 PaperColor 瘦客户端已写入"), "success");
+      void session.monitor.then((result) => {
+        if (result.accessPoint) setFirmwareAccessPoint(result.accessPoint);
+        if (result.pairingCode) setDeviceCode(result.pairingCode);
+      }).catch((error) => {
+        setFirmwareLogs((current) => [
+          ...current,
+          error instanceof Error ? error.message : tRuntime("设备调试串口意外断开"),
+        ].slice(-120));
+      }).finally(() => {
+        setFirmwareMonitoring(false);
+        firmwareStopRef.current = null;
+      });
     } catch (error) {
       setDeviceFlowError(error instanceof Error ? error.message : tRuntime("设备刷机失败"));
     } finally {
@@ -6385,14 +6426,44 @@ export default function InkStudio() {
 
             {addDeviceStep === "flash-complete" && (
               <div className="device-flow-panel device-flash-complete">
-                <span>✓</span>
-                <h3>{t("瘦客户端已经写入")}</h3>
-                <p>{t("设备重启后会显示 Wi‑Fi 配网指引；完成配网后，屏幕会显示六位硬件码和“请通过 Inkloop 添加设备绑定”。")}</p>
-                <button type="button" className="device-flow-primary" onClick={() => {
-                  setDeviceCode("");
-                  setDeviceFlowError(null);
-                  setAddDeviceStep("claim");
-                }}>{t("我看到六位设备码了")}</button>
+                <span>{deviceCode ? "✓" : firmwareMonitoring ? "…" : "!"}</span>
+                <h3>{deviceCode ? t("发现可绑定的设备") : t("固件已写入并自动重启")}</h3>
+                <p>{deviceCode
+                  ? `${t("串口检测到六位设备码")} ${deviceCode}。${t("是否将这台设备绑定到当前浏览器？")}`
+                  : firmwareMonitoring
+                    ? t("正在监听启动日志。请按屏幕提示完成 Wi‑Fi 配置，六位码出现后即可直接绑定。")
+                    : t("串口监听已结束；你仍可输入设备屏幕上的六位码完成绑定。")}</p>
+                {firmwareAccessPoint && (
+                  <div className="firmware-access-point">
+                    <small>{t("等待 Wi‑Fi 配置")}</small>
+                    <strong>{firmwareAccessPoint}</strong>
+                  </div>
+                )}
+                {deviceCode && <strong className="firmware-pairing-code">{deviceCode}</strong>}
+                {firmwareLogs.length > 0 && (
+                  <details className="firmware-console" open={!deviceCode}>
+                    <summary>{t("串口调试日志")} · {firmwareLogs.length}</summary>
+                    <pre>{firmwareLogs.join("\n")}</pre>
+                    <button type="button" onClick={() => {
+                      void navigator.clipboard.writeText(firmwareLogs.join("\n"));
+                      showToast(tRuntime("调试日志已复制"), "success");
+                    }}>{t("复制日志给 AI")}</button>
+                  </details>
+                )}
+                {deviceFlowError && <p className="device-flow-error" role="alert">{deviceFlowError}</p>}
+                {deviceCode ? (
+                  <button type="button" className="device-flow-primary" onClick={() => void bindEsp32Device()} disabled={deviceFlowBusy}>
+                    {deviceFlowBusy ? tRuntime("正在绑定…") : tRuntime("绑定到当前浏览器")}
+                  </button>
+                ) : (
+                  <button type="button" className="device-flow-primary" onClick={() => {
+                    firmwareStopRef.current?.();
+                    firmwareStopRef.current = null;
+                    setFirmwareMonitoring(false);
+                    setDeviceFlowError(null);
+                    setAddDeviceStep("claim");
+                  }}>{t("手动输入六位设备码")}</button>
+                )}
                 <button type="button" className="device-flow-secondary" onClick={closeAddDevice}>{t("稍后再绑定")}</button>
               </div>
             )}

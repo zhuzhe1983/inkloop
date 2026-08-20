@@ -96,6 +96,36 @@ export type FirmwareProgress = {
   message: string;
 };
 
+export type FirmwareDeviceEvent = {
+  kind: "connected" | "log" | "access-point" | "pair-code" | "error" | "closed";
+  message: string;
+  accessPoint?: string;
+  pairingCode?: string;
+};
+
+export type FirmwareMonitorResult = {
+  accessPoint: string | null;
+  pairingCode: string | null;
+  logs: string[];
+};
+
+export type FirmwareFlashSession = {
+  monitor: Promise<FirmwareMonitorResult>;
+  stopMonitoring: () => void;
+};
+
+type SerialPortLike = {
+  getInfo?: () => { usbVendorId?: number; usbProductId?: number };
+  open: (options: { baudRate: number; bufferSize?: number }) => Promise<void>;
+  close: () => Promise<void>;
+  readable?: ReadableStream<Uint8Array> | null;
+};
+
+type SerialNavigator = {
+  requestPort: (options?: Record<string, unknown>) => Promise<SerialPortLike>;
+  getPorts?: () => Promise<SerialPortLike[]>;
+};
+
 type FirmwareManifest = {
   chipFamily: "ESP32-S3";
   version: string;
@@ -125,20 +155,151 @@ function patchServerUrl(bytes: Uint8Array, slot: FirmwareManifest["serverSlot"],
   bytes.set(target, found);
 }
 
+function pause(milliseconds: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const timer = window.setTimeout(resolve, milliseconds);
+    signal?.addEventListener("abort", () => {
+      window.clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+
+function sameSerialDevice(left: SerialPortLike, right: SerialPortLike) {
+  if (left === right) return true;
+  const leftInfo = left.getInfo?.() ?? {};
+  const rightInfo = right.getInfo?.() ?? {};
+  return leftInfo.usbVendorId !== undefined
+    && leftInfo.usbVendorId === rightInfo.usbVendorId
+    && leftInfo.usbProductId === rightInfo.usbProductId;
+}
+
+async function openRuntimeSerialPort(
+  serial: SerialNavigator,
+  selectedPort: SerialPortLike,
+  signal: AbortSignal,
+) {
+  for (let attempt = 0; attempt < 40 && !signal.aborted; attempt += 1) {
+    const authorized = await serial.getPorts?.().catch(() => []) ?? [];
+    const candidates = [selectedPort, ...authorized.filter((port) => sameSerialDevice(selectedPort, port))]
+      .filter((port, index, all) => all.indexOf(port) === index);
+    for (const candidate of candidates) {
+      try {
+        await candidate.open({ baudRate: 115200, bufferSize: 65536 });
+        return candidate;
+      } catch {
+        // Native USB can disappear briefly while the ESP32-S3 re-enumerates.
+      }
+    }
+    await pause(500, signal);
+  }
+  return null;
+}
+
+async function monitorPaperColorBoot(
+  serial: SerialNavigator,
+  selectedPort: SerialPortLike,
+  signal: AbortSignal,
+  onDeviceEvent?: (event: FirmwareDeviceEvent) => void,
+): Promise<FirmwareMonitorResult> {
+  const logs: string[] = [];
+  let accessPoint: string | null = null;
+  let pairingCode: string | null = null;
+  const runtimePort = await openRuntimeSerialPort(serial, selectedPort, signal);
+  if (!runtimePort?.readable || signal.aborted) {
+    const message = t("设备已重启，但暂时无法重新连接调试串口");
+    onDeviceEvent?.({ kind: "error", message });
+    return { accessPoint, pairingCode, logs };
+  }
+
+  onDeviceEvent?.({ kind: "connected", message: t("调试串口已连接，正在读取设备启动日志") });
+  const reader = runtimePort.readable.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let finished = false;
+  const stopReading = () => {
+    if (finished) return;
+    void reader.cancel().catch(() => undefined);
+  };
+  const timeout = window.setTimeout(stopReading, 6 * 60 * 1000);
+  signal.addEventListener("abort", stopReading, { once: true });
+
+  const consumeLine = (rawLine: string) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    logs.push(line);
+    if (logs.length > 240) logs.shift();
+    const apMatch = line.match(/^INKLOOP_WIFI_AP:(.+)$/);
+    const codeMatch = line.match(/^INKLOOP_PAIR_CODE:(\d{6})$/);
+    if (apMatch) {
+      accessPoint = apMatch[1].trim();
+      onDeviceEvent?.({ kind: "access-point", message: line, accessPoint });
+    } else if (codeMatch) {
+      pairingCode = codeMatch[1];
+      onDeviceEvent?.({ kind: "pair-code", message: line, pairingCode });
+    } else if (/^INKLOOP_(ERROR|WARN):/.test(line) || /Guru Meditation|panic|fatal/i.test(line)) {
+      onDeviceEvent?.({ kind: "error", message: line });
+    } else {
+      onDeviceEvent?.({ kind: "log", message: line });
+    }
+  };
+
+  try {
+    while (!signal.aborted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      lines.forEach(consumeLine);
+    }
+    pending += decoder.decode();
+    consumeLine(pending);
+  } catch (error) {
+    if (!signal.aborted) {
+      onDeviceEvent?.({
+        kind: "error",
+        message: error instanceof Error ? error.message : t("设备调试串口意外断开"),
+      });
+    }
+  } finally {
+    finished = true;
+    window.clearTimeout(timeout);
+    signal.removeEventListener("abort", stopReading);
+    reader.releaseLock();
+    await runtimePort.close().catch(() => undefined);
+    onDeviceEvent?.({ kind: "closed", message: t("设备调试串口监听已结束") });
+  }
+  return { accessPoint, pairingCode, logs };
+}
+
 export async function flashM5PaperColor(
   onProgress: (progress: FirmwareProgress) => void,
-) {
-  const serial = (navigator as Navigator & {
-    serial?: { requestPort(options?: Record<string, unknown>): Promise<unknown> };
-  }).serial;
+  onDeviceEvent?: (event: FirmwareDeviceEvent) => void,
+): Promise<FirmwareFlashSession> {
+  const serial = (navigator as Navigator & { serial?: SerialNavigator }).serial;
   if (!serial) throw new Error(t("当前浏览器不支持 USB 串口刷机，请使用桌面版 Chrome 或 Edge"));
 
+  // Web Serial requires requestPort() to run directly inside the click's user
+  // activation. Any awaited fetch/import before this call prevents Chrome from
+  // showing the device chooser.
+  const port = await serial.requestPort({});
   onProgress({ phase: "downloading", percent: 4, message: t("正在准备瘦客户端固件…") });
-  const manifestResponse = await fetch("/firmware/m5-papercolor/manifest.json", { cache: "no-store" });
+  let manifestResponse: Response;
+  try {
+    manifestResponse = await fetch("/firmware/m5-papercolor/manifest.json", { cache: "no-store" });
+  } catch {
+    throw new Error(t("无法下载固件清单，请检查网络后重试"));
+  }
   if (!manifestResponse.ok) throw new Error(t("M5 PaperColor 固件尚未发布"));
   const manifest = await manifestResponse.json() as FirmwareManifest;
   const files = await Promise.all(manifest.files.map(async (file) => {
-    const response = await fetch(file.path, { cache: "no-store" });
+    let response: Response;
+    try {
+      response = await fetch(file.path, { cache: "no-store" });
+    } catch {
+      throw new Error(`${t("无法下载固件文件：")}${file.path}`);
+    }
     if (!response.ok) throw new Error(`${t("无法下载固件文件：")}${file.path}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!/^[a-f0-9]{64}$/i.test(file.sha256) || await sha256Hex(bytes) !== file.sha256.toLowerCase()) {
@@ -150,8 +311,7 @@ export async function flashM5PaperColor(
     return { data: bytes, address: file.offset };
   }));
 
-  onProgress({ phase: "connecting", percent: 8, message: t("请选择刚插入的 M5 PaperColor…") });
-  const port = await serial.requestPort({});
+  onProgress({ phase: "connecting", percent: 8, message: t("正在连接 M5 PaperColor…") });
   const { ESPLoader, Transport } = await import("esptool-js");
   const transport = new Transport(port as ConstructorParameters<typeof Transport>[0], true);
   const loader = new ESPLoader({
@@ -181,9 +341,15 @@ export async function flashM5PaperColor(
         onProgress({ phase: "writing", percent, message: `${t("正在写入瘦客户端")} ${percent}%` });
       },
     });
-    await loader.after();
-    onProgress({ phase: "complete", percent: 100, message: t("刷机完成，设备正在重新启动") });
+    await loader.after("hard_reset");
+    onProgress({ phase: "complete", percent: 100, message: t("刷机完成，设备已自动重启") });
   } finally {
     await transport.disconnect().catch(() => undefined);
   }
+
+  const monitorController = new AbortController();
+  return {
+    monitor: monitorPaperColorBoot(serial, port, monitorController.signal, onDeviceEvent),
+    stopMonitoring: () => monitorController.abort(),
+  };
 }

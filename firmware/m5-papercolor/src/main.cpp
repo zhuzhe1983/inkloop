@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <LittleFS.h>
+#include <M5PM1.h>
 #include <M5Unified.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -17,7 +18,7 @@ __attribute__((used)) char inkloop_api_url_slot[192] = "INKLOOP_API_URL_SLOT::";
 
 namespace {
 
-constexpr char kFirmwareVersion[] = "0.1.0";
+constexpr char kFirmwareVersion[] = "0.2.0";
 constexpr char kSkuId[] = "m5-papercolor-c151";
 constexpr char kDefaultApiUrl[] = "https://inkloop.vibapp.ai/api/devices";
 constexpr char kUnpatchedApiPrefix[] = "INKLOOP_";
@@ -44,14 +45,61 @@ p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD
 )EOF";
 
 M5Canvas canvas(&M5.Display);
+M5PM1 pm1;
 Preferences preferences;
 String hardwareId;
 String deviceId;
 String deviceSecret;
+String pairingCode;
+String wifiAccessPoint;
+String serialCommand;
 uint32_t appliedRevision = 0;
 uint32_t lastSyncAt = 0;
 uint32_t lastScheduleAt = 0;
+uint32_t lastHeartbeatAt = 0;
 bool paired = false;
+bool pm1Ready = false;
+
+void serialEvent(const char* name, const String& value = "") {
+  Serial.print("INKLOOP_");
+  Serial.print(name);
+  if (value.length()) {
+    Serial.print(':');
+    Serial.print(value);
+  }
+  Serial.println();
+}
+
+void setStatusLed(uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness = 32) {
+  M5.Led.setBrightness(brightness);
+  M5.Led.setAllColor(red, green, blue);
+  M5.Led.display();
+}
+
+void playBootTone(uint16_t frequency = 1047, uint32_t duration = 120) {
+  if (!M5.Speaker.isEnabled()) M5.Speaker.begin();
+  M5.Speaker.setVolume(72);
+  M5.Speaker.tone(frequency, duration);
+}
+
+void printDiagnosticStatus() {
+  JsonDocument status;
+  status["firmware"] = kFirmwareVersion;
+  status["hardwareId"] = hardwareId;
+  status["board"] = static_cast<int>(M5.getBoard());
+  status["pm1"] = pm1Ready;
+  status["wifi"] = WiFi.status() == WL_CONNECTED;
+  status["ip"] = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
+  status["deviceId"] = deviceId;
+  status["paired"] = paired;
+  status["pairingCode"] = pairingCode;
+  status["revision"] = appliedRevision;
+  status["freeHeap"] = ESP.getFreeHeap();
+  status["freePsram"] = ESP.getFreePsram();
+  String payload;
+  serializeJson(status, payload);
+  serialEvent("STATUS", payload);
+}
 
 void resetCanvas(bool landscape = false) {
   canvas.deleteSprite();
@@ -61,6 +109,7 @@ void resetCanvas(bool landscape = false) {
 }
 
 void drawCentered(const String& title, const String& detail, const String& value = "", uint16_t accent = BLUE) {
+  serialEvent("DISPLAY_BEGIN", title);
   resetCanvas(false);
   const int width = canvas.width();
   const int height = canvas.height();
@@ -83,6 +132,7 @@ void drawCentered(const String& title, const String& detail, const String& value
   canvas.drawString("INKLOOP · M5 PAPERCOLOR", width / 2, height - 38);
   M5.Display.setEpdMode(epd_mode_t::epd_quality);
   canvas.pushSprite(0, 0);
+  serialEvent("DISPLAY_READY", title);
 }
 
 String hexBytes(const uint8_t* bytes, size_t length) {
@@ -115,6 +165,7 @@ void ensureIdentity() {
   char id[24];
   snprintf(id, sizeof(id), "M5PC-%012llX", static_cast<unsigned long long>(mac));
   hardwareId = id;
+  serialEvent("HARDWARE_ID", hardwareId);
 }
 
 String apiUrl() {
@@ -164,18 +215,30 @@ int postJson(const String& body, String& response, bool authenticate) {
 }
 
 bool configureWifi() {
-  if (WiFi.status() == WL_CONNECTED) return true;
+  if (WiFi.status() == WL_CONNECTED) {
+    serialEvent("WIFI_CONNECTED", WiFi.localIP().toString());
+    return true;
+  }
   const String suffix = hardwareId.substring(hardwareId.length() - 4);
-  const String accessPoint = "Inkloop-" + suffix;
-  drawCentered("Connect Wi-Fi", "Open the Inkloop setup portal", accessPoint, YELLOW);
+  wifiAccessPoint = "Inkloop-" + suffix;
+  setStatusLed(255, 150, 0, 42);
+  serialEvent("WIFI_AP", wifiAccessPoint);
+  serialEvent("STATE", "WAITING_WIFI");
+  drawCentered("Connect Wi-Fi", "Open the Inkloop setup portal", wifiAccessPoint, YELLOW);
   WiFiManager manager;
   manager.setConfigPortalTimeout(300);
   manager.setConnectTimeout(25);
   manager.setShowStaticFields(false);
   manager.setShowDnsFields(false);
-  const bool connected = manager.autoConnect(accessPoint.c_str());
+  const bool connected = manager.autoConnect(wifiAccessPoint.c_str());
   if (!connected) {
+    serialEvent("ERROR", "WIFI_SETUP_TIMEOUT");
+    setStatusLed(255, 0, 0, 48);
+    playBootTone(330, 260);
     drawCentered("Wi-Fi needed", "Restart to try setup again", "", RED);
+  } else {
+    serialEvent("WIFI_CONNECTED", WiFi.localIP().toString());
+    setStatusLed(0, 90, 255, 36);
   }
   return connected;
 }
@@ -191,17 +254,31 @@ bool registerDevice() {
   serializeJson(request, body);
   String response;
   const int status = postJson(body, response, false);
-  if (status < 200 || status >= 300) return false;
+  serialEvent("REGISTER_HTTP", String(status));
+  if (status < 200 || status >= 300) {
+    serialEvent("ERROR", "DEVICE_REGISTER_FAILED");
+    return false;
+  }
   JsonDocument result;
-  if (deserializeJson(result, response)) return false;
+  if (deserializeJson(result, response)) {
+    serialEvent("ERROR", "DEVICE_REGISTER_RESPONSE_INVALID");
+    return false;
+  }
   const String nextDeviceId = result["deviceId"] | "";
   if (!nextDeviceId.length()) return false;
   deviceId = nextDeviceId;
   preferences.putString("device-id", deviceId);
   paired = result["paired"] | false;
   if (!paired) {
-    const String code = result["pairingCode"] | "------";
-    drawCentered("Device code", "Bind in Inkloop > Add Device", code, BLUE);
+    pairingCode = result["pairingCode"] | "------";
+    serialEvent("PAIR_CODE", pairingCode);
+    serialEvent("STATE", "WAITING_BIND");
+    setStatusLed(70, 30, 255, 42);
+    playBootTone(1319, 100);
+    drawCentered("Device code", "Bind in Inkloop > Add Device", pairingCode, BLUE);
+  } else {
+    pairingCode = "";
+    serialEvent("STATE", "PAIRED");
   }
   return true;
 }
@@ -280,6 +357,7 @@ bool syncTasks() {
   }
   const bool becamePaired = !paired;
   paired = true;
+  pairingCode = "";
   const bool changed = result["changed"] | false;
   const uint32_t revision = result["revision"] | appliedRevision;
   if (changed) {
@@ -288,7 +366,12 @@ bool syncTasks() {
     appliedRevision = revision;
     preferences.putUInt("revision", appliedRevision);
   }
-  if (becamePaired) drawCentered("Inkloop connected", "Schedules now run on this device", "", GREEN);
+  if (becamePaired) {
+    serialEvent("STATE", "PAIRED");
+    setStatusLed(0, 255, 60, 42);
+    playBootTone(1568, 120);
+    drawCentered("Inkloop connected", "Schedules now run on this device", "", GREEN);
+  }
   return true;
 }
 
@@ -400,28 +483,106 @@ void runDueTasks() {
   if (changed) saveTasks(tasksDoc.as<JsonArrayConst>());
 }
 
+void initializePaperColorHardware() {
+  serialEvent("BOARD", String(static_cast<int>(M5.getBoard())));
+  if (M5.getBoard() != m5::board_t::board_M5PaperColor) {
+    serialEvent("WARN", "PAPERCOLOR_NOT_DETECTED");
+  }
+
+  const m5pm1_err_t pm1Status = pm1.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
+  pm1Ready = pm1Status == M5PM1_OK;
+  serialEvent("PM1", pm1Ready ? "READY" : String("ERROR_") + String(static_cast<int>(pm1Status)));
+  if (pm1Ready) {
+    pm1.setI2cConfig(0);
+    pm1.pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
+    pm1.digitalWrite(M5PM1_GPIO_NUM_0, HIGH);
+    pm1.setChargeEnable(true);
+    pm1.setBoostEnable(true);
+  }
+
+  setStatusLed(0, 70, 255, 36);
+  playBootTone();
+  serialEvent("HARDWARE_READY");
+}
+
+void executeSerialCommand(String command) {
+  command.trim();
+  command.toLowerCase();
+  if (!command.length()) return;
+  serialEvent("COMMAND", command);
+  if (command == "help") {
+    serialEvent("HELP", "help,status,pair-code,led-test,sound-test,screen-test,reboot");
+  } else if (command == "status" || command == "diag") {
+    printDiagnosticStatus();
+  } else if (command == "pair-code") {
+    serialEvent("PAIR_CODE", pairingCode.length() ? pairingCode : "UNAVAILABLE");
+  } else if (command == "led-test") {
+    setStatusLed(255, 0, 255, 64);
+    serialEvent("TEST", "LED_OK");
+  } else if (command == "sound-test") {
+    playBootTone(880, 220);
+    serialEvent("TEST", "SOUND_OK");
+  } else if (command == "screen-test") {
+    drawCentered("Inkloop diagnostics", "Screen refresh completed", hardwareId, GREEN);
+    serialEvent("TEST", "SCREEN_OK");
+  } else if (command == "reboot") {
+    serialEvent("STATE", "REBOOTING");
+    Serial.flush();
+    delay(120);
+    ESP.restart();
+  } else {
+    serialEvent("ERROR", "UNKNOWN_COMMAND");
+  }
+}
+
+void pollSerialConsole() {
+  while (Serial.available()) {
+    const char next = static_cast<char>(Serial.read());
+    if (next == '\r') continue;
+    if (next == '\n') {
+      executeSerialCommand(serialCommand);
+      serialCommand = "";
+    } else if (serialCommand.length() < 96 && next >= 32 && next <= 126) {
+      serialCommand += next;
+    }
+  }
+}
+
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
+  const uint32_t serialWaitStartedAt = millis();
+  while (!Serial && millis() - serialWaitStartedAt < 2500) delay(20);
+  delay(100);
+  serialEvent("BOOT", kFirmwareVersion);
+  serialEvent("RESET_REASON", String(static_cast<int>(esp_reset_reason())));
   auto config = M5.config();
   config.clear_display = false;
   M5.begin(config);
+  initializePaperColorHardware();
   M5.Display.setEpdMode(epd_mode_t::epd_quality);
   resetCanvas(false);
-  LittleFS.begin(true);
+  const bool filesystemReady = LittleFS.begin(true);
+  serialEvent("LITTLEFS", filesystemReady ? "READY" : "ERROR");
   ensureIdentity();
-  drawCentered("Inkloop", "Starting secure device client", "", BLUE);
   if (!configureWifi()) return;
   configTzTime("CST-8", "ntp.aliyun.com", "pool.ntp.org", "time.cloudflare.com");
-  if (!registerDevice()) drawCentered("Server unavailable", "Will retry automatically", "", RED);
+  if (!registerDevice()) {
+    setStatusLed(255, 0, 0, 48);
+    playBootTone(330, 260);
+    drawCentered("Server unavailable", "Will retry automatically", "", RED);
+  }
   syncTasks();
   lastSyncAt = millis();
   lastScheduleAt = millis();
+  lastHeartbeatAt = millis();
+  printDiagnosticStatus();
 }
 
 void loop() {
   M5.update();
+  pollSerialConsole();
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.reconnect();
     delay(500);
@@ -436,6 +597,10 @@ void loop() {
   if (now - lastScheduleAt >= kScheduleTickMs) {
     lastScheduleAt = now;
     runDueTasks();
+  }
+  if (now - lastHeartbeatAt >= 5000) {
+    lastHeartbeatAt = now;
+    serialEvent("HEARTBEAT", String(now));
   }
   delay(50);
 }

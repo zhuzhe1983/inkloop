@@ -1,13 +1,13 @@
 {
   "name": "Inkloop M5 PaperColor thin client",
   "chipFamily": "ESP32-S3",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "baudRate": 460800,
   "serverSlot": { "marker": "INKLOOP_API_URL_SLOT::", "length": 192 },
   "files": [
     { "path": "/firmware/m5-papercolor/bootloader.bin", "offset": 0, "sha256": "2a71d69b471e20c2bac7fb469f3c6a807b3ebee780e348e5889db0da849ca363" },
     { "path": "/firmware/m5-papercolor/partitions.bin", "offset": 32768, "sha256": "bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce" },
     { "path": "/firmware/m5-papercolor/boot_app0.bin", "offset": 57344, "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0" },
-    { "path": "/firmware/m5-papercolor/firmware.bin", "offset": 65536, "sha256": "995430e3a1284fea0cb0ce51a2b1d2f0136e71cc4520a5e2713d6ae15a7a0806" }
+    { "path": "/firmware/m5-papercolor/firmware.bin", "offset": 65536, "sha256": "8f3b91ec863fa56398c453091f9b097ac0e6cf49bac8bf4f1278711971e02b36" }
   ]
 }
