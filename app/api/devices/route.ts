@@ -18,10 +18,6 @@ const CREATE_DEVICES = `CREATE TABLE IF NOT EXISTS devices (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`;
-const CREATE_DEVICE_OWNER_INDEX = `CREATE INDEX IF NOT EXISTS idx_devices_owner_updated_at
-ON devices(owner_id, updated_at DESC)`;
-const CREATE_DEVICE_PAIRING_INDEX = `CREATE INDEX IF NOT EXISTS idx_devices_pairing_code
-ON devices(pairing_code)`;
 const CREATE_TASKS = `CREATE TABLE IF NOT EXISTS device_tasks (
   id TEXT PRIMARY KEY NOT NULL,
   device_id TEXT NOT NULL,
@@ -39,10 +35,6 @@ const CREATE_TASKS = `CREATE TABLE IF NOT EXISTS device_tasks (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`;
-const CREATE_TASK_DEVICE_INDEX = `CREATE INDEX IF NOT EXISTS idx_device_tasks_device_revision
-ON device_tasks(device_id, revision)`;
-const CREATE_TASK_OWNER_INDEX = `CREATE INDEX IF NOT EXISTS idx_device_tasks_owner_updated_at
-ON device_tasks(owner_id, updated_at DESC)`;
 const CREATE_PAIRING_ATTEMPTS = `CREATE TABLE IF NOT EXISTS device_pairing_attempts (
   id TEXT PRIMARY KEY NOT NULL,
   attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -50,8 +42,6 @@ const CREATE_PAIRING_ATTEMPTS = `CREATE TABLE IF NOT EXISTS device_pairing_attem
   locked_until TEXT,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`;
-const CREATE_PAIRING_ATTEMPTS_INDEX = `CREATE INDEX IF NOT EXISTS idx_device_pairing_attempts_updated_at
-ON device_pairing_attempts(updated_at)`;
 
 type DeviceRow = {
   id: string;
@@ -89,19 +79,69 @@ type TaskRow = {
   updated_at: string;
 };
 
+class DeviceSchemaAttestationError extends Error {
+  constructor() {
+    super("DEVICE_SCHEMA_ATTESTATION_FAILED");
+    this.name = "DeviceSchemaAttestationError";
+  }
+}
+
+type PairingCodeIndexAttestation =
+  | { ready: true }
+  | { ready: false; reason: "mismatch" | "unreadable" };
+
 async function ensureSchema() {
-  if (!env.DB) throw new Error("设备数据库不可用");
+  if (!env.DB) throw new Error("DEVICE_DATABASE_UNAVAILABLE");
   await env.DB.batch([
     env.DB.prepare(CREATE_DEVICES),
-    env.DB.prepare(CREATE_DEVICE_OWNER_INDEX),
-    env.DB.prepare(CREATE_DEVICE_PAIRING_INDEX),
     env.DB.prepare(CREATE_TASKS),
-    env.DB.prepare(CREATE_TASK_DEVICE_INDEX),
-    env.DB.prepare(CREATE_TASK_OWNER_INDEX),
     env.DB.prepare(CREATE_PAIRING_ATTEMPTS),
-    env.DB.prepare(CREATE_PAIRING_ATTEMPTS_INDEX),
   ]);
+  const attestation = await pairingCodeIndexAttestation(env.DB);
+  if (!attestation.ready) throw new DeviceSchemaAttestationError();
   return env.DB;
+}
+
+function normalizedIndexPredicate(definition: string) {
+  const where = definition.match(/\bWHERE\b([\s\S]+)$/i)?.[1];
+  if (!where) return "";
+  return where
+    .replace(/["`\[\]]/g, "")
+    .replace(/\bdevices\s*\.\s*/gi, "")
+    .replace(/[();]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function pairingCodeIndexAttestation(db: D1Database): Promise<PairingCodeIndexAttestation> {
+  try {
+    const indexes = await db.prepare("PRAGMA index_list('devices')").all<{
+      name: string;
+      unique: number;
+      partial: number;
+    }>();
+    const target = indexes.results.find((index) => index.name === "idx_devices_pairing_code_unique");
+    if (!target || target.unique !== 1 || target.partial !== 1) return { ready: false, reason: "mismatch" };
+
+    const columns = await db.prepare("PRAGMA index_info('idx_devices_pairing_code_unique')").all<{
+      seqno: number;
+      name: string | null;
+    }>();
+    if (columns.results.length !== 1 || columns.results[0]?.seqno !== 0
+      || columns.results[0]?.name !== "pairing_code") return { ready: false, reason: "mismatch" };
+
+    const definition = await db.prepare(`SELECT tbl_name, sql FROM sqlite_master
+      WHERE type = 'index' AND name = ? LIMIT 1`)
+      .bind("idx_devices_pairing_code_unique")
+      .first<{ tbl_name: string; sql: string | null }>();
+    return definition?.tbl_name === "devices" && typeof definition.sql === "string"
+      && normalizedIndexPredicate(definition.sql) === "pairing_code is not null"
+      ? { ready: true }
+      : { ready: false, reason: "mismatch" };
+  } catch {
+    return { ready: false, reason: "unreadable" };
+  }
 }
 
 function cleanText(value: unknown, max: number) {
@@ -144,6 +184,55 @@ function randomPairingCode() {
 
 function pairingExpiry() {
   return new Date(Date.now() + 10 * 60 * 1000).toISOString();
+}
+
+type PairingCodeRequest =
+  | { provided: false }
+  | { provided: true; code: string };
+
+function requestedPairingCode(payload: Record<string, unknown>): PairingCodeRequest | Response {
+  if (!Object.prototype.hasOwnProperty.call(payload, "pairingCode")) return { provided: false };
+  if (typeof payload.pairingCode !== "string" || !/^[0-9]{6}$/.test(payload.pairingCode)) {
+    return Response.json({ error: "设备码必须是六位 ASCII 数字" }, { status: 422 });
+  }
+  return { provided: true, code: payload.pairingCode };
+}
+
+function activePairing(row: Pick<DeviceRow, "pairing_code" | "pairing_expires_at">, now = Date.now()) {
+  if (!row.pairing_code || !row.pairing_expires_at) return false;
+  const expiresAt = new Date(row.pairing_expires_at).getTime();
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+function pairingCodeConflict() {
+  return Response.json({ error: "设备码不可用，请重新获取" }, { status: 409 });
+}
+
+function deviceServiceUnavailable() {
+  return Response.json({ error: "设备服务正在升级，请稍后重试" }, { status: 503 });
+}
+
+function safeDeviceError(error: unknown) {
+  if (error instanceof Response) return error;
+  if (error instanceof DeviceSchemaAttestationError) return deviceServiceUnavailable();
+  return deviceServiceUnavailable();
+}
+
+function uniqueConstraint(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:UNIQUE constraint failed|SQLITE_CONSTRAINT)/i.test(message);
+}
+
+async function retireExpiredPairingCode(
+  db: D1Database,
+  pairingCode: string,
+  hardwareId: string,
+  now: string,
+) {
+  await db.prepare(`UPDATE devices SET pairing_code = NULL, pairing_expires_at = NULL, updated_at = ?
+    WHERE pairing_code = ? AND hardware_id <> ? AND owner_id IS NULL
+      AND (pairing_expires_at IS NULL OR pairing_expires_at <= ?)`)
+    .bind(now, pairingCode, hardwareId, now).run();
 }
 
 async function pairingAttemptId(request: Request, owner: string) {
@@ -265,12 +354,14 @@ function parsePngDataUrl(value: unknown) {
   return bytes;
 }
 
-async function registerDevice(request: Request, payload: Record<string, unknown>) {
+async function registerDevice(payload: Record<string, unknown>) {
   const db = await ensureSchema();
   const hardwareId = cleanText(payload.hardwareId, 80).toUpperCase();
   const secret = cleanText(payload.secret, 64).toLowerCase();
   const skuId = cleanText(payload.skuId, 80);
   const firmwareVersion = cleanText(payload.firmwareVersion, 40) || null;
+  const pairingRequest = requestedPairingCode(payload);
+  if (pairingRequest instanceof Response) return pairingRequest;
   if (!/^[A-Z0-9:_-]{6,80}$/.test(hardwareId) || !/^[a-f0-9]{64}$/.test(secret)) {
     return Response.json({ error: "设备身份格式无效" }, { status: 400 });
   }
@@ -284,35 +375,121 @@ async function registerDevice(request: Request, payload: Record<string, unknown>
   if (row && !safeEqual(row.secret_hash, secretHash)) {
     return Response.json({ error: "设备身份冲突，请重新刷机" }, { status: 409 });
   }
-  if (!row) {
-    const id = `esp32-${crypto.randomUUID()}`;
-    let code = randomPairingCode();
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const used = await db.prepare("SELECT id FROM devices WHERE pairing_code = ? LIMIT 1")
-        .bind(code).first<{ id: string }>();
-      if (!used) break;
-      code = randomPairingCode();
-    }
-    await db.prepare(`INSERT INTO devices
-      (id, hardware_id, owner_id, sku_id, name, secret_hash, pairing_code, pairing_expires_at,
-       firmware_version, desired_revision, applied_revision, last_seen_at, created_at, updated_at)
-      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`)
-      .bind(id, hardwareId, skuId, "M5 PaperColor", secretHash, code, pairingExpiry(), firmwareVersion, now, now, now)
-      .run();
-    row = await db.prepare("SELECT * FROM devices WHERE id = ? LIMIT 1").bind(id).first<DeviceRow>();
-  } else {
-    let code = row.pairing_code;
-    let expiresAt = row.pairing_expires_at;
-    if (!row.owner_id && (!code || !expiresAt || new Date(expiresAt).getTime() <= Date.now())) {
-      code = randomPairingCode();
-      expiresAt = pairingExpiry();
-    }
-    await db.prepare(`UPDATE devices SET pairing_code = ?, pairing_expires_at = ?,
+
+  if (row?.owner_id) {
+    await db.prepare(`UPDATE devices SET pairing_code = NULL, pairing_expires_at = NULL,
       firmware_version = ?, last_seen_at = ?, updated_at = ? WHERE id = ?`)
-      .bind(row.owner_id ? null : code, row.owner_id ? null : expiresAt, firmwareVersion, now, now, row.id)
-      .run();
+      .bind(firmwareVersion, now, now, row.id).run();
+    if (pairingRequest.provided) return pairingCodeConflict();
     row = await db.prepare("SELECT * FROM devices WHERE id = ? LIMIT 1").bind(row.id).first<DeviceRow>();
   }
+
+  if (!row) {
+    const id = `esp32-${crypto.randomUUID()}`;
+    const attempts = pairingRequest.provided ? 1 : 8;
+    for (let attempt = 0; attempt < attempts && !row; attempt += 1) {
+      const code = pairingRequest.provided ? pairingRequest.code : randomPairingCode();
+      if (pairingRequest.provided) {
+        await retireExpiredPairingCode(db, code, hardwareId, now);
+        const used = await db.prepare("SELECT * FROM devices WHERE pairing_code = ? LIMIT 1")
+          .bind(code).first<DeviceRow>();
+        if (used) {
+          if (used.hardware_id === hardwareId && safeEqual(used.secret_hash, secretHash)) {
+            row = used;
+            break;
+          }
+          return pairingCodeConflict();
+        }
+      }
+      try {
+        await db.prepare(`INSERT INTO devices
+          (id, hardware_id, owner_id, sku_id, name, secret_hash, pairing_code, pairing_expires_at,
+           firmware_version, desired_revision, applied_revision, last_seen_at, created_at, updated_at)
+          VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+          ON CONFLICT(hardware_id) DO NOTHING`)
+          .bind(id, hardwareId, skuId, "M5 PaperColor", secretHash, code, pairingExpiry(),
+            firmwareVersion, now, now, now)
+          .run();
+      } catch (error) {
+        const concurrent = await db.prepare("SELECT * FROM devices WHERE hardware_id = ? LIMIT 1")
+          .bind(hardwareId).first<DeviceRow>();
+        if (concurrent) {
+          row = concurrent;
+          break;
+        }
+        if (pairingRequest.provided && uniqueConstraint(error)) return pairingCodeConflict();
+        if (!uniqueConstraint(error)) throw error;
+        continue;
+      }
+      row = await db.prepare("SELECT * FROM devices WHERE hardware_id = ? LIMIT 1")
+        .bind(hardwareId).first<DeviceRow>();
+    }
+    if (!row) {
+      return Response.json({ error: "暂时无法分配设备码，请重试" }, { status: 503 });
+    }
+  }
+
+  if (!safeEqual(row.secret_hash, secretHash)) {
+    return Response.json({ error: "设备身份冲突，请重新刷机" }, { status: 409 });
+  }
+  if (row.owner_id && pairingRequest.provided) {
+    await db.prepare(`UPDATE devices SET pairing_code = NULL, pairing_expires_at = NULL,
+      firmware_version = ?, last_seen_at = ?, updated_at = ? WHERE id = ?`)
+      .bind(firmwareVersion, now, now, row.id).run();
+    return pairingCodeConflict();
+  }
+
+  if (!row.owner_id && pairingRequest.provided) {
+    if (row.pairing_code === pairingRequest.code) {
+      if (!activePairing(row)) return pairingCodeConflict();
+      await db.prepare(`UPDATE devices SET pairing_code = ?, pairing_expires_at = ?,
+        firmware_version = ?, last_seen_at = ?, updated_at = ? WHERE id = ?`)
+        .bind(pairingRequest.code, row.pairing_expires_at, firmwareVersion, now, now, row.id)
+        .run();
+    } else {
+      if (activePairing(row)) return pairingCodeConflict();
+      await retireExpiredPairingCode(db, pairingRequest.code, hardwareId, now);
+      const used = await db.prepare("SELECT id FROM devices WHERE pairing_code = ? AND id <> ? LIMIT 1")
+        .bind(pairingRequest.code, row.id).first<{ id: string }>();
+      if (used) return pairingCodeConflict();
+      try {
+        const rotated = await db.prepare(`UPDATE devices SET pairing_code = ?, pairing_expires_at = ?,
+          firmware_version = ?, last_seen_at = ?, updated_at = ?
+          WHERE id = ? AND owner_id IS NULL
+            AND (pairing_code IS NULL OR pairing_expires_at IS NULL OR pairing_expires_at <= ?)`)
+          .bind(pairingRequest.code, pairingExpiry(), firmwareVersion, now, now, row.id, now).run();
+        if (rotated.meta.changes !== 1) {
+          const concurrent = await db.prepare("SELECT * FROM devices WHERE id = ? LIMIT 1")
+            .bind(row.id).first<DeviceRow>();
+          if (!concurrent || concurrent.owner_id || concurrent.pairing_code !== pairingRequest.code
+            || !activePairing(concurrent)) return pairingCodeConflict();
+        }
+      } catch (error) {
+        if (uniqueConstraint(error)) return pairingCodeConflict();
+        throw error;
+      }
+    }
+  } else if (!row.owner_id && !activePairing(row)) {
+    let allocated = false;
+    for (let attempt = 0; attempt < 8 && !allocated; attempt += 1) {
+      try {
+        const result = await db.prepare(`UPDATE devices SET pairing_code = ?, pairing_expires_at = ?,
+          firmware_version = ?, last_seen_at = ?, updated_at = ? WHERE id = ? AND owner_id IS NULL`)
+          .bind(randomPairingCode(), pairingExpiry(), firmwareVersion, now, now, row.id).run();
+        allocated = result.meta.changes === 1;
+      } catch (error) {
+        if (!uniqueConstraint(error)) throw error;
+      }
+    }
+    if (!allocated) return Response.json({ error: "暂时无法分配设备码，请重试" }, { status: 503 });
+  } else {
+    await db.prepare(`UPDATE devices SET pairing_code = ?, pairing_expires_at = ?,
+      firmware_version = ?, last_seen_at = ?, updated_at = ? WHERE id = ?`)
+      .bind(row.owner_id ? null : row.pairing_code, row.owner_id ? null : row.pairing_expires_at,
+        firmwareVersion, now, now, row.id)
+      .run();
+  }
+  row = await db.prepare("SELECT * FROM devices WHERE id = ? LIMIT 1").bind(row.id).first<DeviceRow>();
   if (!row) return Response.json({ error: "设备注册失败" }, { status: 500 });
   return Response.json({
     deviceId: row.id,
@@ -395,8 +572,7 @@ export async function GET(request: Request) {
       .bind(owner).all<DeviceRow>();
     return Response.json({ devices: await Promise.all(result.results.map((row) => deviceJson(db, row))) });
   } catch (error) {
-    if (error instanceof Response) return error;
-    return Response.json({ error: error instanceof Error ? error.message : "无法读取设备" }, { status: 503 });
+    return safeDeviceError(error);
   }
 }
 
@@ -404,7 +580,7 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json() as Record<string, unknown>;
     const action = cleanText(payload.action, 40);
-    if (action === "register") return await registerDevice(request, payload);
+    if (action === "register") return await registerDevice(payload);
     if (action === "sync") return await syncDevice(request, payload);
 
     const owner = requireOwner(request);
@@ -423,9 +599,13 @@ export async function POST(request: Request) {
         return Response.json({ error: "这台设备已经绑定" }, { status: 409 });
       }
       const now = new Date().toISOString();
-      await db.prepare(`UPDATE devices SET owner_id = ?, pairing_code = NULL,
-        pairing_expires_at = NULL, updated_at = ? WHERE id = ?`)
-        .bind(owner, now, row.id).run();
+      const claimedResult = await db.prepare(`UPDATE devices SET owner_id = ?, pairing_code = NULL,
+        pairing_expires_at = NULL, updated_at = ?
+        WHERE id = ? AND owner_id IS NULL AND pairing_code = ? AND pairing_expires_at > ?`)
+        .bind(owner, now, row.id, code, now).run();
+      if (claimedResult.meta.changes !== 1) {
+        return Response.json({ error: "设备码不可用，请重新获取" }, { status: 409 });
+      }
       await db.prepare("DELETE FROM device_pairing_attempts WHERE id = ?").bind(attemptId).run();
       const claimed = await db.prepare("SELECT * FROM devices WHERE id = ? LIMIT 1").bind(row.id).first<DeviceRow>();
       return Response.json({ device: await deviceJson(db, claimed!) });
@@ -513,7 +693,6 @@ export async function POST(request: Request) {
 
     return Response.json({ error: "未知设备操作" }, { status: 400 });
   } catch (error) {
-    if (error instanceof Response) return error;
-    return Response.json({ error: error instanceof Error ? error.message : "设备操作失败" }, { status: 500 });
+    return safeDeviceError(error);
   }
 }

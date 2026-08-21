@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `idx_devices_pairing_code_unique` ON `devices` (`pairing_code`) WHERE "devices"."pairing_code" IS NOT NULL;

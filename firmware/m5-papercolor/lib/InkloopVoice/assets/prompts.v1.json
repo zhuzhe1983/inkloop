@@ -1,0 +1,164 @@
+{
+  "schema": "inkloop.prompt-manifest",
+  "version": 1,
+  "format": {
+    "container": "wav",
+    "codec": "pcm_s16le",
+    "channels": 1,
+    "sampleRate": 16000
+  },
+  "entries": [
+    {
+      "id": "ordinal.first",
+      "file": "speech/ordinal_first.wav",
+      "fallback": "fallback/ordinal_first.wav",
+      "sha256": "427a53b731cc0328cd19b199b640dcb50b961d01d86b4d12e57a1382c891c41b",
+      "fallbackSha256": "aa8f4b9ad02c73d58b5a4ffbc77ec474c27b5628ccdc02228a99eae22595c7d9",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "ordinal.second",
+      "file": "speech/ordinal_second.wav",
+      "fallback": "fallback/ordinal_second.wav",
+      "sha256": "562e6911c66806842789f1d9f4550c897cb8cd30e371a57cba2eb875b124fca3",
+      "fallbackSha256": "6838797dc2f937d008177dfc6e0e38d77751b27397e0ca606bba5b1874feb19c",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "ordinal.third",
+      "file": "speech/ordinal_third.wav",
+      "fallback": "fallback/ordinal_third.wav",
+      "sha256": "59b4b09c0150e33329f9107218619b9e770b91be1b94de9c8e5dd5d90531bd65",
+      "fallbackSha256": "b23e375ad1965d78934e5b5ec96fa9844e3a900dc48304f6c429bb8d4282ef5f",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "ordinal.number",
+      "file": "speech/ordinal_number.wav",
+      "fallback": "fallback/ordinal_number.wav",
+      "sha256": "5bf27848a567f60c51d9c8e1dcdcc5fc55a95e6b827c5348b9be559d29366ceb",
+      "fallbackSha256": "d95d340f55f53970b39d0632bf09c524403f7ea68f5cad2404e18a7765680ff4",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "display.please_wait",
+      "file": "speech/display_please_wait.wav",
+      "fallback": "fallback/display_please_wait.wav",
+      "sha256": "3dc44cb30a7354d9a7778d1ba8b8c1fca0ee646f313619985304d7ead50467ca",
+      "fallbackSha256": "e8da0aa0918ae719c5a510f1dd86f878a373ed7bd0b1fbd6d197878e94741e64",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "confirmation.repeat_exactly",
+      "file": "speech/confirmation_repeat_exactly.wav",
+      "fallback": "fallback/confirmation_repeat_exactly.wav",
+      "sha256": "0c5425add6bc170e4f42b73ffaee723f8f291e6696742298d3c63be4b063e94a",
+      "fallbackSha256": "cd1ccf9f8fbd2618ef7d9bb867bb7fce45f678d5eb4ee040509beb45e6d4c08e",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "confirmation.press_top_button",
+      "file": "speech/confirmation_press_top_button.wav",
+      "fallback": "fallback/confirmation_press_top_button.wav",
+      "sha256": "15c7ae56ef15bec2e3148c7a629eb0daf11eb9ab32fa926208af2ef28e1a37b3",
+      "fallbackSha256": "ce25ec745413f1e8e0c467da3f8fcd92b7568fbd3b1b91f4387e2473c6ac2b2e",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "confirmation.cancelled",
+      "file": "speech/confirmation_cancelled.wav",
+      "fallback": "fallback/confirmation_cancelled.wav",
+      "sha256": "aecbadd0d2094543f88dd7ba0d12b27a3e8d9fa52b65334141ed3b0d13b49a44",
+      "fallbackSha256": "9e358bb9ca461336273f0b20c4853838863104f1d80294efd3b84aae8158bf86",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "confirmation.expired",
+      "file": "speech/confirmation_expired.wav",
+      "fallback": "fallback/confirmation_expired.wav",
+      "sha256": "8558febcfa01d4d97d55a62c0c9ddd79c1cbb2741160ffaf81eab09487655444",
+      "fallbackSha256": "42697e5e7f45bc223298f0e7c824e519a4c9643e7fec2b142074700d07117543",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "storage.free_space",
+      "file": "speech/storage_free_space.wav",
+      "fallback": "fallback/storage_free_space.wav",
+      "sha256": "ee72168faa2dabf2752e5f9043445925f1cb7012196937dac421d42e2c39a308",
+      "fallbackSha256": "c5fef4b0061cc41d831d2e0d0a631f0df3a0e092110e2be2ae764234868627da",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "storage.formatted",
+      "file": "speech/storage_formatted.wav",
+      "fallback": "fallback/storage_formatted.wav",
+      "sha256": "dc9c217181923a7a70f4137b89d3628e87bca17e12a1e7e96a3d5824588b2380",
+      "fallbackSha256": "43f5f6eff71c9b584ee203e68338d3d0e2f68361ce75660459b3c5fb4228c5fc",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "images.empty",
+      "file": "speech/images_empty.wav",
+      "fallback": "fallback/images_empty.wav",
+      "sha256": "75f8a71b059c853f04610fb46fad75505b3dd6ce3f201a33fff10822b099e416",
+      "fallbackSha256": "127c2c123bf7510d4d928a75844a617e000b46a04ae0ee86c0e883cf15249c96",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "images.list_ready",
+      "file": "speech/images_list_ready.wav",
+      "fallback": "fallback/images_list_ready.wav",
+      "sha256": "3929929eddc9e1a54bbd5d0b2019a6d510182e154fb93f525a07cc316ee26e1b",
+      "fallbackSha256": "e3ba0e7ffea4122b63dbbc1fecd823c5f6aa3f4df8f5dcffe455dafe158bf790",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "images.deleted",
+      "file": "speech/images_deleted.wav",
+      "fallback": "fallback/images_deleted.wav",
+      "sha256": "f106090b9d54599dd91e1dfa0f0a7c5b68446e48f01f138840b955a97fe8cc7c",
+      "fallbackSha256": "fde2cc1e4d13f31fae0630eb2d67bb4dd9175a81b21ae2cf1610a9b18f69e971",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "images.cleared",
+      "file": "speech/images_cleared.wav",
+      "fallback": "fallback/images_cleared.wav",
+      "sha256": "c704121ba9259b556963b28c5fd13bd4c6dae2be2e2d88cc99dbd2bd38ad8d91",
+      "fallbackSha256": "46d3ed08f1c1ad689f64cb5cb155d46b90478d0496ccf6810cb91f804f8fae63",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "settings.saved",
+      "file": "speech/settings_saved.wav",
+      "fallback": "fallback/settings_saved.wav",
+      "sha256": "0bb55cbfbf613b9c73ef19f030c1902daf8cddb172de4d29688832d235d1f864",
+      "fallbackSha256": "1498bf5a17b28975a8345251c5c2b9a4c0fc50d6d661ca53430f0021a87409d7",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "settings.reset",
+      "file": "speech/settings_reset.wav",
+      "fallback": "fallback/settings_reset.wav",
+      "sha256": "5edd6c6c9c702545bed50037e73fe771e8ccb01cc1029bae1cb512e31ea5d85b",
+      "fallbackSha256": "984df151ce38cd3a375daf66b7c2f78ad7487fca2938202c453b374196c80632",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "voice.error",
+      "file": "speech/voice_error.wav",
+      "fallback": "fallback/voice_error.wav",
+      "sha256": "461ebfc523da5faf424ad45814aa9a33bd5470a01405726def04459d71e2aaba",
+      "fallbackSha256": "a5925109ceb372ce66904acc89436d29bbefa898616f6eef3b116d6dc3023fcf",
+      "source": "macos-say:Tingting"
+    },
+    {
+      "id": "voice.listening",
+      "file": "speech/voice_listening.wav",
+      "fallback": "fallback/voice_listening.wav",
+      "sha256": "4511aacdfc46bc62792314b45ec689d981cd5e2916e68e004784dbd66028af36",
+      "fallbackSha256": "2ec7704ece57400c5d4ae9420dc1cfbc574e1cc87c6d20fe0780871a9e16bc1d",
+      "source": "macos-say:Tingting"
+    }
+  ]
+}

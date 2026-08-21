@@ -1,4 +1,8 @@
 import { t } from "./i18n-runtime.ts";
+import {
+  validatePaperColorFirmwareFiles,
+  validatePaperColorFirmwareManifest,
+} from "./esp32-firmware-layout.js";
 import type { InkApp } from "./app-model";
 import type { DeviceSkuId } from "./device-catalog";
 
@@ -130,8 +134,17 @@ type FirmwareManifest = {
   chipFamily: "ESP32-S3";
   version: string;
   baudRate: number;
+  formatVersion?: number;
+  completeFlash?: boolean;
+  flashSize?: number;
   serverSlot: { marker: string; length: number };
-  files: Array<{ path: string; offset: number; sha256: string }>;
+  files: Array<{
+    role?: "bootloader" | "partitions" | "boot_app0" | "app" | "littlefs";
+    path: string;
+    offset: number;
+    size?: number;
+    sha256: string;
+  }>;
 };
 
 async function sha256Hex(bytes: Uint8Array) {
@@ -293,7 +306,12 @@ export async function flashM5PaperColor(
   }
   if (!manifestResponse.ok) throw new Error(t("M5 PaperColor 固件尚未发布"));
   const manifest = await manifestResponse.json() as FirmwareManifest;
-  const files = await Promise.all(manifest.files.map(async (file) => {
+  try {
+    validatePaperColorFirmwareManifest(manifest);
+  } catch {
+    throw new Error(`${t("固件校验失败：")}manifest.json`);
+  }
+  const downloads = await Promise.all(manifest.files.map(async (file) => {
     let response: Response;
     try {
       response = await fetch(file.path, { cache: "no-store" });
@@ -302,10 +320,21 @@ export async function flashM5PaperColor(
     }
     if (!response.ok) throw new Error(`${t("无法下载固件文件：")}${file.path}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!/^[a-f0-9]{64}$/i.test(file.sha256) || await sha256Hex(bytes) !== file.sha256.toLowerCase()) {
+    return { file, bytes };
+  }));
+  try {
+    validatePaperColorFirmwareFiles(
+      manifest,
+      downloads.map(({ bytes }) => bytes.byteLength),
+    );
+  } catch {
+    throw new Error(`${t("固件校验失败：")}manifest.json`);
+  }
+  const files = await Promise.all(downloads.map(async ({ file, bytes }) => {
+    if (await sha256Hex(bytes) !== file.sha256.toLowerCase()) {
       throw new Error(`${t("固件校验失败：")}${file.path}`);
     }
-    if (file.path.endsWith("/firmware.bin")) {
+    if (file.role === "app" || file.path.endsWith("/firmware.bin")) {
       patchServerUrl(bytes, manifest.serverSlot, new URL("/api/devices", window.location.origin).toString());
     }
     return { data: bytes, address: file.offset };
