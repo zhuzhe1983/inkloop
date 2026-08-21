@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import {
   DEVICE_ADAPTERS,
@@ -59,4 +60,16 @@ test("device targets keep explicit focus across list refreshes and expose native
     DEVICE_ADAPTERS["m5-papercolor-c151"].renderTarget("landscape"),
     { width: 600, height: 400 },
   );
+});
+
+test("the studio has one write-target control while the sidebar only opens details", async () => {
+  const studio = await readFile(new URL("../app/ink-studio.tsx", import.meta.url), "utf8");
+  const start = studio.indexOf("const openDeviceCenter = useCallback");
+  const end = studio.indexOf("const toggleSidebar", start);
+  const deviceCenterHandler = studio.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(deviceCenterHandler, /activateDevice|selectActiveDevice|setActiveDeviceId/);
+  assert.match(studio, /className="run-device-target"[\s\S]*<select/);
+  assert.match(studio, /查看设备详情，不切换写入设备/);
 });

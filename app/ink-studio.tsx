@@ -3216,7 +3216,6 @@ export default function InkStudio() {
   }, [selectActiveDevice]);
 
   const openDeviceCenter = useCallback((profile: DeviceProfile) => {
-    activateDevice(profile);
     setExpandedDeviceIds((current) => {
       if (current.has(profile.id)) return current;
       const next = new Set(current);
@@ -3229,7 +3228,7 @@ export default function InkStudio() {
       deviceCard?.scrollIntoView({ behavior: "smooth", block: "start" });
       deviceCard?.querySelector<HTMLButtonElement>(".device-registry-summary")?.focus({ preventScroll: true });
     }, 0);
-  }, [activateDevice, navigateToTab]);
+  }, [navigateToTab]);
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((current) => {
@@ -4809,11 +4808,13 @@ export default function InkStudio() {
             <button
               type="button"
               key={device.id}
-              className={`sidebar-device${device.tasks.length ? " has-tasks" : ""}${device.hasError ? " has-error" : ""}${activeDevice?.id === device.id ? " active" : ""}`}
+              className={`sidebar-device${device.tasks.length ? " has-tasks" : ""}${device.hasError ? " has-error" : ""}${activeDevice?.id === device.id ? " write-target" : ""}`}
               onClick={() => openDeviceCenter(device)}
               aria-expanded={tab === "device" && expandedDeviceIds.has(device.id)}
               aria-controls={`device-card-${device.id}`}
-              title={sidebarCollapsed ? `${device.name} · ${device.tasks.length} ${t("个刷新任务")}` : undefined}
+              title={sidebarCollapsed
+                ? `${device.name} · ${device.tasks.length} ${t("个刷新任务")}${activeDevice?.id === device.id ? ` · ${tRuntime("当前写入设备")}` : ""}`
+                : tRuntime("查看设备详情，不切换写入设备")}
             >
               <span className={`status-dot ${device.status}`} />
               <div className="sidebar-device-copy">

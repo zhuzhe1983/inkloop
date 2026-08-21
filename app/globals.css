@@ -251,7 +251,7 @@ input:focus-visible {
   background: rgba(255, 255, 255, 0.055);
 }
 
-.sidebar-device.active {
+.sidebar-device.write-target {
   background: rgba(217, 255, 76, 0.09);
 }
 
