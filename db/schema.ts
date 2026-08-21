@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const publicApps = sqliteTable(
   "public_apps",
@@ -42,6 +42,9 @@ export const devices = sqliteTable(
   (table) => [
     index("idx_devices_owner_updated_at").on(table.ownerId, table.updatedAt),
     index("idx_devices_pairing_code").on(table.pairingCode),
+    uniqueIndex("idx_devices_pairing_code_unique")
+      .on(table.pairingCode)
+      .where(sql`${table.pairingCode} IS NOT NULL`),
   ],
 );
 
@@ -59,6 +62,7 @@ export const deviceTasks = sqliteTable(
     dailyTime: text("daily_time").notNull().default("08:00"),
     frameKey: text("frame_key").notNull(),
     frameHash: text("frame_hash").notNull(),
+    renderStrategy: text("render_strategy").notNull().default("official-quality"),
     revision: integer("revision").notNull(),
     deleted: integer("deleted", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),

@@ -1,0 +1,17 @@
+{
+  "name": "InkloopVoice",
+  "version": "0.2.0",
+  "description": "Hardware-independent voice controls and safe local command runtime for Inkloop PaperColor",
+  "build": {
+    "flags": "-std=gnu++11",
+    "extraScript": "scripts/platformio_prompt_check.py"
+  },
+  "export": {
+    "include": [
+      "README.md",
+      "assets",
+      "scripts",
+      "src"
+    ]
+  }
+}

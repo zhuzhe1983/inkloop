@@ -1,0 +1,8 @@
+{
+  "name": "InkloopMyAi",
+  "version": "0.1.0",
+  "description": "Hardware-independent MyAI third-party client core for Inkloop PaperColor",
+  "build": {
+    "flags": "-std=gnu++11"
+  }
+}

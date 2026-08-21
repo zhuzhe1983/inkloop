@@ -1,4 +1,5 @@
 import type { Locale } from "./i18n-types";
+import type { PaperColorRenderStrategy } from "./papercolor-render";
 
 export type DeviceFamily = "bluetooth" | "esp32";
 export type DeviceTransport = "web-bluetooth" | "wifi-pull";
@@ -27,6 +28,7 @@ export type DeviceSku = {
     sourceHeight: number;
     outputFormat: "todoocard-frame" | "png";
     colorOptimization: "device-calibrated-six-color" | "spectra6-server-quantized";
+    supportedStrategies: readonly PaperColorRenderStrategy[];
   };
   write: {
     transport: DeviceTransport;
@@ -69,6 +71,7 @@ export const DEVICE_SKUS = {
       sourceHeight: 792,
       outputFormat: "todoocard-frame",
       colorOptimization: "device-calibrated-six-color",
+      supportedStrategies: ["official-quality", "solid-clean"],
     },
     write: {
       transport: "web-bluetooth",
@@ -104,6 +107,12 @@ export const DEVICE_SKUS = {
       sourceHeight: 792,
       outputFormat: "png",
       colorOptimization: "spectra6-server-quantized",
+      supportedStrategies: [
+        "official-quality",
+        "classic-six-color",
+        "reflectance-photo",
+        "solid-clean",
+      ],
     },
     write: {
       transport: "wifi-pull",

@@ -47,6 +47,10 @@ import { TodooCard, type TodooProgress } from "./lib/todoo-card";
 import { isRecoverableBluetoothError, writeWithBluetoothRecovery } from "./lib/bluetooth-recovery";
 import { deviceAdapter, deviceSku, deviceSkusForFamily, deviceManufacturers, filterDeviceSkus, officialProductUrl, type DeviceFamily, type DeviceSkuId } from "./lib/device-catalog";
 import {
+  paperColorStrategyForScreenMode,
+  type PaperColorRenderStrategy,
+} from "./lib/papercolor-render";
+import {
   claimEsp32Device,
   deleteEsp32Task,
   flashM5PaperColor,
@@ -161,6 +165,7 @@ type DeviceTask = {
   lastCanvas?: string;
   execution: "browser-bluetooth" | "device-wifi";
   remoteRevision?: number;
+  renderStrategy?: PaperColorRenderStrategy;
 };
 
 type AddDeviceStep = "family" | "sku" | "method" | "claim" | "flash" | "flash-complete";
@@ -364,8 +369,10 @@ const renderModeOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: "official", label: "Official Skill", description: tRuntime("预览保持原图；写入按官方 skill 做一次六色 Floyd-Steinberg") },
-  { value: "inkloop-text", label: "Inkloop text", description: tRuntime("预览保持原图；文字画面按最近六色写入，不再二次网点") },
+  { value: "official", label: tRuntime("官方画质"), description: tRuntime("由设备的 M5GFX 官方高质量模式完成六色渲染，兼容性最好") },
+  { value: "classic-six-color", label: tRuntime("经典六色"), description: tRuntime("RGB Floyd–Steinberg 六色误差扩散，纹理明确且结果稳定") },
+  { value: "reflectance-photo", label: tRuntime("反射率照片"), description: tRuntime("使用实测 PaperColor 色彩、Yule–Nielsen 反射率和 Stucki 扩散，适合照片与渐变") },
+  { value: "inkloop-text", label: tRuntime("纯色清晰"), description: tRuntime("关闭误差扩散，适合大色块、文字、二维码、表格和信息卡") },
 ];
 
 const knownWeatherCities = [
@@ -3102,6 +3109,7 @@ export default function InkStudio() {
         deviceName: record.name,
         execution: "device-wifi",
         remoteRevision: task.revision,
+        renderStrategy: task.renderStrategy,
         status: "scheduled",
         nextRunAt: null,
         lastRunAt: record.lastSeenAt ? new Date(record.lastSeenAt).getTime() : null,
@@ -4359,7 +4367,10 @@ export default function InkStudio() {
   const publishTaskToEsp32 = useCallback(async (profile: DeviceProfile, targetApp: InkApp) => {
     setDeviceStatus("writing");
     const frame = await prepareEsp32Frame(targetApp);
-    await publishEsp32Task(profile.id, targetApp, frame.blob);
+    const renderStrategy = paperColorStrategyForScreenMode(
+      displaySettings(targetApp.spec, Boolean(targetApp.localImage)).renderMode,
+    );
+    await publishEsp32Task(profile.id, targetApp, frame.blob, renderStrategy);
     const profiles = await refreshEsp32Devices();
     const refreshed = profiles?.find((item) => item.id === profile.id) ?? profile;
     setDeviceStatus("scheduled");
@@ -4694,6 +4705,11 @@ export default function InkStudio() {
   const previewFrameWidth = previewLandscape ? 486 : 288;
   const previewFrameHeight = previewLandscape ? 288 : 486;
   const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
+  const activeRenderStrategies = deviceSku(activeDevice?.skuId)?.render.supportedStrategies;
+  const supportedRenderModeOptions = renderModeOptions.filter((mode) =>
+    !activeRenderStrategies || activeRenderStrategies.includes(
+      paperColorStrategyForScreenMode(mode.value),
+    ));
   const calibrationDevice = devices.find((device) => device.id === calibrationDeviceId) ?? null;
   const selectedDeviceSku = deviceSku(selectedDeviceSkuId);
   const deviceSummaries = devices.map((device) => {
@@ -5506,7 +5522,7 @@ export default function InkStudio() {
                           : tRuntime("纯文字默认 Inkloop text")}</small>
                       </div>
                       <div className="render-mode-options" role="group" aria-label={tRuntime("画面渲染方式")}>
-                        {renderModeOptions.map((mode) => (
+                        {supportedRenderModeOptions.map((mode) => (
                           <button
                             type="button"
                             key={mode.value}

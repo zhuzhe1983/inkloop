@@ -23,7 +23,11 @@ export type ClockSpec = {
 
 export type ScreenFont = "sans" | "serif" | "rounded" | "mono" | "handwritten";
 
-export type ScreenRenderMode = "official" | "inkloop-text";
+export type ScreenRenderMode =
+  | "official"
+  | "classic-six-color"
+  | "reflectance-photo"
+  | "inkloop-text";
 
 export type MapLocationMode = "picker" | "browser" | "ip";
 export type MapStyle = "balanced";
@@ -250,7 +254,10 @@ const includesAny = (source: string, terms: string[]) => terms.some((term) => so
 export function displaySettings(spec: ScreenSpec, hasLocalImage = false): ScreenDisplay {
   const fallbackFont = spec.clock?.font && spec.clock.font !== "random" ? spec.clock.font : "sans";
   const saved = spec.display as Partial<ScreenDisplay> | undefined;
-  const savedRenderMode = saved?.renderMode === "official" || saved?.renderMode === "inkloop-text"
+  const savedRenderMode = saved?.renderMode === "official" ||
+    saved?.renderMode === "classic-six-color" ||
+    saved?.renderMode === "reflectance-photo" ||
+    saved?.renderMode === "inkloop-text"
     ? saved.renderMode
     : undefined;
   const renderModeExplicit = saved?.renderModeExplicit === true;

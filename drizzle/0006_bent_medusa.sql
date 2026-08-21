@@ -1,0 +1,1 @@
+ALTER TABLE `device_tasks` ADD `render_strategy` text DEFAULT 'official-quality' NOT NULL;
