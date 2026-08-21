@@ -7,6 +7,7 @@ import {
   deviceManufacturers,
   filterDeviceSkus,
   officialProductUrl,
+  resolveDeviceTargetId,
 } from "../app/lib/device-catalog.ts";
 
 test("catalog keeps Chinese source copy and official product URLs", () => {
@@ -38,4 +39,24 @@ test("filterDeviceSkus can slice by family and brand", () => {
   assert.equal(filterDeviceSkus({ manufacturer: "Todoo" })[0].id, "todoo-card-3.7");
   assert.equal(filterDeviceSkus({ manufacturer: "M5Stack" })[0].id, "m5-papercolor-c151");
   assert.equal(filterDeviceSkus({ family: "bluetooth", manufacturer: "M5Stack" }).length, 0);
+});
+
+test("device targets keep explicit focus across list refreshes and expose native resolution", () => {
+  const initial = [{ id: "paper" }, { id: "todoo" }];
+  const reordered = [{ id: "todoo" }, { id: "paper" }];
+
+  assert.equal(resolveDeviceTargetId(initial, "paper", null), "paper");
+  assert.equal(resolveDeviceTargetId(reordered, "paper", "todoo"), "paper");
+  assert.equal(resolveDeviceTargetId(reordered, "missing", "paper"), "paper");
+  assert.equal(resolveDeviceTargetId(reordered, "missing", "missing"), "todoo");
+  assert.equal(resolveDeviceTargetId([], "paper", "paper"), null);
+
+  assert.deepEqual(
+    DEVICE_ADAPTERS["m5-papercolor-c151"].renderTarget("portrait"),
+    { width: 400, height: 600 },
+  );
+  assert.deepEqual(
+    DEVICE_ADAPTERS["m5-papercolor-c151"].renderTarget("landscape"),
+    { width: 600, height: 400 },
+  );
 });

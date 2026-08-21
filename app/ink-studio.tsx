@@ -45,7 +45,7 @@ import {
 } from "./lib/app-model";
 import { TodooCard, type TodooProgress } from "./lib/todoo-card";
 import { isRecoverableBluetoothError, writeWithBluetoothRecovery } from "./lib/bluetooth-recovery";
-import { deviceAdapter, deviceSku, deviceSkusForFamily, deviceManufacturers, filterDeviceSkus, officialProductUrl, type DeviceFamily, type DeviceSkuId } from "./lib/device-catalog";
+import { deviceAdapter, deviceSku, deviceSkusForFamily, deviceManufacturers, filterDeviceSkus, officialProductUrl, resolveDeviceTargetId, type DeviceFamily, type DeviceSkuId } from "./lib/device-catalog";
 import {
   paperColorStrategyForScreenMode,
   type PaperColorRenderStrategy,
@@ -178,6 +178,7 @@ type DragPreview = {
 
 const LOCAL_APPS_KEY = "inkloop-apps-v1";
 const DEVICE_PROFILES_KEY = "inkloop-device-profiles-v1";
+const ACTIVE_DEVICE_KEY = "inkloop-active-device-v1";
 const SIDEBAR_COLLAPSED_KEY = "inkloop-sidebar-collapsed-v1";
 const WEATHER_CITY_KEY = "inkloop-weather-city-v1";
 const CALENDAR_PREFERENCES_KEY = "inkloop-calendar-sources-v1";
@@ -3007,6 +3008,7 @@ export default function InkStudio() {
   const previewVersionRef = useRef(0);
   const currentAppRef = useRef(app);
   const deviceProfilesRef = useRef<DeviceProfile[]>([]);
+  const activeDeviceIdRef = useRef<string | null>(null);
   const calendarPreferencesRef = useRef(calendarPreferences);
   const driverRef = useRef<TodooCard | null>(null);
   const deviceDriversRef = useRef(new Map<string, TodooCard>());
@@ -3030,6 +3032,11 @@ export default function InkStudio() {
   const mapWheelZoomRef = useRef<number | null>(null);
   const mapWheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firmwareStopRef = useRef<(() => void) | null>(null);
+  const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? null;
+  const previewSourceDimensions = screenDimensions(app.spec);
+  const previewDimensions = activeDevice?.skuId === "m5-papercolor-c151"
+    ? deviceAdapter(activeDevice.skuId).renderTarget(screenOrientation(app.spec))
+    : previewSourceDimensions;
 
   const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     setToast({ message, tone });
@@ -3082,6 +3089,23 @@ export default function InkStudio() {
     setDeviceTasks(next);
   }, []);
 
+  const selectActiveDevice = useCallback((profile: DeviceProfile | null) => {
+    const nextId = profile?.id ?? null;
+    activeDeviceIdRef.current = nextId;
+    setActiveDeviceId(nextId);
+    setDeviceName(profile?.name ?? null);
+    try {
+      if (nextId) localStorage.setItem(ACTIVE_DEVICE_KEY, nextId);
+      else localStorage.removeItem(ACTIVE_DEVICE_KEY);
+    } catch {
+      // The current tab still keeps the explicit target when storage is unavailable.
+    }
+    if (profile) {
+      const driver = deviceDriversRef.current.get(profile.id);
+      if (driver) driverRef.current = driver;
+    }
+  }, []);
+
   const commitDeviceProfiles = useCallback((updater: (current: DeviceProfile[]) => DeviceProfile[]) => {
     const next = updater(deviceProfilesRef.current);
     deviceProfilesRef.current = next;
@@ -3091,7 +3115,17 @@ export default function InkStudio() {
     } catch {
       // Calibration remains active in this tab if browser storage is unavailable.
     }
-  }, []);
+    let storedTarget: string | null = null;
+    try {
+      storedTarget = localStorage.getItem(ACTIVE_DEVICE_KEY);
+    } catch {
+      // Resolve against the in-memory selection only.
+    }
+    const resolvedId = resolveDeviceTargetId(next, activeDeviceIdRef.current, storedTarget);
+    if (resolvedId !== activeDeviceIdRef.current) {
+      selectActiveDevice(next.find((profile) => profile.id === resolvedId) ?? null);
+    }
+  }, [selectActiveDevice]);
 
   const applyEsp32Records = useCallback((records: Esp32DeviceRecord[]) => {
     const existingById = new Map(deviceProfilesRef.current.map((profile) => [profile.id, profile]));
@@ -3172,18 +3206,14 @@ export default function InkStudio() {
     deviceDriversRef.current.set(profile.id, driver);
     driverRef.current = driver;
     commitDeviceProfiles((current) => [profile, ...current.filter((item) => item.id !== profile.id)]);
-    setActiveDeviceId(profile.id);
-    setDeviceName(profile.name);
+    selectActiveDevice(profile);
     setDeviceStatus("ready");
     return profile;
-  }, [commitDeviceProfiles]);
+  }, [commitDeviceProfiles, selectActiveDevice]);
 
   const activateDevice = useCallback((profile: DeviceProfile) => {
-    setActiveDeviceId(profile.id);
-    setDeviceName(profile.name);
-    const driver = deviceDriversRef.current.get(profile.id);
-    if (driver) driverRef.current = driver;
-  }, []);
+    selectActiveDevice(profile);
+  }, [selectActiveDevice]);
 
   const openDeviceCenter = useCallback((profile: DeviceProfile) => {
     activateDevice(profile);
@@ -3323,6 +3353,9 @@ export default function InkStudio() {
           .slice(0, 12);
         deviceProfilesRef.current = normalizedDevices;
         setDevices(normalizedDevices);
+        const storedTarget = localStorage.getItem(ACTIVE_DEVICE_KEY);
+        const resolvedTarget = resolveDeviceTargetId(normalizedDevices, null, storedTarget);
+        selectActiveDevice(normalizedDevices.find((device) => device.id === resolvedTarget) ?? null);
       }
       setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
       const storedCity = localStorage.getItem(WEATHER_CITY_KEY)?.trim();
@@ -3358,7 +3391,7 @@ export default function InkStudio() {
     } catch {
       localStorage.removeItem(LOCAL_APPS_KEY);
     }
-  }, []);
+  }, [selectActiveDevice]);
 
   useEffect(() => {
     const sample = tRuntime("今日天气 12:34 专注当下 圆润手写");
@@ -3511,8 +3544,6 @@ export default function InkStudio() {
           const authorizedIds = new Set(profiles.map((profile) => profile.id));
           return [...profiles, ...current.filter((profile) => !authorizedIds.has(profile.id))].slice(0, 12);
         });
-        setActiveDeviceId(profiles[0].id);
-        setDeviceName(profiles[0].name);
         setDeviceStatus("ready");
       })
       .catch(() => undefined);
@@ -3552,27 +3583,30 @@ export default function InkStudio() {
     if (!canvas) return;
     const version = ++previewVersionRef.current;
     const staging = document.createElement("canvas");
-    const dimensions = screenDimensions(app.spec);
-    staging.width = dimensions.width;
-    staging.height = dimensions.height;
+    const sourceDimensions = screenDimensions(app.spec);
+    staging.width = sourceDimensions.width;
+    staging.height = sourceDimensions.height;
     const hasArtwork = Boolean(app.spec.artwork || app.localImage || app.spec.kind === "map");
     setPreviewStatus(hasArtwork ? "loading" : "ready");
     const creditKey = app.spec.artwork?.mode === "web" ? artworkUrl(app.spec.artwork, screenOrientation(app.spec)) : null;
     setArtworkCredit(null);
     resolveRuntimeScreen(app, new Date(), calendarPreferences, setCalendarNotice).then((runtimeSpec) => drawScreen(staging, runtimeSpec, app.localImage, false)).then((usedArtwork) => {
       if (version !== previewVersionRef.current) return;
-      if (canvas.width !== dimensions.width || canvas.height !== dimensions.height) {
-        canvas.width = dimensions.width;
-        canvas.height = dimensions.height;
+      const rendered = activeDevice?.skuId === "m5-papercolor-c151"
+        ? canvasForM5PaperColor(staging, screenOrientation(runtimeSpec))
+        : staging;
+      if (canvas.width !== previewDimensions.width || canvas.height !== previewDimensions.height) {
+        canvas.width = previewDimensions.width;
+        canvas.height = previewDimensions.height;
       }
       const context = canvas.getContext("2d");
       if (!context) return;
       context.clearRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(staging, 0, 0);
+      context.drawImage(rendered, 0, 0, canvas.width, canvas.height);
       setPreviewStatus(hasArtwork && !usedArtwork ? "fallback" : "ready");
       setArtworkCredit(usedArtwork && creditKey ? artworkCreditCache.get(creditKey) ?? null : null);
     });
-  }, [app.spec, app.localImage, app.prompt, clockTick, fontTick, calendarPreferences]);
+  }, [activeDevice?.skuId, app.spec, app.localImage, app.prompt, clockTick, fontTick, calendarPreferences, previewDimensions.height, previewDimensions.width]);
 
   const attachLocalImage = async (file?: File) => {
     if (!file) return;
@@ -4163,8 +4197,7 @@ export default function InkStudio() {
       const claimed = await claimEsp32Device(deviceCode);
       const profiles = await refreshEsp32Devices();
       const profile = profiles?.find((item) => item.id === claimed.id) ?? profileFromEsp32(claimed);
-      setActiveDeviceId(profile.id);
-      setDeviceName(profile.name);
+      activateDevice(profile);
       setDeviceStatus(profile.online ? "ready" : "idle");
       setExpandedDeviceIds((current) => new Set(current).add(profile.id));
       firmwareStopRef.current?.();
@@ -4177,7 +4210,7 @@ export default function InkStudio() {
     } finally {
       setDeviceFlowBusy(false);
     }
-  }, [deviceCode, refreshEsp32Devices, showToast]);
+  }, [activateDevice, deviceCode, refreshEsp32Devices, showToast]);
 
   const flashEsp32Device = useCallback(async () => {
     firmwareStopRef.current?.();
@@ -4374,10 +4407,9 @@ export default function InkStudio() {
     const profiles = await refreshEsp32Devices();
     const refreshed = profiles?.find((item) => item.id === profile.id) ?? profile;
     setDeviceStatus("scheduled");
-    setActiveDeviceId(profile.id);
-    setDeviceName(profile.name);
+    activateDevice(profile);
     return { frame, refreshed };
-  }, [prepareEsp32Frame, refreshEsp32Devices]);
+  }, [activateDevice, prepareEsp32Frame, refreshEsp32Devices]);
 
   const runTransfer = useCallback(async (
     targetApp: InkApp,
@@ -4407,7 +4439,11 @@ export default function InkStudio() {
       return false;
     }
     const editingThisApp = targetApp.id === currentAppRef.current.id;
-    const reuseCurrentPreview = Boolean(options.reusePreview && editingThisApp && canvas);
+    const sourceDimensions = screenDimensions(targetApp.spec);
+    const reuseCurrentPreview = Boolean(
+      options.reusePreview && editingThisApp && canvas &&
+      canvas.width === sourceDimensions.width && canvas.height === sourceDimensions.height,
+    );
     const renderInPreview = editingThisApp && !taskId && Boolean(canvas) && !reuseCurrentPreview;
     if (reuseCurrentPreview && previewStatus === "loading") {
       const reason = tRuntime("图片素材仍在加载，请稍候重试");
@@ -4597,7 +4633,6 @@ export default function InkStudio() {
 
   const start = async () => {
     const selectedProfile = deviceProfilesRef.current.find((item) => item.id === activeDeviceId)
-      ?? deviceProfilesRef.current[0]
       ?? null;
     if (selectedProfile?.family === "esp32") {
       try {
@@ -4700,11 +4735,10 @@ export default function InkStudio() {
   const contentTitle = tab === "mine" ? t("我的模版") : tab === "explore" ? t("模板市场") : tab === "device" ? t("设备中心") : tab === "products" ? t("产品信息") : null;
   const visibleProductSkus = filterDeviceSkus({ family: productFamily, manufacturer: productBrand });
   const screenDisplay = displaySettings(app.spec, Boolean(app.localImage));
-  const previewDimensions = screenDimensions(app.spec);
   const previewLandscape = screenOrientation(app.spec) === "landscape";
   const previewFrameWidth = previewLandscape ? 486 : 288;
   const previewFrameHeight = previewLandscape ? 288 : 486;
-  const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? devices[0] ?? null;
+  const activeDeviceSku = deviceSku(activeDevice?.skuId);
   const activeRenderStrategies = deviceSku(activeDevice?.skuId)?.render.supportedStrategies;
   const supportedRenderModeOptions = renderModeOptions.filter((mode) =>
     !activeRenderStrategies || activeRenderStrategies.includes(
@@ -4954,7 +4988,7 @@ export default function InkStudio() {
                     <div>
                       <h2>{t("屏幕预览")}</h2>
                       <p>
-                        {previewDimensions.width} × {previewDimensions.height} · {previewStatus === "loading"
+                        {previewDimensions.width} × {previewDimensions.height}{activeDeviceSku ? ` · ${activeDeviceSku.displayName}` : ""} · {previewStatus === "loading"
                           ? app.spec.kind === "map" ? tRuntime("正在获取并转换静态地图") : tRuntime("正在获取并转换图片素材")
                           : previewStatus === "fallback"
                             ? app.spec.kind === "map"
@@ -5014,7 +5048,7 @@ export default function InkStudio() {
                     >
                       <div className="device-shadow" />
                       <div className="device-frame">
-                        <div className="device-label">TODOO</div>
+                        <div className="device-label">{activeDeviceSku?.displayName ?? "INKLOOP"}</div>
                         <div className="screen-canvas-wrap">
                           <canvas
                             ref={canvasRef}
@@ -5036,8 +5070,8 @@ export default function InkStudio() {
                                   style={{
                                     left: `${(position.x / 528) * 100}%`,
                                     top: `${(position.y / 792) * 100}%`,
-                                    width: `${(elementWidth / previewDimensions.width) * 100}%`,
-                                    height: `${(elementHeight / previewDimensions.height) * 100}%`,
+                                    width: `${(elementWidth / previewSourceDimensions.width) * 100}%`,
+                                    height: `${(elementHeight / previewSourceDimensions.height) * 100}%`,
                                   }}
                                   aria-label={`${t("拖拽调整")}${element.label}${t("位置，方向键可微调")}`}
                                   onPointerDown={(event) => handleElementPointerDown(element.key, event)}
@@ -5946,14 +5980,44 @@ export default function InkStudio() {
               <div className="run-status">
                 <span className={`run-icon ${deviceStatus}`}>{deviceStatus === "writing" ? "↻" : "⌁"}</span>
                 <div className="run-status-copy">
-                  <strong>
-                    {deviceStatus === "writing"
-                      ? activeDevice?.family === "esp32" ? tRuntime("正在保存设备任务") : progress?.message ?? tRuntime("正在写入")
-                      : scheduleActive
-                        ? activeDevice?.family === "esp32" ? tRuntime("设备端计划已就绪") : tRuntime("定时任务运行中")
-                        : deviceName ?? tRuntime("准备写入设备")}
-                  </strong>
-                  {nextRun ? (
+                  <div className="run-device-target">
+                    <span>{tRuntime("准备写入设备")}</span>
+                    {deviceSummaries.length ? (
+                      <select
+                        value={activeDevice?.id ?? ""}
+                        disabled={deviceStatus === "writing"}
+                        aria-label={tRuntime("准备写入设备")}
+                        onChange={(event) => {
+                          const profile = deviceProfilesRef.current.find((device) => device.id === event.target.value);
+                          if (!profile) return;
+                          activateDevice(profile);
+                          const target = profile.skuId === "m5-papercolor-c151"
+                            ? deviceAdapter(profile.skuId).renderTarget(screenOrientation(app.spec))
+                            : screenDimensions(app.spec);
+                          setDeviceStatus(profile.family === "esp32"
+                            ? profile.online ? "ready" : "idle"
+                            : deviceDriversRef.current.has(profile.id) ? "ready" : "idle");
+                          showToast(`${tRuntime("已切换写入设备")} · ${profile.name} · ${target.width} × ${target.height}`, "info");
+                        }}
+                      >
+                        {deviceSummaries.map((device) => {
+                          const sku = deviceSku(device.skuId);
+                          return (
+                            <option value={device.id} key={device.id}>
+                              {device.name} · {sku?.screen.width ?? "—"} × {sku?.screen.height ?? "—"}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    ) : (
+                      <button type="button" onClick={openAddDevice}>{tRuntime("选择或添加设备")}</button>
+                    )}
+                  </div>
+                  {deviceStatus === "writing" ? (
+                    <small>{activeDevice?.family === "esp32"
+                      ? tRuntime("正在保存设备任务")
+                      : progress?.message ?? tRuntime("正在写入")}</small>
+                  ) : nextRun ? (
                     <div className="next-run-summary">
                       <span>{t("下次执行")}</span>
                       <b>{formatExactTime(nextRun)}</b>
@@ -5962,7 +6026,7 @@ export default function InkStudio() {
                   ) : (
                     <small>{activeDevice?.family === "esp32"
                       ? activeDevice.online ? tRuntime("Wi‑Fi 在线 · 计划由设备端执行") : tRuntime("设备离线 · 任务会在开机后同步")
-                      : deviceName ? tRuntime("已授权设备不会再次弹出选择器") : tRuntime("首次需要手动选择设备 · 之后自动重连")}</small>
+                      : activeDevice ? tRuntime("已授权设备不会再次弹出选择器") : tRuntime("首次需要手动选择设备 · 之后自动重连")}</small>
                   )}
                 </div>
               </div>

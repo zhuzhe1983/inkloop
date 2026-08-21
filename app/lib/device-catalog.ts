@@ -196,3 +196,13 @@ export function officialProductUrl(sku: DeviceSku, locale: Locale) {
 export function deviceAdapter(id: string | null | undefined) {
   return id && id in DEVICE_ADAPTERS ? DEVICE_ADAPTERS[id as DeviceSkuId] : DEVICE_ADAPTERS["todoo-card-3.7"];
 }
+
+export function resolveDeviceTargetId(
+  devices: ReadonlyArray<{ id: string }>,
+  activeDeviceId: string | null | undefined,
+  storedDeviceId: string | null | undefined,
+) {
+  if (activeDeviceId && devices.some((device) => device.id === activeDeviceId)) return activeDeviceId;
+  if (storedDeviceId && devices.some((device) => device.id === storedDeviceId)) return storedDeviceId;
+  return devices[0]?.id ?? null;
+}
