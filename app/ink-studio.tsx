@@ -5170,7 +5170,7 @@ export default function InkStudio() {
                   </div>
                   {app.spec.kind === "card" ? (
                     <div className="card-orientation-note">
-                      <strong>{t("固定竖版 528×792")}</strong>
+                      <strong>{t("固定竖版")}</strong>
                       <small>{t("四种材质共用同一坐标网格，切换稀有度不会改变内容位置")}</small>
                     </div>
                   ) : <div className="orientation-field">
@@ -5180,8 +5180,8 @@ export default function InkStudio() {
                     </div>
                     <div className="orientation-options" role="group" aria-label={tRuntime("屏幕方向")}>
                       {([
-                        ["portrait", tRuntime("竖版 528×792")],
-                        ["landscape", tRuntime("横版 792×528")],
+                        ["portrait", tRuntime("竖版")],
+                        ["landscape", tRuntime("横版")],
                       ] as Array<[ScreenOrientation, string]>).map(([value, label]) => (
                         <button
                           type="button"

@@ -72,4 +72,5 @@ test("the studio has one write-target control while the sidebar only opens detai
   assert.doesNotMatch(deviceCenterHandler, /activateDevice|selectActiveDevice|setActiveDeviceId/);
   assert.match(studio, /className="run-device-target"[\s\S]*<select/);
   assert.match(studio, /查看设备详情，不切换写入设备/);
+  assert.doesNotMatch(studio, /tRuntime\("(?:竖版 528×792|横版 792×528)"\)/);
 });
