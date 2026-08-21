@@ -4,7 +4,7 @@ import {
   validatePaperColorFirmwareManifest,
 } from "./esp32-firmware-layout.js";
 import type { InkApp } from "./app-model";
-import type { DeviceSkuId } from "./device-catalog";
+import { DEVICE_SKUS, type DeviceSkuId } from "./device-catalog";
 import type { PaperColorRenderStrategy } from "./papercolor-render";
 
 const OWNER_KEY = "inkloop-device-owner-v1";
@@ -303,9 +303,11 @@ export async function flashM5PaperColor(
   // showing the device chooser.
   const port = await serial.requestPort({});
   onProgress({ phase: "downloading", percent: 4, message: t("正在准备瘦客户端固件…") });
+  const manifestPath = DEVICE_SKUS["m5-papercolor-c151"].provisioning.firmwareManifest;
+  if (!manifestPath) throw new Error(t("M5 PaperColor 固件尚未发布"));
   let manifestResponse: Response;
   try {
-    manifestResponse = await fetch("/firmware/m5-papercolor/manifest.json", { cache: "no-store" });
+    manifestResponse = await fetch(manifestPath, { cache: "no-store" });
   } catch {
     throw new Error(t("无法下载固件清单，请检查网络后重试"));
   }

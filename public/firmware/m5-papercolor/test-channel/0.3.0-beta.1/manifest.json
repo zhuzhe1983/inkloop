@@ -1,0 +1,51 @@
+{
+  "name": "Inkloop M5 PaperColor complete flash package",
+  "chipFamily": "ESP32-S3",
+  "version": "0.3.0-beta.1",
+  "baudRate": 460800,
+  "formatVersion": 2,
+  "completeFlash": true,
+  "flashSize": 16777216,
+  "partitionTable": "default_16MB.csv",
+  "serverSlot": {
+    "marker": "INKLOOP_API_URL_SLOT::",
+    "length": 192
+  },
+  "files": [
+    {
+      "role": "bootloader",
+      "path": "/firmware/m5-papercolor/test-channel/0.3.0-beta.1/bootloader.bin",
+      "offset": 0,
+      "size": 15104,
+      "sha256": "2a71d69b471e20c2bac7fb469f3c6a807b3ebee780e348e5889db0da849ca363"
+    },
+    {
+      "role": "partitions",
+      "path": "/firmware/m5-papercolor/test-channel/0.3.0-beta.1/partitions.bin",
+      "offset": 32768,
+      "size": 3072,
+      "sha256": "bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce"
+    },
+    {
+      "role": "boot_app0",
+      "path": "/firmware/m5-papercolor/test-channel/0.3.0-beta.1/boot_app0.bin",
+      "offset": 57344,
+      "size": 8192,
+      "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+    },
+    {
+      "role": "app",
+      "path": "/firmware/m5-papercolor/test-channel/0.3.0-beta.1/firmware.bin",
+      "offset": 65536,
+      "size": 3157808,
+      "sha256": "009a5ae49746535343ba8478a37b0217d0d9422b2d25848c10e687cf90420429"
+    },
+    {
+      "role": "littlefs",
+      "path": "/firmware/m5-papercolor/test-channel/0.3.0-beta.1/littlefs.bin",
+      "offset": 13172736,
+      "size": 3538944,
+      "sha256": "24d8863ba58675b6d82f13514d3ac475599ee18c7e503a61603e7b23a6540b70"
+    }
+  ]
+}

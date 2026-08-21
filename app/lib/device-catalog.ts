@@ -122,7 +122,7 @@ export const DEVICE_SKUS = {
     },
     provisioning: {
       method: "web-serial-flash-and-code",
-      firmwareManifest: "/firmware/m5-papercolor/manifest.json",
+      firmwareManifest: "/firmware/m5-papercolor/test-channel/0.3.0-beta.1/manifest.json",
     },
   },
 } as const satisfies Record<string, DeviceSku>;

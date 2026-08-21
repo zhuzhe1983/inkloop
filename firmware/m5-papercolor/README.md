@@ -69,12 +69,12 @@ pio run -d firmware/m5-papercolor
 ```
 
 The published stable `0.2.0` web-flash manifest remains the compatible four-image
-package under `public/firmware/m5-papercolor/`; it is not rewritten by development
-packaging. A future test-channel complete-flash package is produced locally with:
+rollback package under `public/firmware/m5-papercolor/`; it is not rewritten by
+development packaging. The current beta complete-flash package is produced with:
 
 ```sh
 node scripts/package-papercolor-test-channel.mjs \
-  --version 0.2.0-slice1r2-dev-c151
+  --version 0.3.0-beta.1
 ```
 
 The command writes only under the ignored `outputs/` tree by default. Its v2
@@ -113,7 +113,11 @@ Fresh test flashes default the MyAI integration on. An existing schema-v2 NVS re
 
 ## Integrated PaperColor runtime
 
-The development build identifies itself as `0.2.0-slice1r2-dev` over serial while retaining `0.2.0` on the existing Inkloop register/sync wire contract. The published `0.2.0` manifest and binaries remain unchanged.
+The beta build identifies itself as `0.3.0-beta.1` over serial while retaining
+`0.2.0` on the existing Inkloop register/sync wire contract. The published
+complete-flash manifest includes a validated empty LittleFS image but excludes
+the NVS partition, preserving Wi-Fi and bound device credentials during a
+normal web flash.
 
 - `DisplayRefreshRuntime` claims the physical writer capability after the boot/onboarding status screen. Inkloop tasks, page changes, and MyAI images then share one attested 400×600 PNG ingress. Official full-screen quality is the default; portal-selected deterministic six-color prequantization takes effect after reboot and uses the no-second-dither panel path.
 - `ButtonRouter` reports semantic `VOICE`, `PAGE_PREVIOUS`, and `PAGE_NEXT` events. A/B page the transactional cache and speak the ordinal only after the exact display journal commits. C starts/stops 16 kHz mono PCM capture or confirms a pending destructive voice tool.

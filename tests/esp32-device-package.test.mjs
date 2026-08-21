@@ -73,7 +73,7 @@ test("PaperColor 固件保留结构化串口诊断和硬件自检命令", async 
   assert.ok(commandEcho >= 0 && commandEcho < statusDispatch, "command echo must precede STATUS");
 });
 
-test("PaperColor Slice 1 保持 0.2 协议并建立单写屏边界", async () => {
+test("PaperColor beta 保持 0.2 协议并建立单写屏边界", async () => {
   const sourceRoot = new URL("../firmware/m5-papercolor/src/", import.meta.url);
   const sourceFiles = (await readdir(sourceRoot)).filter((name) => /\.(?:cpp|h)$/.test(name));
   const entries = await Promise.all(sourceFiles.map(async (name) => [name, await readFile(new URL(name, sourceRoot), "utf8")]));
@@ -87,7 +87,7 @@ test("PaperColor Slice 1 保持 0.2 协议并建立单写屏边界", async () =>
   assert.deepEqual(neoPixelOwners.map(([name]) => name).sort(), ["LedStatusController.h"]);
   assert.match(allSource, /pixels_\(2, 21, NEO_GRB \+ NEO_KHZ800\)/);
   assert.match(allSource, /kProtocolFirmwareVersion\[\] = "0\.2\.0"/);
-  assert.match(allSource, /kBuildVersion\[\] = "0\.2\.0-slice1(?:r[12])?-dev"/);
+  assert.match(allSource, /kBuildVersion\[\] = "0\.3\.0-beta\.1"/);
   assert.match(allSource, /preferences_\.begin\("inkloop", false\)/);
   assert.match(allSource, /kTasksPath\[\] = "\/tasks\.json"/);
   assert.match(allSource, /request\["action"\] = "register"/);

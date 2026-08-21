@@ -4,7 +4,7 @@
 
 namespace inkloop {
 
-static constexpr char kBuildVersion[] = "0.2.0-slice1r2-dev";
+static constexpr char kBuildVersion[] = "0.3.0-beta.1";
 static constexpr char kProtocolFirmwareVersion[] = "0.2.0";
 static constexpr char kSkuId[] = "m5-papercolor-c151";
 // Direct PlatformIO/test-channel flashes do not pass through the browser's

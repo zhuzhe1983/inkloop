@@ -22,6 +22,10 @@ const execFileAsync = promisify(execFile);
 const repositoryRoot = new URL("../", import.meta.url);
 const publicRoot = new URL("../public/", import.meta.url);
 const stableManifestUrl = new URL("firmware/m5-papercolor/manifest.json", publicRoot);
+const betaManifestUrl = new URL(
+  "firmware/m5-papercolor/test-channel/0.3.0-beta.1/manifest.json",
+  publicRoot,
+);
 const zeroHash = "0".repeat(64);
 
 function completeManifest() {
@@ -66,6 +70,24 @@ test("published 0.2 manifest remains a compatible four-segment legacy package", 
     (await readFile(new URL(file.path.replace(/^\//, ""), publicRoot))).length,
   ));
   assert.doesNotThrow(() => validatePaperColorFirmwareFiles(manifest, actualSizes));
+});
+
+test("published beta is a complete five-segment package and excludes NVS", async () => {
+  const manifest = JSON.parse(await readFile(betaManifestUrl, "utf8"));
+  assert.equal(manifest.version, "0.3.0-beta.1");
+  assert.equal(validatePaperColorFirmwareManifest(manifest).completeFlash, true);
+  assert.equal(manifest.files.length, 5);
+  assert.equal(manifest.files.some((file) => file.role === "nvs"), false);
+  const actualSizes = [];
+  for (const file of manifest.files) {
+    const bytes = await readFile(new URL(file.path.replace(/^\//, ""), publicRoot));
+    actualSizes.push(bytes.length);
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), file.sha256, file.role);
+  }
+  assert.doesNotThrow(() => validatePaperColorFirmwareFiles(manifest, actualSizes));
+
+  const catalog = await readFile(new URL("../app/lib/device-catalog.ts", import.meta.url), "utf8");
+  assert.match(catalog, /firmwareManifest: "\/firmware\/m5-papercolor\/test-channel\/0\.3\.0-beta\.1\/manifest\.json"/);
 });
 
 test("complete-flash v2 requires the exact five hashed and sized segments", () => {
