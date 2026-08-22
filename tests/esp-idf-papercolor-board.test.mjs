@@ -106,6 +106,8 @@ test("PaperColor adapter owns exact PM1, shared SPI2, buttons and RGB hardware",
   assert.match(source, /kExpectedPm1DeviceModel = 0x20/);
   assert.match(source, /setLdoEnable\(true\)/);
   assert.match(source, /initializeI2cAndPm1\(\);[\s\S]*initializeRgb\(\)/);
+  assert.match(source, /trans_queue_depth = 0/);
+  assert.doesNotMatch(source, /trans_queue_depth = [1-9]/);
   assert.match(source, /count != kRgbCount/);
   assert.match(source, /LED_STRIP_COLOR_COMPONENT_FMT_GRB/);
   assert.match(source, /gpio_get_level\(pin\) == 0/);

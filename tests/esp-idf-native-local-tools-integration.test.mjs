@@ -36,7 +36,7 @@ test("final ASR interception only parses and queues bounded Portal work", () => 
   assert.match(inspect, /queueLocalTool\(transcript, parsed\.command\.kind\)/);
   assert.doesNotMatch(
     inspect,
-    /handleFinalAsr|queryStorage|deleteImage|clearAlbum|formatTfCard|statvfs|open\(/,
+    /handleFinalAsr|queryStorage|deleteImage|clearAlbum|formatTfCard|queryCapacity|open\(/,
   );
 
   const queued = section(

@@ -93,6 +93,27 @@ test("MyAI pairing and rebind remain Network-owned and never synthesize a public
   assert.doesNotMatch(publish, /esp_random|pairingToken|deviceToken/);
 });
 
+test("Portal distinguishes a token from live MyAI authorization and reports real SemVer", () => {
+  assert.match(voiceHeader, /bool authorization_verified = false/);
+  const network = body(
+    voice,
+    "void NativeVoiceService::networkTick",
+    "myai::Status NativeVoiceService::startPairingNow",
+  );
+  assert.match(network, /checkAuthorization\(authorized\)/);
+  assert.match(network, /authorization_verified_ = checked\.ok\(\) && authorized/);
+  assert.match(network, /publishOnboarding\(nullptr\)/);
+  const publish = body(
+    voice,
+    "void NativeVoiceService::publishOnboarding",
+    "void NativeVoiceService::handoffAigcIfReady",
+  );
+  assert.match(publish, /next\.authorization_verified = authorization_verified_/);
+  assert.match(portal, /authorization_verified \? portal::MyAiPortalState::Active/);
+  assert.match(portal, /esp_app_get_description\(\)/);
+  assert.doesNotMatch(portal, /idf-native/);
+});
+
 test("manual image generation uses the real AIGC album/display path and saved policies", () => {
   assert.match(opcodes, /NetworkQueueAigc = 205/);
   const enqueue = body(voice, "AdmissionResult NativeVoiceService::enqueueImageGeneration", "AdmissionResult NativeVoiceService::enqueueClearLocalChat");
@@ -169,7 +190,8 @@ test("Voice maintenance drains owners and format confirmation cannot self-deadlo
 test("storage availability and secrets fail closed", () => {
   const state = body(portal, "void NativePortalOwner::refreshState", "void NativePortalOwner::refreshAlbum");
   assert.match(state, /next\.storage_ready = false/);
-  assert.match(state, /::statvfs[\s\S]*next\.storage_ready = true/);
+  assert.match(state, /album_store_->queryCapacity[\s\S]*next\.storage_ready = true/);
+  assert.doesNotMatch(state, /statvfs/);
   assert.match(state, /else \{[\s\S]*next\.storage_ready = false/);
   const unavailable = body(voice, "bool NativeVoiceService::finishStorageMaintenance", "void NativeVoiceService::endStorageMaintenance");
   assert.match(unavailable, /if \(!storage_available\)/);

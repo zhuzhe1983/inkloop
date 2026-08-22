@@ -200,7 +200,11 @@ class PaperColorBoardAdapter final : public IBoardAdapter {
     bus.scl_io_num = kInternalI2cScl;
     bus.clk_source = I2C_CLK_SRC_DEFAULT;
     bus.glitch_ignore_cnt = 7;
-    bus.trans_queue_depth = 8;
+    // M5PM1 performs blocking register transactions and keeps transfer
+    // buffers on its call stack. A non-zero trans_queue_depth switches the
+    // IDF master bus into asynchronous mode, which returned before those
+    // buffers were consumed and produced random identity bytes/corruption.
+    bus.trans_queue_depth = 0;
     bus.flags.enable_internal_pullup = true;
     esp_err_t status = i2c_new_master_bus(&bus, &i2c_bus_);
     if (status != ESP_OK) return status;

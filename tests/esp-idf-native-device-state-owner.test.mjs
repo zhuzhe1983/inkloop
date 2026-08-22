@@ -95,3 +95,9 @@ test("storage mutations fail closed before initialization and TF format has no i
     /storage_\.formatSdCardConfirmed|AssetStoragePreference|Internal|LittleFS|littlefs|internal_base_path/,
   );
 });
+
+test("local storage query uses the selected filesystem capacity adapter", () => {
+  assert.doesNotMatch(source, /statvfs/);
+  assert.match(source, /selectedAlbum\(\)/);
+  assert.match(source, /queryCapacity\(output\.total_bytes, output\.remaining_bytes\)/);
+});

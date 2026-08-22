@@ -1,8 +1,5 @@
 #include "inkloop/native_device_state_owner.hpp"
 
-#include <limits>
-#include <sys/statvfs.h>
-
 #include "inkloop/board_prompt_policy.hpp"
 
 namespace inkloop {
@@ -12,22 +9,11 @@ local_tools::AdapterResult local(local_tools::AdapterCode code) {
   return {code};
 }
 
-bool capacity(const char* root, local_tools::StorageInfo& output) {
+bool capacity(storage::PosixAtomicAlbumStore* album,
+              local_tools::StorageInfo& output) {
   output = local_tools::StorageInfo{};
-  struct statvfs value {};
-  if (!root || ::statvfs(root, &value) != 0 || value.f_frsize == 0U ||
-      value.f_blocks >
-          std::numeric_limits<uint64_t>::max() / value.f_frsize ||
-      value.f_bavail >
-          std::numeric_limits<uint64_t>::max() / value.f_frsize) {
-    return false;
-  }
-  output.total_bytes =
-      static_cast<uint64_t>(value.f_blocks) * value.f_frsize;
-  output.remaining_bytes =
-      static_cast<uint64_t>(value.f_bavail) * value.f_frsize;
-  return output.total_bytes > 0U &&
-      output.remaining_bytes <= output.total_bytes;
+  return album &&
+      album->queryCapacity(output.total_bytes, output.remaining_bytes);
 }
 
 }  // namespace
@@ -290,7 +276,7 @@ local_tools::AdapterResult NativeDeviceStateOwner::queryStorage(
     local_tools::StorageInfo& output) {
   output = local_tools::StorageInfo{};
   if (!initialized_) return local(local_tools::AdapterCode::NotReady);
-  return capacity(selectedRoot(), output)
+  return capacity(selectedAlbum(), output)
       ? local(local_tools::AdapterCode::Ok)
       : local(local_tools::AdapterCode::NotReady);
 }

@@ -37,6 +37,11 @@ uint32_t nowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
 }
 
+void logMainStackWatermark(const char* stage) {
+  ESP_LOGI(kTag, "BOOT_STACK:%s free_min_bytes=%u", stage,
+           static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+}
+
 bool priorResetWasFatal() {
   switch (esp_reset_reason()) {
     case ESP_RST_PANIC:
@@ -572,9 +577,11 @@ extern "C" void app_main(void) {
   ESP_LOGI(kTag, "OTA outcome boot=%s kind=%s",
            inkloop::otaOutcomeJournalCodeName(outcome_boot),
            inkloop::otaOutcomeKindName(ota_outcomes.snapshot().kind));
+  logMainStackWatermark("before_product_construct");
 
   static inkloop::EspProductRuntime runtime(
       board_adapter, storage, device_state.effectiveAssetPreference());
+  logMainStackWatermark("after_product_construct");
   static inkloop::OtaUpdateOwner& ota_update = inkloop::systemOtaUpdateOwner();
   static PortalOtaUpdateBridge ota_portal_bridge(
       ota_update, ota_update_allowed, ota_outcomes);
@@ -625,6 +632,7 @@ extern "C" void app_main(void) {
         recoveryRecordCounts(storage)),
         operational_settings.values.local_management_password_override);
   }
+  logMainStackWatermark("after_product_begin");
   ota_stage.runtime_observed = true;
   ota_stage.runtime_healthy = true;
 

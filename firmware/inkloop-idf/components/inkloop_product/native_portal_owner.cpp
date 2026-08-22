@@ -8,9 +8,9 @@
 #include <limits>
 #include <new>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 
 #include "esp_heap_caps.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -22,7 +22,6 @@ namespace inkloop {
 namespace {
 
 constexpr char kTag[] = "ink-portal-own";
-constexpr char kFirmwareVersion[] = "idf-native";
 constexpr uint32_t kRecentPortalWindowMs = 30000U;
 constexpr uint32_t kStateRefreshMs = 1000U;
 constexpr uint32_t kAlbumRefreshMs = 1000U;
@@ -145,16 +144,15 @@ bool NativePortalOwner::parseCursor(const std::string& cursor,
 }
 
 portal::MyAiPortalState NativePortalOwner::portalMyAiState(
-    myai::ActivationState state) {
+    myai::ActivationState state, bool authorization_verified) {
   switch (state) {
     case myai::ActivationState::Unconfigured:
       return portal::MyAiPortalState::Unconfigured;
     case myai::ActivationState::Pairing:
       return portal::MyAiPortalState::Pairing;
     case myai::ActivationState::Bound:
-      // Bound only proves that a device token exists. Authorization is a
-      // separate server check, so never claim the stronger Active state here.
-      return portal::MyAiPortalState::Bound;
+      return authorization_verified ? portal::MyAiPortalState::Active
+                                    : portal::MyAiPortalState::Bound;
     case myai::ActivationState::PaymentRequired:
     case myai::ActivationState::RecoveryRequired:
       return portal::MyAiPortalState::RecoveryRequired;
@@ -330,7 +328,9 @@ esp_err_t NativePortalOwner::initialize() {
       !upload_queue_ || !upload_pool_) {
     return ESP_ERR_NO_MEM;
   }
-  state_cache_.firmware_version = kFirmwareVersion;
+  const esp_app_desc_t* app = esp_app_get_description();
+  state_cache_.firmware_version =
+      app && app->version[0] != '\0' ? app->version : "invalid";
   const BoardDescriptor& board_descriptor = board_.descriptor();
   const char* board_id = board_descriptor.id && board_descriptor.id[0] != '\0'
                              ? board_descriptor.id
@@ -1146,21 +1146,16 @@ void NativePortalOwner::refreshState() {
     }
   }
   next.storage_ready = false;
-  struct statvfs capacity {};
   portENTER_CRITICAL(&activity_mux_);
   const bool storage_admitted = storage_available_;
   portEXIT_CRITICAL(&activity_mux_);
+  uint64_t storage_total = 0;
+  uint64_t storage_free = 0;
   if (storage_admitted && album_store_ && storage_root_ &&
-      ::statvfs(storage_root_, &capacity) == 0 && capacity.f_frsize != 0U &&
-      capacity.f_blocks <=
-          std::numeric_limits<uint64_t>::max() / capacity.f_frsize &&
-      capacity.f_bavail <=
-          std::numeric_limits<uint64_t>::max() / capacity.f_frsize) {
+      album_store_->queryCapacity(storage_total, storage_free)) {
     next.storage_ready = true;
-    next.storage_total_bytes =
-        static_cast<uint64_t>(capacity.f_blocks) * capacity.f_frsize;
-    next.storage_free_bytes =
-        static_cast<uint64_t>(capacity.f_bavail) * capacity.f_frsize;
+    next.storage_total_bytes = storage_total;
+    next.storage_free_bytes = storage_free;
   } else {
     next.storage_ready = false;
     next.storage_free_bytes = 0;
@@ -1175,7 +1170,8 @@ void NativePortalOwner::refreshState() {
   next.display_panel_refresh_ms =
       display_diagnostics.last_panel_refresh_ms;
   next.display_total_ms = display_diagnostics.last_album_total_ms;
-  next.myai_state = portalMyAiState(onboarding.activation_state);
+  next.myai_state = portalMyAiState(onboarding.activation_state,
+                                    onboarding.authorization_verified);
   next.pairing_code = onboarding.device_code.data();
   next.binding_url = onboarding.pairing_view_available
                          ? onboarding.binding_url.data() : std::string();

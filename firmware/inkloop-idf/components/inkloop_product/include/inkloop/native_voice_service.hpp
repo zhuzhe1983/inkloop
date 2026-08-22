@@ -83,6 +83,10 @@ struct NativeMyAiOnboardingSnapshot {
   myai::ActivationState activation_state =
       myai::ActivationState::Unconfigured;
   bool pairing_view_available = false;
+  // A persisted device token only establishes Bound.  This bit is published
+  // after a successful /devices/check and lets the local Portal distinguish
+  // an actually authorized device without exposing any credential material.
+  bool authorization_verified = false;
 };
 
 // Cross-core MyAI voice composition. All HTTP/WSS/client methods run on the
@@ -136,6 +140,10 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   void networkTick(bool wifi_online);
   void portalTick(bool album_mutation_allowed = true);
   bool portalBusy() const;
+  // Presentation state is not an execution lock. This reports only a
+  // button-initiated MyAI turn or local/capture/playback audio so power
+  // admission cannot be held awake by proactive gateway reconnect LEDs.
+  bool interactiveAudioBusy() const;
   // Called from the Portal coordinator before an explicitly confirmed TF
   // maintenance operation. A successful begin blocks new AIGC/chat/audio
   // admissions and proves all already-admitted Voice storage work drained.
@@ -207,6 +215,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool beginTrackedStorageWork();
   void finishTrackedStorageWork();
   bool maintenanceBlocksInteractiveWork() const;
+  bool voiceTurnActive() const;
   void noteVoiceTurnActive(bool active);
   void noteLocalAudioActive(bool active);
   uint64_t nextRequestId();

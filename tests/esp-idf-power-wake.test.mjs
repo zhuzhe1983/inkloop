@@ -389,6 +389,17 @@ test("native wake composition is capability-injected and preserves the panel", (
     join(firmware, "components/inkloop_product/native_power_owner.cpp"),
     "utf8",
   );
+  const nativeVoice = readFileSync(
+    join(firmware, "components/inkloop_product/native_voice_service.cpp"),
+    "utf8",
+  );
+  const nativeVoiceHeader = readFileSync(
+    join(
+      firmware,
+      "components/inkloop_product/include/inkloop/native_voice_service.hpp",
+    ),
+    "utf8",
+  );
   const nativeInkloop = readFileSync(
     join(firmware, "components/inkloop_product/native_inkloop_service.cpp"),
     "utf8",
@@ -437,5 +448,27 @@ test("native wake composition is capability-injected and preserves the panel", (
   assert.match(
     productRuntime,
     /inkloop_\.portalTick\(wifi_\.online\(\),[\s\S]{0,220}!power_\.deferBackgroundPanel\(now\), onboarding\)/,
+  );
+
+  // Power admission follows actual work, never a presentation color. An idle
+  // proactive MyAI connection preserves the false interaction authority,
+  // while a button-raised turn remains active through Connecting.
+  assert.match(nativeVoiceHeader, /bool interactiveAudioBusy\(\) const/);
+  assert.match(
+    nativePower,
+    /PowerBlocker::VoiceSession, voice_busy, now_ms/,
+  );
+  assert.match(
+    nativePower,
+    /quiesceVoiceAndAudio\(\)[\s\S]{0,180}!voice_\.interactiveAudioBusy\(\)/,
+  );
+  assert.doesNotMatch(nativePower, /voiceActive\(led\.voiceMode\(\)\)/);
+  assert.match(
+    nativeVoice,
+    /if \(state != myai::VoiceState::Connecting\)[\s\S]{0,260}noteVoiceTurnActive/,
+  );
+  assert.match(
+    nativeVoice,
+    /case myai::VoiceState::Connecting:[\s\S]{0,420}voiceTurnActive\(\)[\s\S]{0,100}VoiceLedMode::Blocked/,
   );
 });

@@ -231,6 +231,13 @@ void NativeVoiceService::noteVoiceTurnActive(bool active) {
   portEXIT_CRITICAL(&maintenance_mux_);
 }
 
+bool NativeVoiceService::voiceTurnActive() const {
+  portENTER_CRITICAL(&maintenance_mux_);
+  const bool active = voice_turn_active_;
+  portEXIT_CRITICAL(&maintenance_mux_);
+  return active;
+}
+
 void NativeVoiceService::noteLocalAudioActive(bool active) {
   portENTER_CRITICAL(&maintenance_mux_);
   local_audio_active_ = active;
@@ -1085,8 +1092,15 @@ void NativeVoiceService::reconcileVoiceState(myai::VoiceState state) {
       postVoiceLed(VoiceLedMode::Listening);
       break;
     case myai::VoiceState::Thinking:
-    case myai::VoiceState::Connecting:
       postVoiceLed(VoiceLedMode::Thinking);
+      break;
+    case myai::VoiceState::Connecting:
+      // The client also reconnects proactively while idle. Only a connection
+      // made on behalf of a button-initiated turn is an interactive Thinking
+      // state; an unavailable background gateway is visibly blocked and must
+      // not keep the device awake.
+      postVoiceLed(voiceTurnActive() ? VoiceLedMode::Thinking
+                                     : VoiceLedMode::Blocked);
       break;
     case myai::VoiceState::Speaking:
       postVoiceLed(VoiceLedMode::Speaking);
@@ -1420,6 +1434,7 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     const myai::Status checked = client_->checkAuthorization(authorized);
     authorization_verified_ = checked.ok() && authorized;
     next_authorization_check_ms_ = now + kAuthorizationRefreshMs;
+    publishOnboarding(nullptr);
     if (!authorization_verified_) return;
   }
 
@@ -1581,6 +1596,7 @@ void NativeVoiceService::publishOnboarding(
     const myai::PairingView* pairing) {
   NativeMyAiOnboardingSnapshot next;
   next.activation_state = activation_state_;
+  next.authorization_verified = authorization_verified_;
   const std::string device_id = client_ ? client_->authoritativeDeviceId()
                                          : std::string();
   if (sixDigits(device_id)) copyBounded(device_id, next.device_code);
@@ -1658,6 +1674,15 @@ bool NativeVoiceService::portalBusy() const {
   const bool busy = aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
   portEXIT_CRITICAL(&aigc_mux_);
   return busy || storageMaintenanceActive();
+}
+
+bool NativeVoiceService::interactiveAudioBusy() const {
+  portENTER_CRITICAL(&maintenance_mux_);
+  const bool tracked_busy = voice_turn_active_ || local_audio_active_;
+  portEXIT_CRITICAL(&maintenance_mux_);
+  return tracked_busy ||
+         (audio_bridge_ &&
+          (audio_bridge_->captureBusy() || audio_bridge_->playbackBusy()));
 }
 
 void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
@@ -2241,10 +2266,16 @@ void NativeVoiceService::onPairingReady(const myai::PairingView& pairing) {
 
 void NativeVoiceService::onVoiceState(myai::VoiceState state) {
   network_voice_state_ = state;
-  noteVoiceTurnActive(state == myai::VoiceState::Connecting ||
-                      state == myai::VoiceState::Listening ||
-                      state == myai::VoiceState::Thinking ||
-                      state == myai::VoiceState::Speaking);
+  // Connecting is used both for a real button-initiated turn and for the
+  // client's idle gateway preconnection/retry loop. Preserve the existing
+  // turn authority through Connecting: handleTopButton() has already raised
+  // it for a real turn, while a proactive reconnect begins false. Terminal
+  // and active protocol states remain authoritative.
+  if (state != myai::VoiceState::Connecting) {
+    noteVoiceTurnActive(state == myai::VoiceState::Listening ||
+                        state == myai::VoiceState::Thinking ||
+                        state == myai::VoiceState::Speaking);
+  }
   postVoiceState(state);
   if (state == myai::VoiceState::Error && client_) {
     scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());

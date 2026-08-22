@@ -147,6 +147,18 @@ def _verify_generated_sdkconfig(
     names = OTA_DEFAULT_KEYS + (
         "CONFIG_IDF_TARGET",
         "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE",
+        "CONFIG_SPIRAM",
+        "CONFIG_SPIRAM_MODE_OCT",
+        "CONFIG_SPIRAM_TYPE_AUTO",
+        "CONFIG_SPIRAM_SPEED_80M",
+        "CONFIG_SPIRAM_BOOT_INIT",
+        "CONFIG_SPIRAM_USE_MALLOC",
+        "CONFIG_SPIRAM_MEMTEST",
+        "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL",
+        "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL",
+        "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC",
+        "CONFIG_LITTLEFS_MULTIVERSION",
+        "CONFIG_LITTLEFS_DISK_VERSION_2_0",
     )
     assignments = _parse_exact_assignments(data, names)
     expected = {
@@ -155,8 +167,21 @@ def _verify_generated_sdkconfig(
         OTA_DEADLINE_KEY: str(deadline_ms),
         "CONFIG_IDF_TARGET": _quoted(IDF_TARGET),
         "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE": "y",
+        "CONFIG_SPIRAM": "y",
+        "CONFIG_SPIRAM_MODE_OCT": "y",
+        "CONFIG_SPIRAM_TYPE_AUTO": "y",
+        "CONFIG_SPIRAM_SPEED_80M": "y",
+        "CONFIG_SPIRAM_BOOT_INIT": "y",
+        "CONFIG_SPIRAM_USE_MALLOC": "y",
+        "CONFIG_SPIRAM_MEMTEST": "y",
+        "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL": "4096",
+        "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL": "32768",
+        "CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC": "y",
+        "CONFIG_LITTLEFS_MULTIVERSION": "y",
+        "CONFIG_LITTLEFS_DISK_VERSION_2_0": "y",
     }
-    if assignments != expected:
+    if (assignments != expected or b"CONFIG_SPIRAM_MODE_QUAD=y" in data or
+            b"CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y" in data):
         raise ReleaseBuildError("generated_sdkconfig_mismatch")
     return data, metadata
 
@@ -392,6 +417,13 @@ def build_release(arguments: argparse.Namespace) -> dict[str, object]:
     base_defaults, base_metadata = _snapshot(
         project_directory / "sdkconfig.defaults", "base_defaults", 64 * 1024
     )
+    board_defaults_path = (
+        project_directory / "boards" / BOARD_SKU.replace("-", "_")
+        / "sdkconfig.defaults"
+    )
+    board_defaults, board_metadata = _snapshot(
+        board_defaults_path, "board_defaults", 64 * 1024
+    )
     if any(key.encode("ascii") in base_defaults for key in OTA_DEFAULT_KEYS):
         raise ReleaseBuildError("development_defaults_enable_ota")
 
@@ -416,7 +448,9 @@ def build_release(arguments: argparse.Namespace) -> dict[str, object]:
         ) as temporary_name:
             merged_defaults = Path(temporary_name) / "sdkconfig.release.defaults"
             merged_defaults.write_bytes(
-                base_defaults.rstrip(b"\n") + b"\n" + public_defaults.rstrip(b"\n") + b"\n"
+                base_defaults.rstrip(b"\n") + b"\n"
+                + board_defaults.rstrip(b"\n") + b"\n"
+                + public_defaults.rstrip(b"\n") + b"\n"
             )
             _run_clean_idf_build(
                 idf_directory,
@@ -427,6 +461,7 @@ def build_release(arguments: argparse.Namespace) -> dict[str, object]:
 
         _unchanged(defaults_path, defaults_metadata, "public_defaults")
         _unchanged(project_directory / "sdkconfig.defaults", base_metadata, "base_defaults")
+        _unchanged(board_defaults_path, board_metadata, "board_defaults")
         _unchanged(project_directory / "version.txt", version_metadata, "version_file")
         _unchanged(
             project_directory / ".idf-version",

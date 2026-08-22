@@ -37,6 +37,7 @@ idf_component_register(
     inkloop_storage
     inkloop_voice
     esp_hw_support
+    esp_app_format
     esp_driver_gpio
     esp_timer
     espressif__mdns

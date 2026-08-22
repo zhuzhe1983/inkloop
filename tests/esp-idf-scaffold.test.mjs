@@ -28,13 +28,31 @@ test("ESP-IDF scaffold keeps responsive priorities above status/background work"
 
 test("ESP-IDF scaffold is board-selectable and contains no Arduino adapter", async () => {
   const cmake = await read("CMakeLists.txt");
+  const sharedDefaults = await read("sdkconfig.defaults");
+  const c151Defaults = await read("boards/m5_papercolor_c151/sdkconfig.defaults");
+  const mockDefaults = await read("boards/mock_minimal/sdkconfig.defaults");
   const main = await read("main/app_main.cpp");
   const board = await read("boards/m5_papercolor_c151/board.cpp");
   const handoff = await read("docs/ARDUINO_TO_ESP_IDF_HANDOFF.md");
   assert.match(cmake, /INKLOOP_BOARD "m5_papercolor_c151"/);
   assert.match(cmake, /boards\/\$\{INKLOOP_BOARD\}/);
   assert.match(cmake, /INKLOOP_BOARD_COMPONENT/);
+  assert.match(cmake, /boards\/\$\{INKLOOP_BOARD\}\/sdkconfig\.defaults/);
+  assert.doesNotMatch(sharedDefaults, /CONFIG_SPIRAM/);
+  assert.match(c151Defaults, /^CONFIG_SPIRAM_MODE_OCT=y$/m);
+  assert.match(c151Defaults, /^CONFIG_SPIRAM_SPEED_80M=y$/m);
+  assert.match(c151Defaults, /^CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096$/m);
+  assert.match(c151Defaults, /^CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y$/m);
+  assert.match(c151Defaults, /^# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set$/m);
+  assert.doesNotMatch(c151Defaults, /CONFIG_SPIRAM_MODE_QUAD=y/);
+  assert.match(mockDefaults, /^# CONFIG_SPIRAM is not set$/m);
+  assert.match(cmake, /C151 requires 8 MiB Octal PSRAM at 80 MHz/);
+  assert.match(cmake, /mock_minimal must not inherit PSRAM/);
+  assert.match(sharedDefaults, /^CONFIG_LITTLEFS_MULTIVERSION=y$/m);
+  assert.match(sharedDefaults, /^CONFIG_LITTLEFS_DISK_VERSION_2_0=y$/m);
+  assert.match(sharedDefaults, /^CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480$/m);
   assert.match(main, /board_initialize\(\)/);
+  assert.match(main, /BOOT_STACK:%s free_min_bytes=%u/);
   assert.match(main, /if \(board\.has_sd\)[\s\S]*prepareSdCard\(\)/);
   assert.match(board, /class PaperColorBoardAdapter final : public IBoardAdapter/);
   assert.match(board, /IBoardAdapter& board_adapter\(\)/);

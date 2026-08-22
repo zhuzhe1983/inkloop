@@ -24,11 +24,6 @@ SleepPolicy configuredSleepPolicy() {
   return SleepPolicy(config);
 }
 
-bool voiceActive(VoiceLedMode mode) {
-  return mode == VoiceLedMode::Listening || mode == VoiceLedMode::Thinking ||
-         mode == VoiceLedMode::Speaking;
-}
-
 }  // namespace
 
 NativePowerOwner::NativePowerOwner(
@@ -113,14 +108,14 @@ void NativePowerOwner::refreshBlockers(uint32_t now_ms) {
   const StatusLedCore led = leds_.snapshot();
   const ImageLedMode image = led.imageMode();
   const NativeMyAiOnboardingSnapshot onboarding = voice_.onboardingSnapshot();
+  const bool voice_busy = voice_.interactiveAudioBusy();
   const uint32_t portal_access = portal_.lastAccessMs();
   const bool portal_recent = portal_access != 0U &&
       static_cast<uint32_t>(now_ms - portal_access) <
           kPortalActivityWindowMs;
   portENTER_CRITICAL(&mux_);
   activity_.setBlocker(PowerBlocker::DisplayRefresh, display_.busy(), now_ms);
-  activity_.setBlocker(PowerBlocker::VoiceSession,
-                       voiceActive(led.voiceMode()), now_ms);
+  activity_.setBlocker(PowerBlocker::VoiceSession, voice_busy, now_ms);
   activity_.setBlocker(PowerBlocker::AigcGeneration,
                        image == ImageLedMode::Generating, now_ms);
   activity_.setBlocker(PowerBlocker::AssetDownload,
@@ -224,7 +219,7 @@ bool NativePowerOwner::quiesceDisplay() {
 
 bool NativePowerOwner::quiesceVoiceAndAudio() {
   const StatusLedCore led = leds_.snapshot();
-  return !voice_.portalBusy() && !voiceActive(led.voiceMode()) &&
+  return !voice_.portalBusy() && !voice_.interactiveAudioBusy() &&
          led.imageMode() != ImageLedMode::Generating &&
          led.imageMode() != ImageLedMode::Downloading &&
          led.imageMode() != ImageLedMode::Converting &&

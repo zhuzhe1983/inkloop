@@ -1,10 +1,6 @@
 #include "inkloop/storage/esp_storage_mount.hpp"
 
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-
 #include <cstring>
-#include <limits>
 
 #include "driver/sdspi_host.h"
 #include "driver/spi_master.h"
@@ -26,18 +22,14 @@ bool validAbsoluteRoot(const char* value) {
   return value[length - 1U] != '/';
 }
 
-bool checkedCapacity(const struct statvfs& capacity, uint64_t& total,
-                     uint64_t& free) {
-  if (capacity.f_frsize == 0 ||
-      capacity.f_blocks >
-          std::numeric_limits<uint64_t>::max() / capacity.f_frsize ||
-      capacity.f_bavail >
-          std::numeric_limits<uint64_t>::max() / capacity.f_frsize) {
-    return false;
-  }
-  total = static_cast<uint64_t>(capacity.f_blocks) * capacity.f_frsize;
-  free = static_cast<uint64_t>(capacity.f_bavail) * capacity.f_frsize;
-  return total > 0 && free <= total;
+bool applyCapacity(uint64_t total, uint64_t free,
+                   MountedBackendStatus& status) {
+  if (total == 0 || free > total) return false;
+  status.total_bytes = total;
+  status.free_bytes = free;
+  status.writable = true;
+  status.state = MountState::Mounted;
+  return true;
 }
 
 }  // namespace
@@ -45,8 +37,13 @@ bool checkedCapacity(const struct statvfs& capacity, uint64_t& total,
 EspStorageMountOwner::EspStorageMountOwner(StorageMountConfig config)
     : config_(config),
       internal_album_(config.internal_base_path ? config.internal_base_path : "",
-                      false),
-      sd_album_(config.sd_base_path ? config.sd_base_path : "", true) {
+                      false, AlbumCapacityBackend::EspLittleFs,
+                      config.internal_partition_label
+                          ? config.internal_partition_label
+                          : ""),
+      sd_album_(config.sd_base_path ? config.sd_base_path : "", true,
+                AlbumCapacityBackend::EspFatFs,
+                config.sd_base_path ? config.sd_base_path : "") {
   snapshot_.internal.removable = false;
   snapshot_.sd.removable = true;
   if (!validConfig()) {
@@ -84,24 +81,6 @@ void EspStorageMountOwner::resetSd(MountState state) {
   snapshot_.sd.removable = true;
 }
 
-bool EspStorageMountOwner::updateCapacity(
-    const char* root, MountedBackendStatus& status) const {
-  struct stat root_status {};
-  struct statvfs capacity {};
-  uint64_t total = 0;
-  uint64_t free = 0;
-  if (::stat(root, &root_status) != 0 || !S_ISDIR(root_status.st_mode) ||
-      ::statvfs(root, &capacity) != 0 ||
-      !checkedCapacity(capacity, total, free)) {
-    return false;
-  }
-  status.total_bytes = total;
-  status.free_bytes = free;
-  status.writable = true;
-  status.state = MountState::Mounted;
-  return true;
-}
-
 esp_err_t EspStorageMountOwner::mountInternal() {
   if (internal_registered_) return ESP_ERR_INVALID_STATE;
   if (!validConfig() || !internal_album_.pathsValid()) {
@@ -136,8 +115,8 @@ esp_err_t EspStorageMountOwner::mountInternal() {
   size_t used = 0;
   if (esp_littlefs_info(config_.internal_partition_label, &total, &used) !=
           ESP_OK ||
-      used > total || !updateCapacity(config_.internal_base_path,
-                                      snapshot_.internal)) {
+      used > total ||
+      !applyCapacity(total, total - used, snapshot_.internal)) {
     unmountInternal();
     resetInternal(MountState::RecoveryRequired);
     return ESP_FAIL;
@@ -217,7 +196,10 @@ esp_err_t EspStorageMountOwner::mountSd(bool power_ready,
     return result;
   }
   sd_registered_ = true;
-  if (!updateCapacity(config_.sd_base_path, snapshot_.sd)) {
+  uint64_t total = 0;
+  uint64_t free = 0;
+  if (esp_vfs_fat_info(config_.sd_base_path, &total, &free) != ESP_OK ||
+      !applyCapacity(total, free, snapshot_.sd)) {
     unmountSd();
     resetSd(MountState::RecoveryRequired);
     return ESP_FAIL;
@@ -241,7 +223,10 @@ esp_err_t EspStorageMountOwner::formatSdCardConfirmed() {
     resetSd(MountState::RecoveryRequired);
     return formatted;
   }
-  if (!updateCapacity(config_.sd_base_path, snapshot_.sd)) {
+  uint64_t total = 0;
+  uint64_t free = 0;
+  if (esp_vfs_fat_info(config_.sd_base_path, &total, &free) != ESP_OK ||
+      !applyCapacity(total, free, snapshot_.sd)) {
     // IDF's formatter unmounts internally and, if mounting the new FAT volume
     // fails, releases the card/driver before returning. Some IDF releases can
     // still return ESP_OK from that remount-failure path. Do not retain or

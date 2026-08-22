@@ -11,6 +11,12 @@
 namespace inkloop {
 namespace storage {
 
+enum class AlbumCapacityBackend : uint8_t {
+  PosixVfs,
+  EspLittleFs,
+  EspFatFs,
+};
+
 struct AlbumTaskBinding {
   std::string task_id;
   // Expected physical frame SHA from the authoritative task revision. The
@@ -34,7 +40,10 @@ enum class AlbumMutationCode : uint8_t {
 // has been mounted. It never mounts, formats, erases or selects a filesystem.
 class PosixAtomicAlbumStore final : public IAlbumStagingStore {
  public:
-  PosixAtomicAlbumStore(std::string mount_root, bool removable);
+  PosixAtomicAlbumStore(
+      std::string mount_root, bool removable,
+      AlbumCapacityBackend capacity_backend = AlbumCapacityBackend::PosixVfs,
+      std::string capacity_identity = {});
   ~PosixAtomicAlbumStore() override { abort(); }
 
   myai::Status begin(size_t maximum_bytes) override;
@@ -74,6 +83,10 @@ class PosixAtomicAlbumStore final : public IAlbumStagingStore {
                          std::string& path) const;
 
   bool pathsValid() const { return paths_valid_; }
+  // Filesystem-specific capacity adapter. Host callers use POSIX statvfs;
+  // native LittleFS/FAT callers use the ESP-IDF filesystem APIs because IDF
+  // 6.0 deliberately leaves statvfs unimplemented.
+  bool queryCapacity(uint64_t& total, uint64_t& free) const;
   bool active() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return descriptor_ >= 0;
@@ -98,6 +111,8 @@ class PosixAtomicAlbumStore final : public IAlbumStagingStore {
   std::string previous_path_;
   std::string part_path_;
   bool removable_ = false;
+  AlbumCapacityBackend capacity_backend_ = AlbumCapacityBackend::PosixVfs;
+  std::string capacity_identity_;
   bool paths_valid_ = false;
   int descriptor_ = -1;
   size_t maximum_bytes_ = 0;

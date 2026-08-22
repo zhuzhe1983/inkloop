@@ -84,6 +84,18 @@ sdkconfig = "\n".join([
     f"CONFIG_INKLOOP_OTA_TOTAL_DEADLINE_MS={deadline}",
     f'CONFIG_IDF_TARGET="{target}"',
     "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y",
+    f"CONFIG_SPIRAM={assignments.get('CONFIG_SPIRAM', 'n')}",
+    f"CONFIG_SPIRAM_MODE_OCT={'n' if mode == 'wrong_psram' else assignments.get('CONFIG_SPIRAM_MODE_OCT', 'n')}",
+    f"CONFIG_SPIRAM_TYPE_AUTO={assignments.get('CONFIG_SPIRAM_TYPE_AUTO', 'n')}",
+    f"CONFIG_SPIRAM_SPEED_80M={assignments.get('CONFIG_SPIRAM_SPEED_80M', 'n')}",
+    f"CONFIG_SPIRAM_BOOT_INIT={assignments.get('CONFIG_SPIRAM_BOOT_INIT', 'n')}",
+    f"CONFIG_SPIRAM_USE_MALLOC={assignments.get('CONFIG_SPIRAM_USE_MALLOC', 'n')}",
+    f"CONFIG_SPIRAM_MEMTEST={assignments.get('CONFIG_SPIRAM_MEMTEST', 'n')}",
+    f"CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL={assignments.get('CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL', '0')}",
+    f"CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL={assignments.get('CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL', '0')}",
+    f"CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC={assignments.get('CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC', 'n')}",
+    f"CONFIG_LITTLEFS_MULTIVERSION={assignments.get('CONFIG_LITTLEFS_MULTIVERSION', 'n')}",
+    f"CONFIG_LITTLEFS_DISK_VERSION_2_0={assignments.get('CONFIG_LITTLEFS_DISK_VERSION_2_0', 'n')}",
 ]) + "\n"
 if mode == "duplicate_config":
     sdkconfig += f'CONFIG_INKLOOP_OTA_MANIFEST_URL="{url}"\n'
@@ -222,6 +234,17 @@ test("fake pinned IDF builds a deterministic credential-free verified receipt", 
     assert.doesNotMatch(receiptBytes, new RegExp(f.directory.replaceAll("/", "\\/")));
     assert.doesNotMatch(receiptBytes, /BEGIN|pem|private|export\.sh/i);
     assert.deepEqual(fs.readFileSync(f.defaults), beforeDefaults);
+  } finally {
+    fs.rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("release builder rejects a C151 image without OPI PSRAM", () => {
+  const f = fixture();
+  try {
+    const result = buildRelease(f, { mode: "wrong_psram" });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /generated_sdkconfig_mismatch/);
   } finally {
     fs.rmSync(f.directory, { recursive: true, force: true });
   }

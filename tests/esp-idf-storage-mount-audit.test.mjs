@@ -108,13 +108,16 @@ test("native mount preserves by default and exposes only confirmed TF format", (
   assert.match(source, /mount_config\.format_if_mount_failed = false/);
   assert.match(source, /mount_config\.grow_on_mount = false/);
   assert.match(source, /\.format_if_mount_failed = false/);
+  assert.match(source, /esp_littlefs_info[\s\S]*applyCapacity\(total, total - used/);
+  assert.match(source, /esp_vfs_fat_info[\s\S]*applyCapacity\(total, free/);
+  assert.doesNotMatch(source, /statvfs/);
   assert.doesNotMatch(source, /esp_littlefs_format|f_mkfs|esp_partition_erase/);
   assert.match(header, /formatSdCardConfirmed\(\)/);
   assert.match(source, /formatSdCardConfirmed\(\)[\s\S]*sd_album_\.active\(\)/);
   assert.match(source, /esp_vfs_fat_sdcard_format\(config_\.sd_base_path, sd_card_\)/);
   assert.match(
     source,
-    /esp_vfs_fat_sdcard_format[\s\S]*!updateCapacity\(config_\.sd_base_path,[\s\S]*sd_registered_ = false;[\s\S]*sd_card_ = nullptr;/,
+    /esp_vfs_fat_sdcard_format[\s\S]*esp_vfs_fat_info[\s\S]*!applyCapacity\(total, free,[\s\S]*sd_registered_ = false;[\s\S]*sd_card_ = nullptr;/,
   );
   assert.doesNotMatch(source, /esp_vfs_fat_sdcard_format\([^)]*internal/);
   assert.match(header, /internal_partition_address = 0x00c90000U/);
@@ -126,6 +129,18 @@ test("native mount preserves by default and exposes only confirmed TF format", (
   assert.match(manifest, /==1\.22\.3/);
   assert.match(lock, /joltwallet\/littlefs:/);
   assert.match(lock, /version: 1\.22\.3/);
+});
+
+test("album capacity uses native filesystem APIs on ESP-IDF", () => {
+  const source = readFileSync(
+    join(storage, "posix_atomic_album_store.cpp"), "utf8");
+  const header = readFileSync(join(
+    storage, "include/inkloop/storage/posix_atomic_album_store.hpp"), "utf8");
+  assert.match(header, /enum class AlbumCapacityBackend/);
+  assert.match(source, /defined\(ESP_PLATFORM\)[\s\S]*esp_littlefs_info/);
+  assert.match(source, /defined\(ESP_PLATFORM\)[\s\S]*esp_vfs_fat_info/);
+  assert.match(source, /capacity_backend_ != AlbumCapacityBackend::PosixVfs/);
+  assert.match(source, /queryCapacity\(total, available\)/);
 });
 
 test("native NVS inventory reads all protected namespaces without writes", () => {

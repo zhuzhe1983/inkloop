@@ -172,7 +172,7 @@ class NativePortalOwner final : public portal::IPortalReadCache,
   static std::string cursorFor(size_t ordinal);
   static bool parseCursor(const std::string& cursor, size_t& ordinal);
   static portal::MyAiPortalState portalMyAiState(
-      myai::ActivationState state);
+      myai::ActivationState state, bool authorization_verified);
   static std::string bootToken(size_t bytes);
   static bool copyTitle(const std::string& title,
                         std::array<char,

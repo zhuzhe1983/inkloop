@@ -17,6 +17,11 @@
 #include "inkloop/storage/papercolor_png.hpp"
 #include "inkloop/storage/sha256.hpp"
 
+#if defined(ESP_PLATFORM)
+#include "esp_littlefs.h"
+#include "esp_vfs_fat.h"
+#endif
+
 namespace inkloop {
 namespace storage {
 namespace {
@@ -105,9 +110,13 @@ bool logicalAssetId(const std::string& task_id, const std::string& content_sha,
 
 }  // namespace
 
-PosixAtomicAlbumStore::PosixAtomicAlbumStore(std::string mount_root,
-                                             bool removable)
-    : root_(std::move(mount_root)), removable_(removable) {
+PosixAtomicAlbumStore::PosixAtomicAlbumStore(
+    std::string mount_root, bool removable,
+    AlbumCapacityBackend capacity_backend, std::string capacity_identity)
+    : root_(std::move(mount_root)),
+      removable_(removable),
+      capacity_backend_(capacity_backend),
+      capacity_identity_(std::move(capacity_identity)) {
   paths_valid_ = validRoot(root_);
   if (!paths_valid_) return;
   album_directory_ = root_ + "/inkloop-album";
@@ -278,14 +287,51 @@ bool PosixAtomicAlbumStore::commitIndex(const AlbumIndex& index) {
   return false;
 }
 
-bool PosixAtomicAlbumStore::hasCommitCapacity(size_t index_bytes) const {
+bool PosixAtomicAlbumStore::queryCapacity(uint64_t& total,
+                                          uint64_t& free) const {
+  total = 0;
+  free = 0;
+#if defined(ESP_PLATFORM)
+  if (capacity_backend_ == AlbumCapacityBackend::EspLittleFs) {
+    size_t littlefs_total = 0;
+    size_t littlefs_used = 0;
+    if (capacity_identity_.empty() ||
+        esp_littlefs_info(capacity_identity_.c_str(), &littlefs_total,
+                          &littlefs_used) != ESP_OK ||
+        littlefs_total == 0 || littlefs_used > littlefs_total) {
+      return false;
+    }
+    total = littlefs_total;
+    free = littlefs_total - littlefs_used;
+    return true;
+  }
+  if (capacity_backend_ == AlbumCapacityBackend::EspFatFs) {
+    const char* identity =
+        capacity_identity_.empty() ? root_.c_str() : capacity_identity_.c_str();
+    return esp_vfs_fat_info(identity, &total, &free) == ESP_OK && total > 0 &&
+           free <= total;
+  }
+#else
+  if (capacity_backend_ != AlbumCapacityBackend::PosixVfs) return false;
+#endif
+
   struct statvfs capacity {};
   if (::statvfs(root_.c_str(), &capacity) != 0 || capacity.f_frsize == 0)
     return false;
   const uint64_t blocks = capacity.f_bavail;
   const uint64_t block_size = capacity.f_frsize;
   if (blocks > std::numeric_limits<uint64_t>::max() / block_size) return false;
-  const uint64_t available = blocks * block_size;
+  free = blocks * block_size;
+  if (capacity.f_blocks >
+      std::numeric_limits<uint64_t>::max() / block_size) return false;
+  total = capacity.f_blocks * block_size;
+  return total > 0 && free <= total;
+}
+
+bool PosixAtomicAlbumStore::hasCommitCapacity(size_t index_bytes) const {
+  uint64_t total = 0;
+  uint64_t available = 0;
+  if (!queryCapacity(total, available)) return false;
   const uint64_t reserve = removable_ ? kSdReserveBytes : kLittleFsReserveBytes;
   return index_bytes <= available && reserve <= available - index_bytes;
 }

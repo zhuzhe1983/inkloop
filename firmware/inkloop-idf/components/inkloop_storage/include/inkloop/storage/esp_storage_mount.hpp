@@ -94,7 +94,6 @@ class EspStorageMountOwner final {
   PosixAtomicAlbumStore* albumStoreForLegacyIdentity(const char* identity);
 
  private:
-  bool updateCapacity(const char* root, MountedBackendStatus& status) const;
   bool validConfig() const;
   void resetInternal(MountState state);
   void resetSd(MountState state);
