@@ -46,6 +46,7 @@ class InkloopPortal {
   // transition as the authenticated web route but require no synthetic HTTP
   // request or browser session.
   bool requestMyAiPairing(std::string* error);
+  bool requestMyAiRebind(std::string* error);
   bool onMyAiPairingResumed(std::string* error);
   bool onMyAiPairingCancelled(std::string* error);
   bool onAuthoritativeMyAiCode(
@@ -140,6 +141,7 @@ class InkloopPortal {
       const PortalRequest& request,
       const std::map<std::string, std::string>& fields);
   PortalResponse renderAlbumResponse(const std::string& cursor) const;
+  PortalResponse renderMyAiChatResponse() const;
   PortalResponse renderDashboardResponse() const;
 
   bool validateAccess(const PortalAccessConfig& access) const;

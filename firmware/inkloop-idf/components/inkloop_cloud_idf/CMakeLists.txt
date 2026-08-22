@@ -1,0 +1,19 @@
+idf_component_register(
+  SRCS
+    "arduino_compatible_identity_store.cpp"
+    "esp_frame_downloader.cpp"
+    "esp_nvs_identity_store.cpp"
+    "inkloop_frame_album_sink.cpp"
+    "inkloop_frame_stream.cpp"
+  INCLUDE_DIRS "include"
+  REQUIRES
+    inkloop_cloud
+    inkloop_storage
+  PRIV_REQUIRES
+    esp_http_client
+    esp-tls
+    esp_hw_support
+    inkloop_myai_idf
+    mbedtls
+    nvs_flash
+)

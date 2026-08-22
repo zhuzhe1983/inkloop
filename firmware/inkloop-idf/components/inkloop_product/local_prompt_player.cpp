@@ -1,0 +1,235 @@
+#include "inkloop/local_prompt_player.hpp"
+
+#include <algorithm>
+#include <cstring>
+
+namespace inkloop {
+namespace {
+
+#define INKLOOP_EMBEDDED_WAV(name)                                      \
+  extern const uint8_t _binary_##name##_wav_start[]                     \
+      asm("_binary_" #name "_wav_start");                              \
+  extern const uint8_t _binary_##name##_wav_end[]                       \
+      asm("_binary_" #name "_wav_end")
+
+INKLOOP_EMBEDDED_WAV(ordinal_prefix);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_zero);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_one);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_two);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_three);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_four);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_five);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_six);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_seven);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_eight);
+INKLOOP_EMBEDDED_WAV(ordinal_digit_nine);
+INKLOOP_EMBEDDED_WAV(ordinal_ten);
+INKLOOP_EMBEDDED_WAV(ordinal_suffix);
+INKLOOP_EMBEDDED_WAV(display_refresh_start);
+INKLOOP_EMBEDDED_WAV(display_please_wait);
+INKLOOP_EMBEDDED_WAV(images_empty);
+INKLOOP_EMBEDDED_WAV(device_restored);
+
+struct EmbeddedAsset {
+  const uint8_t* start;
+  const uint8_t* end;
+};
+
+#define INKLOOP_ASSET(name)                                             \
+  EmbeddedAsset{_binary_##name##_wav_start, _binary_##name##_wav_end}
+
+const EmbeddedAsset kPrefix = INKLOOP_ASSET(ordinal_prefix);
+const EmbeddedAsset kTen = INKLOOP_ASSET(ordinal_ten);
+const EmbeddedAsset kSuffix = INKLOOP_ASSET(ordinal_suffix);
+const EmbeddedAsset kRefreshStart = INKLOOP_ASSET(display_refresh_start);
+const EmbeddedAsset kPleaseWait = INKLOOP_ASSET(display_please_wait);
+const EmbeddedAsset kAlbumEmpty = INKLOOP_ASSET(images_empty);
+const EmbeddedAsset kDeviceRestored = INKLOOP_ASSET(device_restored);
+const std::array<EmbeddedAsset, 10> kDigits{{
+    INKLOOP_ASSET(ordinal_digit_zero),
+    INKLOOP_ASSET(ordinal_digit_one),
+    INKLOOP_ASSET(ordinal_digit_two),
+    INKLOOP_ASSET(ordinal_digit_three),
+    INKLOOP_ASSET(ordinal_digit_four),
+    INKLOOP_ASSET(ordinal_digit_five),
+    INKLOOP_ASSET(ordinal_digit_six),
+    INKLOOP_ASSET(ordinal_digit_seven),
+    INKLOOP_ASSET(ordinal_digit_eight),
+    INKLOOP_ASSET(ordinal_digit_nine),
+}};
+
+uint16_t readLe16(const uint8_t* bytes) {
+  return static_cast<uint16_t>(bytes[0]) |
+         static_cast<uint16_t>(bytes[1]) << 8U;
+}
+
+uint32_t readLe32(const uint8_t* bytes) {
+  return static_cast<uint32_t>(bytes[0]) |
+         static_cast<uint32_t>(bytes[1]) << 8U |
+         static_cast<uint32_t>(bytes[2]) << 16U |
+         static_cast<uint32_t>(bytes[3]) << 24U;
+}
+
+}  // namespace
+
+bool LocalPromptPlayer::parseWav(const uint8_t* start, const uint8_t* end,
+                                 Clip& clip) {
+  clip = Clip{};
+  if (!start || !end || end <= start ||
+      static_cast<size_t>(end - start) < 44U ||
+      std::memcmp(start, "RIFF", 4) != 0 ||
+      std::memcmp(start + 8, "WAVE", 4) != 0) {
+    return false;
+  }
+  const size_t length = static_cast<size_t>(end - start);
+  bool format_valid = false;
+  size_t offset = 12U;
+  while (offset <= length && length - offset >= 8U) {
+    const uint8_t* header = start + offset;
+    const uint32_t chunk_bytes = readLe32(header + 4U);
+    offset += 8U;
+    if (chunk_bytes > length - offset) return false;
+    if (std::memcmp(header, "fmt ", 4) == 0) {
+      if (chunk_bytes < 16U || readLe16(start + offset) != 1U ||
+          readLe16(start + offset + 2U) != 1U ||
+          readLe32(start + offset + 4U) != 16000U ||
+          readLe16(start + offset + 14U) != 16U) {
+        return false;
+      }
+      format_valid = true;
+    } else if (std::memcmp(header, "data", 4) == 0) {
+      if (!format_valid || chunk_bytes == 0 || (chunk_bytes & 1U) != 0)
+        return false;
+      clip.pcm = start + offset;
+      clip.bytes = chunk_bytes;
+      return true;
+    }
+    const size_t padded = static_cast<size_t>(chunk_bytes) +
+                          static_cast<size_t>(chunk_bytes & 1U);
+    if (padded > length - offset) return false;
+    offset += padded;
+  }
+  return false;
+}
+
+bool LocalPromptPlayer::replace(const uint8_t* const* starts,
+                                const uint8_t* const* ends, size_t count,
+                                EspI2sAudioDevice& device) {
+  if (!starts || !ends || count == 0 || count > clips_.size()) return false;
+  std::array<Clip, kMaximumClips> parsed{};
+  for (size_t index = 0; index < count; ++index) {
+    if (!parseWav(starts[index], ends[index], parsed[index])) {
+      ++diagnostics_.invalid_assets;
+      return false;
+    }
+  }
+  if (active_ || device.mode() != EspI2sAudioDevice::Mode::Idle) {
+    device.abort();
+    ++diagnostics_.interruptions;
+  }
+  clips_ = parsed;
+  clip_count_ = count;
+  clip_index_ = 0;
+  clip_offset_ = 0;
+  playback_started_ = false;
+  active_ = true;
+  ++diagnostics_.requests;
+  return true;
+}
+
+bool LocalPromptPlayer::requestOrdinal(size_t ordinal, bool refresh_start,
+                                       EspI2sAudioDevice& device) {
+  if (ordinal == 0 || ordinal > 99U) return false;
+  std::array<const uint8_t*, kMaximumClips> starts{};
+  std::array<const uint8_t*, kMaximumClips> ends{};
+  size_t count = 0;
+  auto append = [&](const EmbeddedAsset& asset) {
+    if (count >= starts.size()) return false;
+    starts[count] = asset.start;
+    ends[count] = asset.end;
+    ++count;
+    return true;
+  };
+  if (refresh_start && !append(kRefreshStart)) return false;
+  if (!append(kPrefix)) return false;
+  if (ordinal < 10U) {
+    if (!append(kDigits[ordinal])) return false;
+  } else {
+    const size_t tens = ordinal / 10U;
+    const size_t ones = ordinal % 10U;
+    if (tens > 1U && !append(kDigits[tens])) return false;
+    if (!append(kTen)) return false;
+    if (ones != 0U && !append(kDigits[ones])) return false;
+  }
+  if (!append(kSuffix)) return false;
+  return replace(starts.data(), ends.data(), count, device);
+}
+
+bool LocalPromptPlayer::request(LocalPrompt prompt,
+                                EspI2sAudioDevice& device) {
+  EmbeddedAsset asset{};
+  switch (prompt) {
+    case LocalPrompt::PleaseWait:
+      asset = kPleaseWait;
+      break;
+    case LocalPrompt::AlbumEmpty:
+      asset = kAlbumEmpty;
+      break;
+    case LocalPrompt::DeviceRestored:
+      asset = kDeviceRestored;
+      break;
+  }
+  const uint8_t* starts[] = {asset.start};
+  const uint8_t* ends[] = {asset.end};
+  return replace(starts, ends, 1U, device);
+}
+
+esp_err_t LocalPromptPlayer::service(EspI2sAudioDevice& device) {
+  if (!active_) return ESP_OK;
+  if (!playback_started_) {
+    const esp_err_t started = device.beginPlayback(16000U, 1U);
+    if (started != ESP_OK) {
+      ++diagnostics_.playback_failures;
+      active_ = false;
+      return started;
+    }
+    playback_started_ = true;
+  }
+  if (clip_index_ >= clip_count_) {
+    const esp_err_t ended = device.endPlayback();
+    if (ended != ESP_OK) ++diagnostics_.playback_failures;
+    active_ = false;
+    playback_started_ = false;
+    return ended;
+  }
+  const Clip& clip = clips_[clip_index_];
+  const size_t remaining = clip.bytes - clip_offset_;
+  const size_t count = std::min<size_t>(remaining, 2048U);
+  const esp_err_t written =
+      device.writePlayback(clip.pcm + clip_offset_, count, 20U);
+  if (written != ESP_OK) {
+    ++diagnostics_.playback_failures;
+    device.abort();
+    active_ = false;
+    playback_started_ = false;
+    return written;
+  }
+  diagnostics_.pcm_bytes += count;
+  clip_offset_ += count;
+  if (clip_offset_ == clip.bytes) {
+    ++clip_index_;
+    clip_offset_ = 0;
+  }
+  return ESP_OK;
+}
+
+void LocalPromptPlayer::cancel(EspI2sAudioDevice& device) {
+  if (active_ || playback_started_) device.abort();
+  active_ = false;
+  playback_started_ = false;
+  clip_count_ = 0;
+  clip_index_ = 0;
+  clip_offset_ = 0;
+}
+
+}  // namespace inkloop

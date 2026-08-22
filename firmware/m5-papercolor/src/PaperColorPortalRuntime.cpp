@@ -13,6 +13,7 @@
 #include "Diagnostics.h"
 #include "PortalEncoding.h"
 #include "PortalSecurityPrimitives.h"
+#include "ResponsiveWorkExecutor.h"
 
 namespace inkloop {
 namespace {
@@ -95,6 +96,18 @@ bool strictUploadUnsigned(const String& value, uint32_t* output) {
   }
   *output = static_cast<uint32_t>(parsed);
   return true;
+}
+
+struct PortalStreamWork {
+  WebServer* server;
+  File* file;
+  size_t written;
+};
+
+void streamPortalFile(void* raw) {
+  PortalStreamWork* work = static_cast<PortalStreamWork*>(raw);
+  if (work && work->server && work->file)
+    work->written = work->server->streamFile(*work->file, "image/png");
 }
 
 }  // namespace
@@ -260,6 +273,28 @@ bool PaperColorPortalRuntime::begin(
   server_.on(
       "/api/album/preview", HTTP_GET,
       [this]() { handleAlbumPreviewRequest(); });
+  // Arduino WebServer logs every request served by onNotFound() as an error,
+  // even when that callback deliberately implements the route. Register all
+  // regular Portal endpoints explicitly; retain onNotFound only for genuine
+  // unknown paths.
+  static const char* kRegularPortalRoutes[] = {
+      "/health", "/", "/portal.js", "/favicon.ico",
+      "/api/session", "/api/state", "/api/settings", "/api/album",
+      "/api/diagnostics", "/api/serial-log", "/api/album/display",
+      "/api/album/render", "/api/aigc/generate", "/api/myai/chat",
+      "/api/myai/chat/clear", "/api/audio/preview",
+      "/api/onboarding/myai/start", "/api/onboarding/myai/rebind",
+      "/api/tutorial/advance", "/api/tutorial/complete",
+      "/api/tutorial/restart", "/api/actions/prepare",
+      "/api/actions/confirm", "/generate_204", "/hotspot-detect.html",
+      "/connecttest.txt", "/ncsi.txt"};
+  for (size_t index = 0;
+       index < sizeof(kRegularPortalRoutes) / sizeof(kRegularPortalRoutes[0]);
+       ++index) {
+    server_.on(
+        kRegularPortalRoutes[index], HTTP_ANY,
+        [this]() { handleWebRequest(); });
+  }
   server_.onNotFound([this]() { handleWebRequest(); });
   server_.begin();
   serverStarted_ = true;
@@ -274,7 +309,16 @@ bool PaperColorPortalRuntime::begin(
 }
 
 void PaperColorPortalRuntime::loop() {
-  if (serverStarted_) server_.handleClient();
+  // A Portal handler may itself start responsive network work. Its wait pump
+  // must never re-enter Arduino WebServer while that request frame is alive.
+  if (!serverStarted_ || requestActive_) return;
+  const uint32_t now = millis();
+  const bool recentlyUsed = lastPortalRequestAt_ != 0 &&
+      now - lastPortalRequestAt_ < 15000U;
+  const uint32_t interval = recentlyUsed ? 2U : 250U;
+  if (now - lastPortalPollAt_ < interval) return;
+  lastPortalPollAt_ = now;
+  server_.handleClient();
 }
 
 const portal::PortalSettings& PaperColorPortalRuntime::settings() const {
@@ -289,6 +333,14 @@ bool PaperColorPortalRuntime::onWifiConfigured(
 
 bool PaperColorPortalRuntime::requestMyAiPairing(std::string* error) {
   return portal_ && portal_->requestMyAiPairing(error);
+}
+
+bool PaperColorPortalRuntime::requestMyAiRebind(std::string* error) {
+  if (!portal_) {
+    if (error) *error = "portal_unavailable";
+    return false;
+  }
+  return portal_->requestMyAiRebind(error);
 }
 
 bool PaperColorPortalRuntime::onMyAiPairingResumed(std::string* error) {
@@ -517,6 +569,15 @@ bool PaperColorPortalRuntime::generateImage(
   return services_.generateImage(prompt, error);
 }
 
+bool PaperColorPortalRuntime::readMyAiChatHistory(
+    portal::MyAiChatHistory* history) const {
+  return services_.readMyAiChatHistory(history);
+}
+
+bool PaperColorPortalRuntime::clearMyAiChatHistory(std::string* error) {
+  return services_.clearMyAiChatHistory(error);
+}
+
 portal::DiagnosticsSnapshot PaperColorPortalRuntime::diagnostics() const {
   return services_.portalDiagnostics();
 }
@@ -725,6 +786,7 @@ bool PaperColorPortalRuntime::decodeSnapshot(
 }
 
 void PaperColorPortalRuntime::handleWebRequest() {
+  lastPortalRequestAt_ = millis();
   if (!portal_) {
     server_.send(503, "application/json", "{\"error\":\"portal_unavailable\"}");
     return;
@@ -790,6 +852,7 @@ portal::PortalRequest PaperColorPortalRuntime::requestFromServer(
 }
 
 void PaperColorPortalRuntime::handleAlbumUploadChunk() {
+  lastPortalRequestAt_ = millis();
   HTTPUpload& upload = server_.upload();
   if (upload.status == UPLOAD_FILE_START) {
     requestActive_ = true;
@@ -899,6 +962,7 @@ void PaperColorPortalRuntime::handleAlbumUploadChunk() {
 }
 
 void PaperColorPortalRuntime::finishAlbumUploadRequest() {
+  lastPortalRequestAt_ = millis();
   requestActive_ = true;
   if (!uploadEnded_ && uploadStarted_) {
     services_.abortAlbumUpload();
@@ -928,6 +992,7 @@ void PaperColorPortalRuntime::finishAlbumUploadRequest() {
 }
 
 void PaperColorPortalRuntime::handleAlbumPreviewRequest() {
+  lastPortalRequestAt_ = millis();
   requestActive_ = true;
   if (!portal_) {
     server_.send(503, "application/json", "{\"error\":\"portal_unavailable\"}");
@@ -975,9 +1040,18 @@ void PaperColorPortalRuntime::handleAlbumPreviewRequest() {
   }
   server_.sendHeader("Cache-Control", "private, max-age=60");
   server_.sendHeader("X-Content-Type-Options", "nosniff");
-  const size_t written = server_.streamFile(file, "image/png");
+  PortalStreamWork work{&server_, &file, 0};
+  const bool dispatched = responsiveWorkExecutor().execute(
+      ResponsiveWorkKind::PortalTransfer, streamPortalFile, &work);
   file.close();
-  if (written != bytes) Diagnostics::event("ALBUM_PREVIEW", "CLIENT_DISCONNECTED");
+  if (!dispatched) {
+    Diagnostics::event("ALBUM_PREVIEW", "SLOW_CORE_BUSY");
+    server_.send(
+        503, "application/json",
+        "{\"ok\":false,\"error\":\"preview_transfer_busy\"}");
+  } else if (work.written != bytes) {
+    Diagnostics::event("ALBUM_PREVIEW", "CLIENT_DISCONNECTED");
+  }
   requestActive_ = false;
 }
 

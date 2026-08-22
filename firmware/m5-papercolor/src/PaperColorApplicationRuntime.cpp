@@ -22,6 +22,96 @@
 namespace inkloop {
 namespace {
 
+constexpr uint32_t kMinimumVoiceReconnectDelayMs = 30000U;
+constexpr uint32_t kVoiceConnectHandshakeTimeoutMs = 30000U;
+constexpr uint32_t kVoiceTtsCompletionGraceMs = 1500U;
+constexpr char kMyAiChatLogDirectory[] = "/inkloop";
+constexpr char kMyAiChatLogPath[] = "/inkloop/myai-chat.txt";
+constexpr char kMyAiChatPreviousLogPath[] = "/inkloop/myai-chat.prev.txt";
+constexpr size_t kMaximumMyAiChatLogBytes = 512U * 1024U;
+constexpr size_t kMaximumMyAiChatLogLineBytes = 4096U;
+
+size_t validUtf8SequenceLength(const std::string& value, size_t at) {
+  if (at >= value.size()) return 0;
+  const uint8_t first = static_cast<uint8_t>(value[at]);
+  if (first < 0x80U) return 1;
+  size_t length = 0;
+  if (first >= 0xC2U && first <= 0xDFU) length = 2;
+  else if (first >= 0xE0U && first <= 0xEFU) length = 3;
+  else if (first >= 0xF0U && first <= 0xF4U) length = 4;
+  else return 0;
+  if (length > value.size() - at) return 0;
+  for (size_t index = 1; index < length; ++index) {
+    const uint8_t continuation = static_cast<uint8_t>(value[at + index]);
+    if ((continuation & 0xC0U) != 0x80U) return 0;
+  }
+  const uint8_t second = static_cast<uint8_t>(value[at + 1]);
+  if ((first == 0xE0U && second < 0xA0U) ||
+      (first == 0xEDU && second >= 0xA0U) ||
+      (first == 0xF0U && second < 0x90U) ||
+      (first == 0xF4U && second >= 0x90U)) {
+    return 0;
+  }
+  return length;
+}
+
+std::string boundedChatText(
+    const std::string& input, size_t maximumBytes, bool trim = true) {
+  std::string output;
+  output.reserve(std::min(input.size(), maximumBytes));
+  size_t at = 0;
+  while (at < input.size()) {
+    const size_t length = validUtf8SequenceLength(input, at);
+    if (length == 0) {
+      ++at;
+      continue;
+    }
+    const uint8_t first = static_cast<uint8_t>(input[at]);
+    if (first < 0x20U && first != '\n' && first != '\t') {
+      if (output.size() < maximumBytes) output.push_back(' ');
+      ++at;
+      continue;
+    }
+    if (length > maximumBytes - output.size()) break;
+    output.append(input, at, length);
+    at += length;
+  }
+  if (!trim) return output;
+  size_t first = 0;
+  while (first < output.size() &&
+         (output[first] == ' ' || output[first] == '\n' ||
+          output[first] == '\t')) {
+    ++first;
+  }
+  size_t last = output.size();
+  while (last > first &&
+         (output[last - 1] == ' ' || output[last - 1] == '\n' ||
+          output[last - 1] == '\t')) {
+    --last;
+  }
+  return output.substr(first, last - first);
+}
+
+bool isBlankAudioChatArtifact(const std::string& input) {
+  std::string normalized = boundedChatText(input, 64);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char ch) {
+                   if (ch >= 'A' && ch <= 'Z')
+                     return static_cast<char>(ch + ('a' - 'A'));
+                   if (ch == ' ' || ch == '-') return '_';
+                   return static_cast<char>(ch);
+                 });
+  if (normalized.size() >= 2 && normalized.front() == '[' &&
+      normalized.back() == ']') {
+    normalized = normalized.substr(1, normalized.size() - 2);
+  }
+  return normalized == "blank_audio";
+}
+
+uint32_t boundedVoiceReconnectDelay(uint32_t suggested) {
+  return std::max<uint32_t>(suggested, kMinimumVoiceReconnectDelayMs);
+}
+
 void secureClear(std::string& value) {
   value.assign(value.size(), '\0');
   value.clear();
@@ -49,7 +139,7 @@ myai::ClientConfig makeMyAiConfig() {
   config.clientRegion = "cn";
   config.systemPrompt =
       "你是 Inkloop PaperColor 的语音助手。生成图片时使用当前 400x600 "
-      "横向六色电子纸尺寸（设备底边朝下），并优先输出高对比度、少渐变、"
+      "竖向六色电子纸画布（设备底边朝下），并优先输出高对比度、少渐变、"
       "清晰轮廓的素材。";
   return config;
 }
@@ -154,7 +244,12 @@ String sleepOutcomeDetail(
 }
 
 constexpr char kPairingDisplayNamespace[] = "ink-pair-ui";
-constexpr char kPairingDisplayScrubbed[] = "scrubbed";
+// v3 invalidates the earlier markers once. Older firmware could paint SERVICE
+// UNAVAILABLE without first recording that the panel contained a transient
+// onboarding frame, leaving that stale e-paper image after authorization.
+// v4 invalidates an older optimistic marker which could say "scrubbed" even
+// while a service-unavailable frame was still physically retained on e-paper.
+constexpr char kPairingDisplayScrubbed[] = "scrubbed-v4";
 }  // namespace
 
 PaperColorApplicationRuntime::PaperColorApplicationRuntime(
@@ -195,8 +290,15 @@ PaperColorApplicationRuntime::PaperColorApplicationRuntime(
   streamingAudio_.setEndedCallback([this]() {
     if (tutorialNarrationInFlight_) {
       voiceLed_.setLeftVoiceState(voice::VoiceLedState::Off);
-    } else {
+    } else if (voiceResponseDonePending_) {
+      voiceResponseDonePending_ = false;
+      voiceTtsSegmentEndedAt_ = 0;
       voice_.onTtsStop(voice_.activeTurnGeneration());
+    } else if (voice_.state() == voice::RuntimeState::Speaking) {
+      // Preserve a short gap for the next tts.start segment. If the gateway
+      // omits the final response.done, loop() will converge both client and
+      // VoiceRuntime to Ready after this grace period.
+      voiceTtsSegmentEndedAt_ = millis();
     }
   });
 }
@@ -238,13 +340,23 @@ bool PaperColorApplicationRuntime::begin(bool wifiConfigured) {
   const String hardware = inkloopClient_.hardwareId();
   const String suffix = hardware.length() >= 4
       ? hardware.substring(hardware.length() - 4) : String("C151");
-  settingsAccessPoint_ = "Inkloop-" + suffix + "-Settings";
-  WiFi.mode(WIFI_AP_STA);
-  if (!WiFi.softAP(settingsAccessPoint_.c_str(), portal_.accessCode().c_str())) {
-    Diagnostics::event("WARN", "SETTINGS_AP_UNAVAILABLE_USE_MDNS");
+  if (wifiConfigured && WiFi.status() == WL_CONNECTED) {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    settingsAccessPoint_ = WiFi.SSID();
+    settingsAccessPointActive_ = false;
+    Diagnostics::event("SETTINGS_AP", "DISABLED_STATION_CONNECTED");
   } else {
-    Diagnostics::event("SETTINGS_AP", settingsAccessPoint_);
-    Diagnostics::event("SETTINGS_AP_URL", WiFi.softAPIP().toString());
+    settingsAccessPoint_ = "Inkloop-" + suffix + "-Settings";
+    WiFi.mode(WIFI_AP_STA);
+    settingsAccessPointActive_ = WiFi.softAP(
+        settingsAccessPoint_.c_str(), portal_.accessCode().c_str());
+    if (!settingsAccessPointActive_) {
+      Diagnostics::event("WARN", "SETTINGS_AP_UNAVAILABLE_USE_MDNS");
+    } else {
+      Diagnostics::event("SETTINGS_AP", settingsAccessPoint_);
+      Diagnostics::event("SETTINGS_AP_URL", WiFi.softAPIP().toString());
+    }
   }
   std::string portalError;
   if (!portal_.onWifiConfigured(wifiConfigured, &portalError)) {
@@ -254,6 +366,9 @@ bool PaperColorApplicationRuntime::begin(bool wifiConfigured) {
   }
   applyPortalSettings(portal_.settings());
   if (!loadAlbumRevision()) return false;
+  if (!loadMyAiChatHistoryFromStorage()) {
+    Diagnostics::event("WARN", "MYAI_CHAT_HISTORY_LOAD_FAILED");
+  }
 
   myAiAuthorized_ = activation == myai::ActivationState::Bound;
   if (myAiAuthorized_) {
@@ -268,7 +383,11 @@ bool PaperColorApplicationRuntime::begin(bool wifiConfigured) {
       }
       const portal::OnboardingState* onboarding = portal_.onboarding();
       tutorialNarrationPending_ = onboarding && !onboarding->tutorialComplete();
-      connectVoiceIfAuthorized();
+      // Do not nest the multi-request gateway login beneath boot
+      // initialization; ESP32's loopTask stack is too small for that call
+      // chain. The shallow loop-level scheduler connects after begin returns.
+      voiceConnectPending_ = false;
+      voiceReconnectAt_ = millis();
     }
   } else if (activation == myai::ActivationState::PaymentRequired) {
     const portal::OnboardingState* restored = portal_.onboarding();
@@ -305,6 +424,16 @@ bool PaperColorApplicationRuntime::begin(bool wifiConfigured) {
       // when Center is temporarily unreachable.
       Diagnostics::event("WARN", String("MYAI_AUTO_PAIRING:") + error.c_str());
     }
+  }
+  // A 401 clear may have completed immediately before a reset or power loss.
+  // The durable Inkloop identity plus an empty MyAI credential is the stable
+  // recovery marker; resume the fresh six-digit pairing from loop() instead
+  // of stranding the device in a contradictory "bound but unavailable" UI.
+  if (activation == myai::ActivationState::Unconfigured &&
+      hasDurableInkloopIdentity && wifiConfigured) {
+    myAiRebindPending_ = true;
+    myAiRebindRetryAt_ = millis();
+    Diagnostics::event("MYAI_REBIND", "RECOVERY_PENDING");
   }
   voice_.setEnabled(myAiAuthorized_);
   reconcileTerminalBindingState();
@@ -357,26 +486,12 @@ bool PaperColorApplicationRuntime::activateDisplayOwner() {
 
 void PaperColorApplicationRuntime::loop() {
   if (!initialized_) return;
-  portal_.loop();
-  leds_.pollPixelDiagnostic(millis());
-  if (ledDiagnosticPending_ && !leds_.pixelDiagnosticActive() &&
-      !ledDiagnosticWorkBusy()) {
-    std::string diagnosticError;
-    if (!startPendingLedDiagnostic(&diagnosticError)) {
-      Diagnostics::event(
-          "ERROR", String("LED_ROLE_DIAGNOSTIC_START:") +
-              diagnosticError.c_str());
-    }
-  }
-  // Keep the 4.6-second physical LED diagnostic observable. HTTPS pairing,
-  // heartbeat and image calls can block the cooperative loop long enough to
-  // skip every intermediate LED phase, so defer those operations until the
-  // test has restored the latest desired role state.
-  if (leds_.pixelDiagnosticActive()) {
-    activityState_.noteMeaningfulActivity(millis());
-    return;
-  }
-  websocket_.loop();
+  // Runtime priority is deliberate: voice transport/capture/playback first,
+  // then non-blocking LED feedback, and only then the adaptive local Portal.
+  // Physical buttons are sampled by the higher-priority Core-1 input task and
+  // dispatched by main before this method is entered.
+  streamingAudio_.poll();
+  if (!streamingAudio_.receiveBackpressured()) websocket_.loop();
   conversation_.pollCapture();
   voice_.tick();
   if (volumePreviewActive_ && !promptPlayer_.busy()) {
@@ -387,7 +502,23 @@ void PaperColorApplicationRuntime::loop() {
     Diagnostics::event("AUDIO_PREVIEW", "COMPLETE");
   }
   pollAssistancePromptQueue();
+  leds_.pollPixelDiagnostic(millis());
+  if (ledDiagnosticPending_ && !leds_.pixelDiagnosticActive() &&
+      !ledDiagnosticWorkBusy()) {
+    std::string diagnosticError;
+    if (!startPendingLedDiagnostic(&diagnosticError)) {
+      Diagnostics::event(
+          "ERROR", String("LED_ROLE_DIAGNOSTIC_START:") +
+              diagnosticError.c_str());
+    }
+  }
+  // A diagnostic is only a status animation. It never owns the control loop
+  // and therefore cannot pause a voice turn or physical input handling.
+  if (leds_.pixelDiagnosticActive()) {
+    activityState_.noteMeaningfulActivity(millis());
+  }
   if (displayRuntime_) displayRuntime_->tickImageLed();
+  portal_.loop();
   const uint32_t wakeNow = millis();
   wakeRecovery_.poll(wakeNow);
   if (wakeAnnouncementPending_ && wakeRecovery_.state().readyForUserInput()) {
@@ -455,7 +586,10 @@ void PaperColorApplicationRuntime::loop() {
               true);
       if (!pairingShown) {
         GeneratedStatusPng unavailable;
-        if (!makePairingUnavailableStatusPng(unavailable) ||
+        // Never paint a transient failure page unless its durable scrub marker
+        // was cleared first. E-paper retains the last frame across resets.
+        if (!storePairingScreenScrubbed(false) ||
+            !makePairingUnavailableStatusPng(unavailable) ||
             !refreshFrame(
                 "myai-service-unavailable", unavailable.bytes,
                 unavailable.length, true)) {
@@ -493,6 +627,27 @@ void PaperColorApplicationRuntime::loop() {
   tryTerminalDisplayScrub();
 
   const uint32_t now = millis();
+  if (myAiRebindPending_ && !pairingPollActive_ &&
+      !pairingCallbackPending_ && !mutationBusy() &&
+      WiFi.status() == WL_CONNECTED &&
+      static_cast<int32_t>(now - myAiRebindRetryAt_) >= 0) {
+    std::string rebindError;
+    const portal::OnboardingState* onboarding = portal_.onboarding();
+    const bool terminalBinding =
+        onboarding && onboarding->terminalBindingComplete();
+    const bool started = terminalBinding
+        ? portal_.requestMyAiRebind(&rebindError)
+        : portal_.requestMyAiPairing(&rebindError);
+    if (started) {
+      myAiRebindPending_ = false;
+      portalMyAiState_ = "pairing";
+      Diagnostics::event("MYAI_REBIND", "AUTO_STARTED");
+    } else {
+      myAiRebindRetryAt_ = now + 30000U;
+      Diagnostics::event(
+          "WARN", String("MYAI_REBIND_DEFERRED:") + rebindError.c_str());
+    }
+  }
   if (!myAiAuthorized_ && !pairingPollActive_ &&
       (myAi_.activationState() == myai::ActivationState::Offline ||
        myAi_.activationState() == myai::ActivationState::PaymentRequired ||
@@ -513,7 +668,8 @@ void PaperColorApplicationRuntime::loop() {
       const portal::OnboardingState* onboarding = portal_.onboarding();
       tutorialNarrationPending_ = onboarding && !onboarding->tutorialComplete();
       voice_.setEnabled(true);
-      connectVoiceIfAuthorized();
+      voiceConnectPending_ = false;
+      voiceReconnectAt_ = now;
     }
   }
 
@@ -536,7 +692,13 @@ void PaperColorApplicationRuntime::loop() {
     }
   }
 
-  if (myAiAuthorized_ && voiceWasReady_ && now - lastHeartbeatAt_ >= 30000U) {
+  // The public MyAI client contract and reference client use a 30-second
+  // lease heartbeat. Do not lengthen that lease implicitly; defer it while a
+  // user turn, capture or TTS is active, then send as soon as the session is
+  // quiescent. ResponsiveWorkExecutor keeps buttons/Portal alive meanwhile.
+  if (myAiAuthorized_ && voiceWasReady_ &&
+      !voice_.turnActive() && !voice_.captureActive() &&
+      !streamingAudio_.active() && now - lastHeartbeatAt_ >= 30000U) {
     lastHeartbeatAt_ = now;
     const myai::Status heartbeat = myAi_.heartbeatVoice();
     if (!heartbeat.ok()) {
@@ -546,15 +708,30 @@ void PaperColorApplicationRuntime::loop() {
         tutorialNarrationPending_ = true;
       }
       voiceWasReady_ = false;
+      voiceConnectPending_ = false;
       voice_.onSessionLost(voiceFailure(
           "myai_heartbeat_failed", heartbeat.detail));
       voiceReconnectAt_ = now +
-          (heartbeat.retryAfterMs ? heartbeat.retryAfterMs : 5000U);
+          boundedVoiceReconnectDelay(heartbeat.retryAfterMs);
     }
   }
-  if (myAiAuthorized_ && !voiceWasReady_ &&
-      static_cast<int32_t>(now - voiceReconnectAt_) >= 0) {
-    connectVoiceIfAuthorized();
+  if (voiceTtsSegmentEndedAt_ != 0 &&
+      static_cast<uint32_t>(now - voiceTtsSegmentEndedAt_) >=
+          kVoiceTtsCompletionGraceMs &&
+      !streamingAudio_.active() &&
+      voice_.state() == voice::RuntimeState::Speaking) {
+    voiceTtsSegmentEndedAt_ = 0;
+    const myai::Status completed = myAi_.completeVoiceResponseAfterTtsStop();
+    Diagnostics::event(
+        "VOICE_TTS_COMPLETE",
+        completed.ok() ? "GRACE_FALLBACK" : completed.detail.c_str());
+  }
+  if (myAiAuthorized_ && !voiceWasReady_ && voiceConnectPending_ &&
+      static_cast<int32_t>(now - voiceConnectDeadline_) >= 0) {
+    voiceConnectPending_ = false;
+    myAi_.disconnectVoice("connect_timeout");
+    voiceReconnectAt_ = now + kMinimumVoiceReconnectDelayMs;
+    Diagnostics::event("VOICE_CONNECT", "HANDSHAKE_TIMEOUT");
   }
   if (acceptsUserInput()) {
     const displaypower::SleepAttemptObservation sleep = sleepAttempt_.poll(
@@ -568,6 +745,29 @@ void PaperColorApplicationRuntime::loop() {
       Diagnostics::event("SLEEP_SUMMARY", detail);
     }
   }
+}
+
+void PaperColorApplicationRuntime::pumpResponsiveUi(
+    ResponsiveWorkKind kind) {
+  if (!initialized_) return;
+  const uint32_t now = millis();
+  // Same priority contract as loop(): voice/audio before LEDs, Portal last.
+  streamingAudio_.poll();
+  pollAssistancePromptQueue();
+  // Inkloop HTTP does not touch MyAI. Keep an established voice socket and
+  // microphone flowing during a slow task sync. MyAI HTTP/handshake work keeps
+  // its client non-reentrant while still servicing the rest of the device UI.
+  if (kind == ResponsiveWorkKind::InkloopNetwork ||
+      kind == ResponsiveWorkKind::DisplayHardware) {
+    if (!streamingAudio_.receiveBackpressured()) websocket_.loop();
+    conversation_.pollCapture();
+    voice_.tick();
+  }
+  leds_.pollPixelDiagnostic(now);
+  if (displayRuntime_) displayRuntime_->tickImageLed();
+  // Storage transactions are isolated from all Portal album reads. A file
+  // response already owns requestActive_, so PortalTransfer is also inert.
+  if (kind != ResponsiveWorkKind::StorageHardware) portal_.loop();
 }
 
 bool PaperColorApplicationRuntime::handleButton(ButtonEvent event) {
@@ -589,6 +789,31 @@ bool PaperColorApplicationRuntime::handleButton(ButtonEvent event) {
     return true;
   }
   const voice::RuntimeState priorVoiceState = voice_.state();
+  if (myAiAuthorized_ && !voiceWasReady_) {
+    if (voiceConnectPending_) {
+      voiceLed_.setLeftVoiceState(voice::VoiceLedState::Thinking);
+      Diagnostics::event("VOICE_BUTTON", "SESSION_CONNECTING");
+      return true;
+    }
+    if (static_cast<int32_t>(millis() - voiceReconnectAt_) < 0) {
+      voiceLed_.setLeftVoiceState(voice::VoiceLedState::Error);
+      Diagnostics::event("VOICE_BUTTON", "RECONNECT_BACKOFF");
+      return true;
+    }
+    // A physical top-button tap always means "start a conversation".  When
+    // the voice socket is cold, remember the tap and enter Listening as soon
+    // as session.ready arrives; do not replace the user's action with the
+    // optional introduction/tutorial narration.
+    listenAfterConnect_ = true;
+    if (!connectVoiceIfAuthorized()) {
+      listenAfterConnect_ = false;
+      voiceLed_.setLeftVoiceState(voice::VoiceLedState::Error);
+      Diagnostics::event("VOICE_BUTTON", "SESSION_CONNECT_FAILED");
+    } else {
+      Diagnostics::event("VOICE_BUTTON", "SESSION_CONNECT_STARTED");
+    }
+    return true;
+  }
   const bool cancellingTurn =
       priorVoiceState == voice::RuntimeState::Thinking ||
       priorVoiceState == voice::RuntimeState::Speaking;
@@ -601,11 +826,35 @@ bool PaperColorApplicationRuntime::handleButton(ButtonEvent event) {
     // already invalidated its readiness before publishing its post-cancel
     // state; this layer only updates the concrete reconnect scheduler.
     voiceWasReady_ = false;
+    voiceConnectPending_ = false;
+    voiceConnectDeadline_ = 0;
     voiceReconnectAt_ = millis();
     Diagnostics::event("VOICE_CANCEL", "SESSION_CLOSED_RECONNECTING");
   }
   if (!status.success) {
+    voiceLed_.setLeftVoiceState(voice::VoiceLedState::Error);
     Diagnostics::event("VOICE_BUTTON", status.code.c_str());
+  }
+  return true;
+}
+
+bool PaperColorApplicationRuntime::requestVoiceIntroduction() {
+  if (!initialized_ || !acceptsUserInput() || !myAiAuthorized_) return false;
+  if (tutorialNarrationInFlight_ || voice_.turnActive()) return false;
+  listenAfterConnect_ = false;
+  introductionPending_ = true;
+  if (voiceWasReady_ && !voiceConnectPending_) {
+    onVoiceState(myai::VoiceState::Ready);
+    return !introductionPending_;
+  }
+  if (voiceConnectPending_) return true;
+  if (static_cast<int32_t>(millis() - voiceReconnectAt_) < 0) {
+    introductionPending_ = false;
+    return false;
+  }
+  if (!connectVoiceIfAuthorized()) {
+    introductionPending_ = false;
+    return false;
   }
   return true;
 }
@@ -632,7 +881,23 @@ bool PaperColorApplicationRuntime::refreshFrame(
       "DISPLAY_RENDER_STRATEGY", displaypower::renderStrategyId(selected));
   const uint32_t generation = displayActivity_.beginRefresh();
   activityState_.noteMeaningfulActivity(millis());
-  const displaypower::DisplayRefreshResult result = displayRuntime_->refresh(request);
+  struct DisplayWork {
+    displaypower::DisplayRefreshRuntime* runtime;
+    const displaypower::EncodedFrameRequest* request;
+    displaypower::DisplayRefreshResult result;
+  } displayWork{
+      displayRuntime_.get(), &request,
+      displaypower::DisplayRefreshResult::DisplayFailed};
+  const bool dispatched = responsiveWorkExecutor().execute(
+      ResponsiveWorkKind::DisplayHardware,
+      [](void* raw) {
+        DisplayWork* work = static_cast<DisplayWork*>(raw);
+        work->result = work->runtime->refresh(*work->request);
+      },
+      &displayWork);
+  const displaypower::DisplayRefreshResult result = dispatched
+      ? displayWork.result
+      : displaypower::DisplayRefreshResult::Busy;
   displayActivity_.endRefresh(generation);
   prompts_.displayRefreshEnded(generation);
   if (result == displaypower::DisplayRefreshResult::Unchanged) {
@@ -678,6 +943,17 @@ StableStartupDisplay PaperColorApplicationRuntime::stableStartupDisplay() const 
     return StableStartupDisplay::MyAiServiceUnavailable;
   }
   return StableStartupDisplay::SettingsReady;
+}
+
+void PaperColorApplicationRuntime::noteMyAiUnavailableDisplayApplied() {
+  // The panel is persistent.  Record that the previously scrubbed/ready frame
+  // has been replaced so a later successful authorization can restore a
+  // non-error stable frame exactly once.
+  if (!storePairingScreenScrubbed(false)) {
+    Diagnostics::event("WARN", "MYAI_UNAVAILABLE_DISPLAY_MARKER_SAVE_FAILED");
+  }
+  terminalDisplayScrubPending_ = false;
+  terminalDisplayScrubApplied_ = false;
 }
 
 void PaperColorApplicationRuntime::noteExternalActivity(
@@ -812,16 +1088,29 @@ void PaperColorApplicationRuntime::onActivationState(
   Diagnostics::event("MYAI_ACTIVATION", activationName(state));
   portalMyAiState_ = status.code == myai::ErrorCode::AppNotRegistered
       ? "app_not_registered" : activationName(state);
-  if (state == myai::ActivationState::Bound) myAiAuthorized_ = true;
-  if (state == myai::ActivationState::PaymentRequired ||
+  if (state == myai::ActivationState::Bound) {
+    myAiAuthorized_ = true;
+    // A transient pairing/authorization failure may have left the persistent
+    // e-paper panel on the service-unavailable frame.  Reconcile the durable
+    // display marker every time Center confirms Bound, not only during boot or
+    // the original pairing callback, so the next stable loop can replace that
+    // stale error page exactly once.
+    reconcileTerminalBindingState();
+  }
+  if (state == myai::ActivationState::Unconfigured ||
+      state == myai::ActivationState::PaymentRequired ||
       state == myai::ActivationState::RecoveryRequired) {
     myAiAuthorized_ = false;
+    voiceConnectPending_ = false;
+    voiceConnectDeadline_ = 0;
     voice_.setEnabled(false);
+    voiceLed_.setLeftVoiceState(voice::VoiceLedState::Error);
   }
 }
 
 void PaperColorApplicationRuntime::onPairingReady(
     const myai::PairingView& pairing) {
+  myAiRebindPending_ = false;
   pendingPairing_ = pairing;
   pairingCallbackPending_ = true;
   portalMyAiState_ = "pairing";
@@ -831,6 +1120,9 @@ void PaperColorApplicationRuntime::onVoiceState(myai::VoiceState state) {
   const myai::VoiceState previous = lastMyAiVoiceState_;
   lastMyAiVoiceState_ = state;
   if (state == myai::VoiceState::Ready) {
+    voiceTtsSegmentEndedAt_ = 0;
+    voiceConnectPending_ = false;
+    voiceConnectDeadline_ = 0;
     if (tutorialNarrationInFlight_ &&
         (previous == myai::VoiceState::Thinking ||
          previous == myai::VoiceState::Speaking)) {
@@ -845,12 +1137,47 @@ void PaperColorApplicationRuntime::onVoiceState(myai::VoiceState state) {
     if (!voiceWasReady_) {
       voiceWasReady_ = true;
       voice_.onSessionReady();
+    } else if (voice_.state() == voice::RuntimeState::Speaking) {
+      // The gateway may split one response across several tts.start/tts.stop
+      // segments. A segment stop only quiesces the current speaker buffer; the
+      // voice turn becomes Ready exclusively when response.done arrives.
+      if (streamingAudio_.active()) {
+        voiceResponseDonePending_ = true;
+      } else {
+        voiceResponseDonePending_ = false;
+        voice_.onTtsStop(voice_.activeTurnGeneration());
+      }
     } else if (previous == myai::VoiceState::Thinking) {
       voice_.onResponseDone(voice_.activeTurnGeneration());
     }
-    if (tutorialNarrationPending_ && !tutorialNarrationInFlight_) {
+    if (listenAfterConnect_) {
+      listenAfterConnect_ = false;
+      const voice::Status listening = voice_.onTopButtonTap();
+      Diagnostics::event(
+          "VOICE_BUTTON",
+          listening.success ? "LISTENING_AFTER_CONNECT" : listening.code.c_str());
+    } else if (introductionPending_) {
+      introductionPending_ = false;
       tutorialNarrationPending_ = false;
       tutorialNarrationInFlight_ = true;
+      resetAssistantChatTurn();
+      voiceLed_.setLeftVoiceState(voice::VoiceLedState::Thinking);
+      const myai::Status requested = myAi_.requestResponse(
+          "请用简短自然的中文做一次自我介绍：你是 Inkloop PaperColor 的 MyAI "
+          "语音助手，可以聊天、管理本机相册与设置，也能为 400x600 六色墨水屏"
+          "生成高对比度图片。不要调用工具，不要超过三句话。");
+      if (!requested.ok()) {
+        tutorialNarrationInFlight_ = false;
+        voiceLed_.setLeftVoiceState(voice::VoiceLedState::Error);
+        Diagnostics::event("WARN", String("VOICE_INTRO_START:") +
+            requested.detail.c_str());
+      } else {
+        Diagnostics::event("VOICE_INTRO", "TEXT_REQUEST_SENT");
+      }
+    } else if (tutorialNarrationPending_ && !tutorialNarrationInFlight_) {
+      tutorialNarrationPending_ = false;
+      tutorialNarrationInFlight_ = true;
+      resetAssistantChatTurn();
       voiceLed_.setLeftVoiceState(voice::VoiceLedState::Thinking);
       const myai::Status requested = myAi_.requestResponse(
           "这是首次开机语音教程。请用简短中文告诉用户：按一下顶部按钮开始或结束说话；"
@@ -865,6 +1192,7 @@ void PaperColorApplicationRuntime::onVoiceState(myai::VoiceState state) {
       }
     }
   } else if (state == myai::VoiceState::Speaking) {
+    voiceTtsSegmentEndedAt_ = 0;
     if (tutorialNarrationInFlight_) {
       voiceLed_.setLeftVoiceState(voice::VoiceLedState::Speaking);
       if (!streamingAudio_.authorize().ok()) {
@@ -873,7 +1201,10 @@ void PaperColorApplicationRuntime::onVoiceState(myai::VoiceState state) {
         voiceLed_.setLeftVoiceState(voice::VoiceLedState::Error);
       }
     } else {
-      const voice::Status accepted = voice_.onTtsStart(voice_.activeTurnGeneration());
+      const voice::Status accepted =
+          voice_.state() == voice::RuntimeState::Speaking
+              ? voice::Status::ok()
+              : voice_.onTtsStart(voice_.activeTurnGeneration());
       if (!accepted.success || !streamingAudio_.authorize().ok()) {
         streamingAudio_.abort();
         voice_.onTransportError(voiceFailure(
@@ -881,20 +1212,56 @@ void PaperColorApplicationRuntime::onVoiceState(myai::VoiceState state) {
       }
     }
   } else if (state == myai::VoiceState::Error) {
+    voiceTtsSegmentEndedAt_ = 0;
+    listenAfterConnect_ = false;
+    voiceResponseDonePending_ = false;
+    voiceConnectPending_ = false;
     if (tutorialNarrationInFlight_) {
       tutorialNarrationInFlight_ = false;
       tutorialNarrationPending_ = true;
     }
     myAi_.disconnectVoice("voice_error_cleanup");
     voiceWasReady_ = false;
-    voiceReconnectAt_ = millis() + myAi_.suggestedVoiceReconnectDelayMs();
+    voiceReconnectAt_ = millis() + boundedVoiceReconnectDelay(
+        myAi_.suggestedVoiceReconnectDelayMs());
     voice_.onSessionLost(voiceFailure("myai_socket_lost", "voice gateway disconnected"));
   }
 }
 
 void PaperColorApplicationRuntime::onTranscript(
     const std::string& text, bool final) {
-  if (!final) voice_.onAsrPartial(text, voice_.activeTurnGeneration());
+  if (!final) {
+    voice_.onAsrPartial(text, voice_.activeTurnGeneration());
+    return;
+  }
+  appendMyAiChatMessage("user", text);
+  resetAssistantChatTurn();
+}
+
+void PaperColorApplicationRuntime::onAssistantText(
+    const std::string& text, bool final) {
+  if (!final) {
+    if (assistantChatFinalized_) resetAssistantChatTurn();
+    const size_t remaining = pendingAssistantText_.size() <
+            portal::kMaximumMyAiChatTextBytes
+        ? portal::kMaximumMyAiChatTextBytes - pendingAssistantText_.size()
+        : 0;
+    if (!remaining) {
+      myAiChatTruncated_ = true;
+      return;
+    }
+    const std::string delta = boundedChatText(text, remaining, false);
+    pendingAssistantText_.append(delta);
+    if (delta.size() < text.size()) myAiChatTruncated_ = true;
+    return;
+  }
+  if (assistantChatFinalized_) return;
+  const std::string finalText = pendingAssistantText_.empty()
+      ? boundedChatText(text, portal::kMaximumMyAiChatTextBytes)
+      : pendingAssistantText_;
+  appendMyAiChatMessage("assistant", finalText);
+  pendingAssistantText_.clear();
+  assistantChatFinalized_ = true;
 }
 
 void PaperColorApplicationRuntime::onLocalCommand(
@@ -904,13 +1271,17 @@ void PaperColorApplicationRuntime::onVoiceAction(
     const myai::VoiceEvent& action) {
   if (action.kind != "aigc.generate" || action.prompt.empty() ||
       action.prompt.size() > 1024 || aigcPhase_ != AigcPhase::Idle ||
-      album_.userUploadActive()) {
+      album_.userUploadActive() || tutorialNarrationInFlight_) {
+    // A tutorial/self-introduction is narration-only even if a remote model
+    // ignores the explicit no-tools instruction. Never let it start a costly
+    // display mutation behind the user's back.
     Diagnostics::event("AIGC_ACTION", "REJECTED");
     return;
   }
   aigcPrompt_ = action.prompt;
   aigcPhase_ = AigcPhase::Start;
   activityState_.noteMeaningfulActivity(millis());
+  Diagnostics::event("AIGC_ACTION", "ACCEPTED");
 }
 
 void PaperColorApplicationRuntime::onAigcState(
@@ -946,12 +1317,20 @@ void PaperColorApplicationRuntime::onError(const myai::Status& status) {
     else if (!status.ok())
       portalMyAiState_ = "error";
   }
+  if (status.code == myai::ErrorCode::Unauthorized &&
+      myAi_.activationState() == myai::ActivationState::Unconfigured) {
+    myAiRebindPending_ = true;
+    myAiRebindRetryAt_ = millis();
+  }
 }
 
 myai::LocalTranscriptDecision PaperColorApplicationRuntime::inspect(
     const std::string& transcript) {
   const voice::TranscriptDecision decision = voice_.onAsrFinal(
       transcript, voice_.activeTurnGeneration());
+  String route = decision.handledLocally ? "LOCAL:" : "REMOTE:";
+  route += String(static_cast<unsigned long>(transcript.size()));
+  Diagnostics::event("VOICE_ASR_FINAL", route);
   // VoiceRuntime itself dispatches remote response for unmatched transcripts.
   // Always consume here to prevent MyAiClient from sending a duplicate
   // response.create after the local interceptor returns.
@@ -993,6 +1372,8 @@ bool PaperColorApplicationRuntime::restartMyAiPairing(std::string* error) {
   }
   myAi_.disconnectVoice("owner_rebind");
   myAiAuthorized_ = false;
+  voiceConnectPending_ = false;
+  voiceConnectDeadline_ = 0;
   voice_.setEnabled(false);
   const myai::Status reset = myAi_.resetCredentialForRebind();
   if (!reset.ok()) {
@@ -1008,6 +1389,7 @@ bool PaperColorApplicationRuntime::restartMyAiPairing(std::string* error) {
     }
     return false;
   }
+  myAiRebindPending_ = false;
   activityState_.noteMeaningfulActivity(millis());
   return true;
 }
@@ -1223,7 +1605,9 @@ bool PaperColorApplicationRuntime::executeConfirmedOperation(
 
 bool PaperColorApplicationRuntime::mutationBusy() const {
   return displayBusy() || generationActive() || streamingAudio_.active() ||
-      voice_.captureActive() || promptPlayer_.busy() ||
+      responsiveWorkExecutor().active() ||
+      voiceConnectPending_ || voice_.turnActive() || voice_.captureActive() ||
+      promptPlayer_.busy() ||
       leds_.pixelDiagnosticActive() || ledDiagnosticPending_ ||
       album_.userUploadActive() || activityState_.externalPagePending();
 }
@@ -1539,7 +1923,159 @@ bool PaperColorApplicationRuntime::generateImage(
   }
   aigcPrompt_ = prompt;
   aigcPhase_ = AigcPhase::Start;
+  appendMyAiChatMessage(
+      "tool", std::string("AIGC 已排队；用户主题：") + prompt);
   activityState_.noteMeaningfulActivity(millis());
+  Diagnostics::event("AIGC_ACTION", "ACCEPTED_PORTAL");
+  if (error) error->clear();
+  return true;
+}
+
+void PaperColorApplicationRuntime::appendMyAiChatMessage(
+    const char* role, const std::string& text) {
+  appendMyAiChatMessageInternal(role, text, true);
+}
+
+void PaperColorApplicationRuntime::appendMyAiChatMessageInternal(
+    const char* role, const std::string& text, bool persist) {
+  if (!role || (std::strcmp(role, "user") != 0 &&
+                std::strcmp(role, "assistant") != 0 &&
+                std::strcmp(role, "tool") != 0)) {
+    return;
+  }
+  const std::string bounded = boundedChatText(
+      text, portal::kMaximumMyAiChatTextBytes);
+  if (bounded.empty() ||
+      (std::strcmp(role, "user") == 0 &&
+       isBlankAudioChatArtifact(bounded))) return;
+  portal::MyAiChatMessage message;
+  message.sequence = nextMyAiChatSequence_++;
+  if (nextMyAiChatSequence_ == 0) nextMyAiChatSequence_ = 1;
+  message.role = role;
+  message.text = bounded;
+  myAiChatHistory_.push_back(message);
+  if (persist && !appendMyAiChatLogRecord(message, text)) {
+    Diagnostics::event("WARN", "MYAI_CHAT_LOG_APPEND_FAILED");
+  }
+  size_t aggregate = 0;
+  for (size_t index = 0; index < myAiChatHistory_.size(); ++index)
+    aggregate += myAiChatHistory_[index].text.size();
+  while (myAiChatHistory_.size() > portal::kMaximumMyAiChatItems ||
+         aggregate > portal::kMaximumMyAiChatAggregateBytes) {
+    aggregate -= myAiChatHistory_.front().text.size();
+    myAiChatHistory_.erase(myAiChatHistory_.begin());
+    myAiChatTruncated_ = true;
+  }
+}
+
+bool PaperColorApplicationRuntime::appendMyAiChatLogRecord(
+    const portal::MyAiChatMessage& message, const std::string& fullText) {
+  if (!sd_.capabilities().mounted || !sd_.mkdir(kMyAiChatLogDirectory))
+    return false;
+  if (sd_.exists(kMyAiChatLogPath)) {
+    File existing = sd_.open(kMyAiChatLogPath, FILE_READ);
+    const size_t bytes = existing ? existing.size() : 0;
+    if (existing) existing.close();
+    if (bytes >= kMaximumMyAiChatLogBytes) {
+      if (sd_.exists(kMyAiChatPreviousLogPath) &&
+          !sd_.remove(kMyAiChatPreviousLogPath)) return false;
+      if (!sd_.rename(kMyAiChatLogPath, kMyAiChatPreviousLogPath))
+        return false;
+    }
+  }
+  File file = sd_.open(kMyAiChatLogPath, FILE_APPEND);
+  if (!file) return false;
+  JsonDocument record;
+  record["sequence"] = message.sequence;
+  record["time"] = clock_.utcIso8601();
+  record["role"] = message.role;
+  record["text"] = boundedChatText(
+      fullText, kMaximumMyAiChatLogLineBytes - 256U);
+  const size_t written = serializeJson(record, file);
+  const size_t newline = file.write(static_cast<uint8_t>('\n'));
+  file.flush();
+  const bool ok = written != 0 && newline == 1 && file.getWriteError() == 0;
+  file.close();
+  return ok;
+}
+
+bool PaperColorApplicationRuntime::loadMyAiChatLogFile(const char* path) {
+  if (!path || !sd_.exists(path)) return true;
+  File file = sd_.open(path, FILE_READ);
+  if (!file) return false;
+  bool ok = true;
+  while (file.available()) {
+    String raw = file.readStringUntil('\n');
+    if (raw.length() == 0) continue;
+    if (raw.length() > kMaximumMyAiChatLogLineBytes) {
+      ok = false;
+      continue;
+    }
+    JsonDocument record;
+    if (deserializeJson(record, raw) ||
+        !record["sequence"].is<uint64_t>() ||
+        !record["role"].is<const char*>() ||
+        !record["text"].is<const char*>()) {
+      ok = false;
+      continue;
+    }
+    const uint64_t sequence = record["sequence"].as<uint64_t>();
+    const std::string role = record["role"].as<const char*>();
+    const std::string text = record["text"].as<const char*>();
+    if (sequence == 0 || sequence >= UINT64_MAX ||
+        (role != "user" && role != "assistant" && role != "tool")) {
+      ok = false;
+      continue;
+    }
+    if (sequence < nextMyAiChatSequence_) {
+      ok = false;
+      continue;
+    }
+    // Preserve the durable sequence exactly; append increments it only after
+    // assigning the current record.
+    nextMyAiChatSequence_ = sequence;
+    appendMyAiChatMessageInternal(role.c_str(), text, false);
+  }
+  file.close();
+  return ok;
+}
+
+bool PaperColorApplicationRuntime::loadMyAiChatHistoryFromStorage() {
+  if (!sd_.capabilities().mounted) return true;
+  myAiChatHistory_.clear();
+  myAiChatTruncated_ = false;
+  nextMyAiChatSequence_ = 1;
+  const bool previous = loadMyAiChatLogFile(kMyAiChatPreviousLogPath);
+  const bool current = loadMyAiChatLogFile(kMyAiChatLogPath);
+  return previous && current;
+}
+
+void PaperColorApplicationRuntime::clearMyAiChatLogFiles() {
+  if (!sd_.capabilities().mounted) return;
+  if (sd_.exists(kMyAiChatLogPath)) sd_.remove(kMyAiChatLogPath);
+  if (sd_.exists(kMyAiChatPreviousLogPath))
+    sd_.remove(kMyAiChatPreviousLogPath);
+}
+
+void PaperColorApplicationRuntime::resetAssistantChatTurn() {
+  pendingAssistantText_.clear();
+  assistantChatFinalized_ = false;
+}
+
+bool PaperColorApplicationRuntime::readMyAiChatHistory(
+    portal::MyAiChatHistory* history) const {
+  if (!history) return false;
+  history->messages = myAiChatHistory_;
+  history->truncated = myAiChatTruncated_;
+  return true;
+}
+
+bool PaperColorApplicationRuntime::clearMyAiChatHistory(std::string* error) {
+  myAiChatHistory_.clear();
+  resetAssistantChatTurn();
+  myAiChatTruncated_ = false;
+  nextMyAiChatSequence_ = 1;
+  clearMyAiChatLogFiles();
   if (error) error->clear();
   return true;
 }
@@ -1707,6 +2243,8 @@ voice::Status PaperColorApplicationRuntime::applyAssistantPromptRuntime(
     const myai::Status disconnected = myAi_.disconnectVoice("prompt_update");
     if (!disconnected.ok()) return voiceFailure("prompt_disconnect_failed", disconnected.detail);
     voiceWasReady_ = false;
+    voiceConnectPending_ = false;
+    voiceConnectDeadline_ = 0;
     voice_.onSessionLost(voiceFailure(
         "prompt_session_restart", "voice session is restarting with the new prompt"));
   }
@@ -1737,6 +2275,22 @@ voice::Status PaperColorApplicationRuntime::setImageSetting(
     if (steps < 1 || steps > 50)
       return voiceFailure("invalid_image_steps", "steps must be 1..50");
     next.image.steps = static_cast<uint8_t>(steps);
+  } else if (key == "negative_prompt") {
+    if (value.size() > 384)
+      return voiceFailure(
+          "invalid_negative_prompt", "negative prompt must be at most 384 bytes");
+    next.image.negativePrompt = value;
+  } else if (key == "prompt_template") {
+    if (value.empty() || value.size() > 512)
+      return voiceFailure(
+          "invalid_image_prompt", "image prompt template must be 1..512 bytes");
+    next.imagePromptTemplate = value;
+  } else if (key == "model") {
+    // The device has no source-image capture contract, so only text-to-image
+    // is a truthful local setting. Do not silently pretend i2i was applied.
+    if (value != "t2i")
+      return voiceFailure(
+          "image_model_not_supported", "PaperColor currently supports t2i only");
   } else {
     return voiceFailure("unknown_image_setting", key);
   }
@@ -1758,6 +2312,8 @@ void PaperColorApplicationRuntime::onRuntimeState(voice::RuntimeState state) {
 void PaperColorApplicationRuntime::onCommandResult(
     const std::string& commandName, const std::string& detail) {
   Diagnostics::event("VOICE_TOOL", String(commandName.c_str()) + ":" + detail.c_str());
+  appendMyAiChatMessage(
+      "tool", commandName + (detail.empty() ? std::string() : ": " + detail));
 }
 
 void PaperColorApplicationRuntime::onConfirmationRequired(
@@ -1951,13 +2507,23 @@ bool PaperColorApplicationRuntime::syncInkloopPowerHook(void* context) {
 }
 
 bool PaperColorApplicationRuntime::connectVoiceIfAuthorized() {
-  if (!myAiAuthorized_ || WiFi.status() != WL_CONNECTED) return false;
+  if (!myAiAuthorized_ || WiFi.status() != WL_CONNECTED ||
+      voiceConnectPending_) return false;
+  voiceConnectPending_ = true;
+  voiceConnectDeadline_ = 0;
   const myai::Status connected = myAi_.connectVoice();
   if (!connected.ok()) {
+    voiceConnectPending_ = false;
+    voiceConnectDeadline_ = 0;
     voiceReconnectAt_ = millis() +
-        (connected.retryAfterMs ? connected.retryAfterMs : 5000U);
+        boundedVoiceReconnectDelay(connected.retryAfterMs);
     return false;
   }
+  // Gateway authorization, model preference lookup, candidate probing and
+  // session selection are synchronous on ESP32.  Start the WebSocket handshake
+  // budget only after those HTTP steps finish, otherwise a healthy socket can
+  // be torn down immediately after its 101 response.
+  voiceConnectDeadline_ = millis() + kVoiceConnectHandshakeTimeoutMs;
   lastHeartbeatAt_ = millis();
   return true;
 }
@@ -2004,7 +2570,8 @@ void PaperColorApplicationRuntime::pollPairing() {
   if (myAiAuthorized_) {
     const portal::OnboardingState* onboarding = portal_.onboarding();
     tutorialNarrationPending_ = onboarding && !onboarding->tutorialComplete();
-    connectVoiceIfAuthorized();
+    voiceConnectPending_ = false;
+    voiceReconnectAt_ = millis();
     Diagnostics::event("VOICE_TUTORIAL", "PRESS_TOP_BUTTON_TO_TALK");
   }
 }
@@ -2013,6 +2580,7 @@ void PaperColorApplicationRuntime::pollAigc() {
   if (aigcPhase_ == AigcPhase::Idle) return;
   myai::Status status;
   if (aigcPhase_ == AigcPhase::Start) {
+    Diagnostics::event("AIGC_PHASE", "STARTING");
     aigcRequest_ = myai::ImageRequest();
     const portal::ImageGenerationSettings& image = portal_.settings().image;
     const std::string orientedSubject =
@@ -2031,20 +2599,32 @@ void PaperColorApplicationRuntime::pollAigc() {
     aigcRequest_.steps = portal_.settings().image.steps;
     aigcRequest_.maxEncodedBytes = 2U * 1024U * 1024U;
     aigcRequest_.maxDecodedBytes = kMaxFrameBytes;
+    if (status.ok()) {
+      appendMyAiChatMessage(
+          "tool",
+          std::string("AIGC 实际请求\n尺寸：") + aigcRequest_.size +
+              "\n步数：" + std::to_string(aigcRequest_.steps) +
+              "\n正向提示词：" + aigcRequest_.prompt +
+              "\n负向提示词：" + aigcRequest_.negativePrompt);
+    }
     if (status.ok()) status = myAi_.startImage(aigcRequest_, aigcGenerated_);
     if (status.ok()) {
       aigcPhase_ = AigcPhase::Poll;
-      nextAigcPollAt_ = millis() + 1500U;
+      nextAigcPollAt_ = millis() + 5000U;
+      Diagnostics::event("AIGC_PHASE", "SUBMITTED");
+      appendMyAiChatMessage("tool", "AIGC 已提交，开始每 5 秒查询生成状态。");
     }
   } else if (aigcPhase_ == AigcPhase::Poll) {
     if (static_cast<int32_t>(millis() - nextAigcPollAt_) < 0) return;
-    nextAigcPollAt_ = millis() + 1500U;
+    nextAigcPollAt_ = millis() + 5000U;
     status = myAi_.pollImage(aigcGenerated_.promptId, aigcStatus_);
     if (status.ok() && (aigcStatus_.status == "completed" ||
                         aigcStatus_.status == "complete" ||
                         aigcStatus_.status == "succeeded") &&
         !aigcStatus_.outputs.empty()) {
       aigcPhase_ = AigcPhase::Download;
+      Diagnostics::event("AIGC_PHASE", "GENERATION_COMPLETE");
+      appendMyAiChatMessage("tool", "AIGC 生成完成，正在下载并校验 PNG。");
     } else if (status.ok()) {
       return;
     }
@@ -2056,10 +2636,16 @@ void PaperColorApplicationRuntime::pollAigc() {
           aigcGenerated_.promptId, aigcStatus_.outputs.front(), aigcRequest_,
           imageSink_, metadata);
       return status.ok() && imageSink_.takeCommittedAsset(aigcAsset_);
-    });
+    }, false);
     if (mutation == AlbumMutationResult::Complete) {
       setImageLed(displaypower::ImageLedState::Caching);
       aigcPhase_ = AigcPhase::Display;
+      Diagnostics::event("AIGC_PHASE", "CACHED");
+      appendMyAiChatMessage(
+          "tool",
+          std::string("AIGC 已写入相册；asset=") +
+              aigcAsset_.id.c_str() + "，bytes=" +
+              std::to_string(aigcAsset_.bytes));
     } else if (mutation == AlbumMutationResult::RevisionPersistenceFailed ||
                mutation == AlbumMutationResult::RevisionUnavailable) {
       status = myai::Status(
@@ -2072,6 +2658,7 @@ void PaperColorApplicationRuntime::pollAigc() {
     }
   } else if (aigcPhase_ == AigcPhase::Display) {
     if (displayBusy()) return;
+    Diagnostics::event("AIGC_PHASE", "DISPLAY_START");
     DownloadedFrame frame;
     AlbumAsset asset;
     const bool loaded = album_.loadPage(
@@ -2082,8 +2669,12 @@ void PaperColorApplicationRuntime::pollAigc() {
     if (shown) {
       album_.markCurrent(asset.backend, asset.id);
       setImageLed(displaypower::ImageLedState::Complete);
+      Diagnostics::event("AIGC_PHASE", "DISPLAY_COMPLETE");
+      appendMyAiChatMessage("tool", "AIGC 图片已完成上屏。");
     } else {
       setImageLed(displaypower::ImageLedState::Error);
+      Diagnostics::event("AIGC_PHASE", "DISPLAY_FAILED");
+      appendMyAiChatMessage("tool", "AIGC 图片已缓存，但上屏失败。");
     }
     myAi_.disconnectImage(shown ? "complete" : "display_failed");
     aigcPhase_ = AigcPhase::Idle;
@@ -2092,6 +2683,11 @@ void PaperColorApplicationRuntime::pollAigc() {
   }
   if (!status.ok()) {
     Diagnostics::event("AIGC_ERROR", status.detail.c_str());
+    appendMyAiChatMessage(
+        "tool", std::string("AIGC 失败：") +
+            (status.detail.empty()
+                 ? std::to_string(static_cast<int>(status.code))
+                 : status.detail));
     setImageLed(displaypower::ImageLedState::Error);
     myAi_.disconnectImage("failed");
     imageSink_.abort();
@@ -2101,14 +2697,43 @@ void PaperColorApplicationRuntime::pollAigc() {
 }
 
 AlbumMutationResult PaperColorApplicationRuntime::runAlbumMutation(
-    const std::function<bool()>& mutation) {
+    const std::function<bool()>& mutation,
+    bool dispatchMutation) {
   return runRevisionGatedAlbumMutation(
       albumRevision_,
-      [this](uint64_t next) { return storeAlbumRevision(next); },
+      [this](uint64_t next) {
+        struct RevisionWork {
+          PaperColorApplicationRuntime* runtime;
+          uint64_t next;
+          bool stored;
+        } work{this, next, false};
+        const bool dispatched = responsiveWorkExecutor().execute(
+            ResponsiveWorkKind::StorageHardware,
+            [](void* raw) {
+              RevisionWork* item = static_cast<RevisionWork*>(raw);
+              item->stored = item->runtime->storeAlbumRevision(item->next);
+            },
+            &work);
+        return dispatched && work.stored;
+      },
       [this](uint64_t revision, bool healthy) {
         publishAlbumRevision(revision, healthy);
       },
-      mutation,
+      [&mutation, dispatchMutation]() {
+        if (!dispatchMutation) return mutation();
+        struct MutationWork {
+          const std::function<bool()>* operation;
+          bool completed;
+        } work{&mutation, false};
+        const bool dispatched = responsiveWorkExecutor().execute(
+            ResponsiveWorkKind::StorageHardware,
+            [](void* raw) {
+              MutationWork* item = static_cast<MutationWork*>(raw);
+              item->completed = (*item->operation)();
+            },
+            &work);
+        return dispatched && work.completed;
+      },
       nullptr);
 }
 

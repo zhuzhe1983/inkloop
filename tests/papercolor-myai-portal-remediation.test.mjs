@@ -182,7 +182,7 @@ int main() {
 });
 
 test("concrete Portal/MyAI adapters enforce typed recovery, terminal scrub, and pre-allocation frame checks", async () => {
-  const [portal, application, adapters, header, main, statusPng, portalCore] = await Promise.all([
+  const [portal, application, adapters, header, main, statusPng, portalCore, platformio] = await Promise.all([
     readFile(new URL("PaperColorPortalRuntime.cpp", sourceRoot), "utf8"),
     readFile(new URL("PaperColorApplicationRuntime.cpp", sourceRoot), "utf8"),
     readFile(new URL("PaperColorMyAiAdapters.cpp", sourceRoot), "utf8"),
@@ -190,6 +190,7 @@ test("concrete Portal/MyAI adapters enforce typed recovery, terminal scrub, and 
     readFile(new URL("main.cpp", sourceRoot), "utf8"),
     readFile(new URL("PaperColorStatusPng.cpp", sourceRoot), "utf8"),
     readFile(new URL("../lib/InkloopPortal/InkloopPortal.cpp", sourceRoot), "utf8"),
+    readFile(new URL("../platformio.ini", sourceRoot), "utf8"),
   ]);
 
   assert.match(header, /PortalSnapshotLoadResult loadSnapshot/);
@@ -217,20 +218,82 @@ test("concrete Portal/MyAI adapters enforce typed recovery, terminal scrub, and 
   assert.match(application, /config\.macAddress = macAddress/);
   assert.match(application, /ActivationState::RecoveryRequired\) &&[\s\S]*checkAuthorization/);
   assert.match(application, /ErrorCode::Unauthorized\)[\s\S]*portalMyAiState_ = "auth_rejected"/);
+  assert.match(application, /myAiRebindPending_[\s\S]*portal_\.requestMyAiRebind/);
+  assert.match(application, /MYAI_REBIND[\s\S]*AUTO_STARTED/);
+  assert.match(application, /ActivationState::Unconfigured[\s\S]*hasDurableInkloopIdentity[\s\S]*MYAI_REBIND[\s\S]*RECOVERY_PENDING/);
+  assert.match(application, /voiceConnectPending_[\s\S]*voiceConnectDeadline_[\s\S]*HANDSHAKE_TIMEOUT/);
+  assert.match(application, /streamingAudio_\.poll\(\);[\s\S]*receiveBackpressured\(\)[\s\S]*websocket_\.loop\(\);/);
+  assert.match(adapters, /MALLOC_CAP_SPIRAM[\s\S]*kPreferredQueueBytes/);
+  assert.match(adapters, /Consume at most one complete frame per cooperative iteration/);
+  assert.match(adapters, /M5\.Speaker\.isPlaying\(kSpeakerChannel\) < 2/);
+  assert.match(adapters, /std::vector<int16_t>& buffer = playback_\[playbackCursor_\]/);
+  assert.match(adapters, /ending_ = true;[\s\S]*if \(queuedBytes_ == 0 && speakerIdle\(\)\)/);
+  assert.doesNotMatch(adapters, /PaperColorStreamingAudio::waitForPlayback/);
+  const connectVoiceBody = application.slice(
+    application.indexOf("bool PaperColorApplicationRuntime::connectVoiceIfAuthorized"),
+    application.indexOf("void PaperColorApplicationRuntime::pollPairing"),
+  );
+  assert.ok(connectVoiceBody.indexOf("myAi_.connectVoice()") >= 0);
+  assert.ok(connectVoiceBody.indexOf("myAi_.connectVoice()") <
+    connectVoiceBody.indexOf("voiceConnectDeadline_ = millis() +"));
+  assert.match(connectVoiceBody, /voiceConnectDeadline_ = 0[\s\S]*myAi_\.connectVoice\(\)[\s\S]*voiceConnectDeadline_ = millis\(\) \+/);
+  assert.match(application, /listenAfterConnect_ = true[\s\S]*SESSION_CONNECT_STARTED/);
+  assert.match(application, /listenAfterConnect_[\s\S]*LISTENING_AFTER_CONNECT/);
+  assert.match(application, /kVoiceTtsCompletionGraceMs[\s\S]*completeVoiceResponseAfterTtsStop[\s\S]*GRACE_FALLBACK/);
+  assert.match(application, /introductionPending_[\s\S]*VOICE_INTRO[\s\S]*TEXT_REQUEST_SENT/);
+  assert.match(application, /mutationBusy\(\) const[\s\S]*voiceConnectPending_[\s\S]*voice_\.turnActive\(\)/);
+  assert.match(application, /scrubbed-v4/);
+  assert.match(adapters, /setHandshakeTimeout\(15\)[\s\S]*setTimeout\(15\)/);
+  assert.match(main, /MyAiServiceUnavailable[\s\S]*noteMyAiUnavailableDisplayApplied\(\)/);
+  assert.match(main, /voiceHandshakePending\(\)[\s\S]*\? 2[\s\S]*voiceRealtimeActive\(\)[\s\S]*\? 5 : 50/);
+  const loopBody = application.slice(
+    application.indexOf("void PaperColorApplicationRuntime::loop"),
+    application.indexOf("bool PaperColorApplicationRuntime::handleButton"),
+  );
+  assert.doesNotMatch(loopBody, /connectVoiceIfAuthorized\(\)/);
+  const buttonBody = application.slice(
+    application.indexOf("bool PaperColorApplicationRuntime::handleButton"),
+    application.indexOf("bool PaperColorApplicationRuntime::requestVoiceIntroduction"),
+  );
+  assert.match(buttonBody, /myAiAuthorized_ && !voiceWasReady_[\s\S]*connectVoiceIfAuthorized\(\)/);
+  assert.match(buttonBody, /listenAfterConnect_ = true/);
+  assert.doesNotMatch(buttonBody, /introductionPending_ = true/);
+  assert.match(buttonBody, /SESSION_CONNECT_STARTED/);
+  assert.match(application, /boundedVoiceReconnectDelay[\s\S]*kMinimumVoiceReconnectDelayMs/);
+  const beginBody = application.slice(
+    application.indexOf("bool PaperColorApplicationRuntime::begin"),
+    application.indexOf("bool PaperColorApplicationRuntime::recoverPortalBoundState"),
+  );
+  assert.doesNotMatch(beginBody, /connectVoiceIfAuthorized\(\)/);
+  assert.match(beginBody, /voiceReconnectAt_ = millis\(\)/);
+  assert.match(application, /wifiConfigured && WiFi\.status\(\) == WL_CONNECTED[\s\S]*softAPdisconnect\(true\)[\s\S]*WiFi\.mode\(WIFI_STA\)/);
+  assert.match(application, /DISABLED_STATION_CONNECTED/);
+  assert.match(main, /settingsAccessPointActive\(\)[\s\S]*Open inkloop\.local on the same Wi-Fi/);
+  assert.match(portalCore, /myAiState == "recovery"[\s\S]*恢复 \/ 重新绑定 MyAI/);
   assert.match(main, /portal-recover-bound/);
   assert.match(main, /snapshot\.pairingCode = client\.paired\(\) \? String\(\) : client\.pairingCode\(\)/);
   assert.match(main, /client\.paired\(\)[\s\S]*BOUND_NO_CODE/);
 
-  const onEvent = adapters.slice(
-    adapters.indexOf("void Esp32MyAiWebSocket::onEvent"),
-    adapters.indexOf("void Esp32MyAiWebSocket::rejectIngress"),
+  const frameParser = adapters.slice(
+    adapters.indexOf("bool Esp32MyAiWebSocket::parseOneFrame"),
+    adapters.indexOf("void Esp32MyAiWebSocket::notifyClosed"),
   );
-  assert.ok(onEvent.indexOf("acceptMyAiIngressFrame") >= 0);
-  assert.ok(onEvent.indexOf("acceptMyAiIngressFrame") < onEvent.indexOf("std::string("));
-  assert.ok(onEvent.indexOf("acceptMyAiIngressFrame") < onEvent.indexOf("onWebSocketBinary(payload, length)"));
-  assert.match(onEvent, /rejectIngress\(listener, 1009, "text_frame_too_large"\)/);
-  assert.match(onEvent, /rejectIngress\(listener, 1009, "audio_frame_too_large"\)/);
-  assert.match(onEvent, /WStype_FRAGMENT_TEXT_START[\s\S]*fragmented_frame_rejected/);
+  assert.ok(frameParser.indexOf("acceptMyAiIngressFrame") >= 0);
+  assert.ok(frameParser.indexOf("acceptMyAiIngressFrame") < frameParser.indexOf("std::string("));
+  assert.ok(frameParser.indexOf("acceptMyAiIngressFrame") < frameParser.indexOf("onWebSocketBinary(payload, payloadLength)"));
+  assert.match(frameParser, /rejectIngress\(listener, 1009, "text_frame_too_large"\)/);
+  assert.match(frameParser, /rejectIngress\(listener, 1009, "audio_frame_too_large"\)/);
+  assert.match(frameParser, /!final[\s\S]*fragmented_frame_rejected/);
+  assert.match(adapters, /Sec-WebSocket-Accept|sec-websocket-accept/);
+  assert.match(adapters, /0x80U \| length/);
+  assert.match(adapters, /esp_random\(\)/);
+  assert.match(adapters, /sendMaskedFrame\(\s*0x1U/);
+  assert.match(adapters, /sendMaskedFrame\(\s*0x2U/);
+  assert.doesNotMatch(adapters, /sendTXT|sendBIN|beginSslWithBundle/);
+  assert.match(adapters, /client_\.setCACertBundle\(rootca_crt_bundle_start\)/);
+  assert.match(adapters, /UPGRADE_READY/);
+  assert.match(platformio, /ARDUINO_LOOP_STACK_SIZE=16384/);
+  assert.match(application, /album_\.userUploadActive\(\) \|\| tutorialNarrationInFlight_/);
   assert.match(adapters, /PaperColorStreamingAudio::write[\s\S]*length > kMaximumMyAiWebSocketAudioFrameBytes/);
 
   const credentialLoad = adapters.slice(
@@ -261,6 +324,8 @@ test("concrete Portal/MyAI adapters enforce typed recovery, terminal scrub, and 
   );
   assert.match(application, /clearPendingPairingMaterial[\s\S]*secureClear\(pendingPairing_\.onboardingCode\)[\s\S]*secureClear\(pendingPairing_\.bindingUrl\)/);
   assert.match(application, /tryTerminalDisplayScrub[\s\S]*makeBoundStatusPng[\s\S]*"binding-complete"/);
+  assert.match(application, /ActivationState::Bound[\s\S]*reconcileTerminalBindingState\(\)/);
+  assert.match(application, /voiceResponseDonePending_[\s\S]*RuntimeState::Speaking[\s\S]*onTtsStop/);
   assert.match(application, /"myai-pairing"[\s\S]*pairingScreen\.length,[\s\S]*true\)/);
   assert.match(application, /"myai-service-unavailable"[\s\S]*unavailable\.length, true\)/);
   assert.match(application, /"binding-complete"[\s\S]*readyScreen\.length, true\)/);

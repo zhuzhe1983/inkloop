@@ -112,7 +112,9 @@ class AlbumStore {
   );
   void cleanupOrphans(IStorageBackend& storage, JsonArrayConst assets);
   bool validateAssetFile(IStorageBackend& storage, const char* path, size_t expectedBytes, bool* landscape = nullptr);
-  static bool validatePng(const uint8_t* bytes, size_t length, bool& landscape);
+  static bool validatePng(
+      const uint8_t* bytes, size_t length, bool& landscape,
+      const char** failure = nullptr);
   static String sha256Hex(const uint8_t* bytes, size_t length);
   static String sha256File(IStorageBackend& storage, const char* path);
   static size_t albumBytes(JsonArrayConst assets);

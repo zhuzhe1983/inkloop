@@ -13,7 +13,7 @@ static constexpr char kSkuId[] = "m5-papercolor-c151";
 static constexpr char kDefaultApiUrl[] = "https://inkloop.mess.host/api/devices";
 static constexpr char kUnpatchedApiPrefix[] = "INKLOOP_";
 static constexpr char kTasksPath[] = "/tasks.json";
-static constexpr uint32_t kSyncIntervalMs = 15000;
+static constexpr uint32_t kSyncIntervalMs = 30000;
 static constexpr uint32_t kScheduleTickMs = 30000;
 static constexpr size_t kMaxFrameBytes = 1500000;
 

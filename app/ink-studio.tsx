@@ -70,7 +70,7 @@ import {
 type Tab = "studio" | "mine" | "explore" | "device" | "products";
 type Toast = { tone: "success" | "error" | "info"; message: string } | null;
 type ToastTone = NonNullable<Toast>["tone"];
-type GeneratorStatus = "checking" | "online" | "local";
+type GeneratorStatus = "checking" | "online" | "degraded" | "local";
 type PreviewStatus = "ready" | "loading" | "fallback";
 type DeviceTaskStatus = "scheduled" | "writing" | "error";
 type ArtworkCredit = { provider: string; url: string };
@@ -3478,20 +3478,27 @@ export default function InkStudio() {
     fetch("/api/generate")
       .then(async (response) => {
         if (!response.ok) throw new Error("generator unavailable");
-        return (await response.json()) as { configured?: boolean; model?: string; models?: string[] };
+        return (await response.json()) as {
+          configured?: boolean;
+          available?: boolean;
+          defaultModelAvailable?: boolean;
+          model?: string;
+          models?: string[];
+        };
       })
       .then((data) => {
-        setGeneratorStatus(data.configured ? "online" : "local");
         const models = Array.isArray(data.models)
           ? [...new Set(data.models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))]
           : [];
         const defaultModel = data.model?.trim() || "auto";
-        const availableModels = defaultModel === "auto" || models.includes(defaultModel)
-          ? models
-          : [defaultModel, ...models];
-        setGeneratorModels(availableModels);
+        setGeneratorStatus(!data.configured ? "local" : data.available && models.length ? "online" : "degraded");
+        setGeneratorModels(models);
         const storedModel = localStorage.getItem(GENERATOR_MODEL_KEY)?.trim() || "";
-        setGeneratorModel(storedModel === "auto" || availableModels.includes(storedModel) ? storedModel : defaultModel);
+        setGeneratorModel(storedModel === "auto" || models.includes(storedModel)
+          ? storedModel
+          : data.defaultModelAvailable && models.includes(defaultModel)
+            ? defaultModel
+            : "auto");
       })
       .catch(() => setGeneratorStatus("local"));
   }, []);
@@ -3656,12 +3663,12 @@ export default function InkStudio() {
         setGeneratorStatus("online");
         showToast(`已由 ${result.model || "在线模型"} 生成应用`, "success");
       } else {
-        setGeneratorStatus(generatorModels.length ? "online" : "local");
+        setGeneratorStatus("degraded");
         showToast(result.warning || tRuntime("已使用本地模板生成"), "info");
       }
     } catch (error) {
       setApp({ ...applyPreferredCityToGeneratedApp(generateInkApp(prompt), prompt, preferredWeatherCity), localImage: app.localImage });
-      setGeneratorStatus(generatorModels.length ? "online" : "local");
+      setGeneratorStatus(generatorStatus === "local" ? "local" : "degraded");
       showToast(error instanceof Error ? `${error.message}，${t("已使用本地模板")}` : tRuntime("已使用本地模板"), "info");
     } finally {
       setGenerating(false);
@@ -4954,10 +4961,10 @@ export default function InkStudio() {
                   <i>{generating ? "•••" : "→"}</i>
                 </button>
                 <div className="generator-note">
-                  <span className={generatorStatus === "online" ? "online" : ""}>LLM</span>
+                  <span className={generatorStatus === "online" ? "online" : generatorStatus === "degraded" ? "degraded" : ""}>LLM</span>
                   {generatorStatus === "online" ? (
                     <p className="generator-ready">
-                      <span>{t("在线编码已就绪 ·")}</span>
+                      <span>{t("在线模型已发现 ·")}</span>
                       <select
                         className="generator-model-select"
                         value={generatorModel}
@@ -4976,9 +4983,11 @@ export default function InkStudio() {
                         ))}
                       </select>
                     </p>
-                  ) : (
-                    <p>{generatorStatus === "checking" ? tRuntime("正在检查在线编码服务…") : tRuntime("等待配置 LLM_API_KEY · 当前自动使用本地模板")}</p>
-                  )}
+                  ) : <p>{generatorStatus === "checking"
+                    ? tRuntime("正在检查在线编码服务…")
+                    : generatorStatus === "degraded"
+                      ? tRuntime("在线模型暂不可用 · 当前使用本地模板")
+                      : tRuntime("等待配置 LLM_API_KEY · 当前自动使用本地模板")}</p>}
                 </div>
               </section>
 

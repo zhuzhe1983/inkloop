@@ -206,6 +206,9 @@ void appendIdentity(std::ostringstream& body, const std::string& deviceId,
 
 }  // namespace
 
+CanonicalJsonCodec::CanonicalJsonCodec(const std::string& hardwareSku)
+    : hardwareSku_(hardwareSku.empty() ? kHardwareSku : hardwareSku) {}
+
 std::string CanonicalJsonCodec::pairingStartBody(
     const std::string& code, const std::string& fingerprint,
     const std::string& label) const {
@@ -213,7 +216,7 @@ std::string CanonicalJsonCodec::pairingStartBody(
   body << "{";
   appendIdentity(body, code, fingerprint);
   body << ",\"label\":" << quote(label)
-       << ",\"hardware_sku\":\"" << kHardwareSku << "\"}";
+       << ",\"hardware_sku\":" << quote(hardwareSku_) << "}";
   return body.str();
 }
 

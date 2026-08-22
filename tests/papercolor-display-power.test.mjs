@@ -314,7 +314,9 @@ int main() {
   assert(imageLedOutput(ImageLedState::Off, 0, 0).valid);
   assert(!imageLedOutput(ImageLedState::Off, 0, 0).illuminated);
   LedOutput generating = imageLedOutput(ImageLedState::Generating, 1000, 0);
-  assert(generating.illuminated && generating.color.red > 0 && generating.color.blue > 0);
+  assert(generating.illuminated && generating.color.green > 0 &&
+         generating.color.green > generating.color.red &&
+         generating.color.green > generating.color.blue);
   LedOutput downloading = imageLedOutput(ImageLedState::Downloading, 300, 0);
   assert(downloading.illuminated && downloading.color.blue > downloading.color.red);
   LedOutput caching = imageLedOutput(ImageLedState::Caching, 400, 0);

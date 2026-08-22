@@ -213,6 +213,13 @@ class IMyAiEvents {
   virtual void onPairingReady(const PairingView& pairing) = 0;
   virtual void onVoiceState(VoiceState state) = 0;
   virtual void onTranscript(const std::string& text, bool final) = 0;
+  // Text events are separate from TTS audio so a local client can present a
+  // bounded, privacy-preserving conversation view without decoding audio.
+  // The default keeps older third-party adapters source compatible.
+  virtual void onAssistantText(const std::string& text, bool final) {
+    (void)text;
+    (void)final;
+  }
   virtual void onLocalCommand(const std::string& commandName,
                               const std::string& transcript) = 0;
   virtual void onVoiceAction(const VoiceEvent& action) = 0;

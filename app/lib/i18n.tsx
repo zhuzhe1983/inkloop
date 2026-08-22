@@ -48,7 +48,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("zh");
 
   useEffect(() => {
-    setLocaleState(detectLocale());
+    // Keep the server and first client render on the same locale, then apply
+    // browser-only URL/storage/navigator detection after hydration.
+    const timer = window.setTimeout(() => setLocaleState(detectLocale()), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {

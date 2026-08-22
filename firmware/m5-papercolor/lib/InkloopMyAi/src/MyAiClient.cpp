@@ -739,6 +739,17 @@ Status MyAiClient::disconnectVoice(const std::string& reason) {
   return status;
 }
 
+Status MyAiClient::completeVoiceResponseAfterTtsStop() {
+  if (!voiceSocketOpen_)
+    return Status(ErrorCode::InvalidState, 0, "voice socket is not open");
+  if (voiceState_ == VoiceState::Ready) return Status::success();
+  if (voiceState_ != VoiceState::Speaking)
+    return Status(ErrorCode::InvalidState, 0,
+                  "voice response is not awaiting completion");
+  setVoice(VoiceState::Ready);
+  return Status::success();
+}
+
 Status MyAiClient::comboVoice(const std::string& pcm16Base64,
                               size_t maxResponseBase64Bytes,
                               std::string& transcript, std::string& reply,
@@ -981,11 +992,14 @@ Status MyAiClient::classifyHttp(const HttpResponse& response,
     } else if (kind == RequestKind::DeviceCheck ||
                kind == RequestKind::CenterAuthenticated ||
                kind == RequestKind::GatewayBusiness) {
-      // A transient or rotating Center token must remain recoverable. Keep the
-      // exact persisted credential and surface the original HTTP diagnosis;
-      // a later authorization retry can recover without generating another
-      // pairing code or invalidating the user's bound device relationship.
-      setActivation(ActivationState::RecoveryRequired, status);
+      // Center device tokens are stable for the lifetime of the bound device.
+      // A 401 therefore means this durable runtime credential is unusable
+      // (for example, the owner deleted the device). Preserve only the stable
+      // installation fingerprint so the application can start a fresh
+      // six-digit pairing flow.
+      Status cleared = clearRuntimeCredentialFailClosed();
+      if (!cleared.ok()) return cleared;
+      setActivation(ActivationState::Unconfigured, status);
     }
   } else if (httpStatus == 402) {
     status = Status(
@@ -1090,6 +1104,10 @@ void MyAiClient::onWebSocketText(const std::string& message) {
       if (!status.ok()) events_.onError(status);
       else setVoice(VoiceState::Thinking);
     }
+  } else if (event.type == "llm.delta") {
+    events_.onAssistantText(event.text, false);
+  } else if (event.type == "llm.done") {
+    events_.onAssistantText(event.text, true);
   } else if (event.type == "tts.start") {
     status = audio_.begin(event.sampleRateHz ? event.sampleRateHz
                                             : kVoiceSampleRateHz,
@@ -1100,6 +1118,9 @@ void MyAiClient::onWebSocketText(const std::string& message) {
     status = audio_.end();
     if (!status.ok()) events_.onError(status);
   } else if (event.type == "response.done") {
+    // Some compatible gateways omit llm.done but include the final text on
+    // response.done. The application owns de-duplication when both arrive.
+    if (!event.text.empty()) events_.onAssistantText(event.text, true);
     setVoice(VoiceState::Ready);
   } else if (event.type == "action.execute") {
     events_.onVoiceAction(event);

@@ -276,6 +276,25 @@ static const size_t kMaximumAlbumJsonBytes = 12288;
 static const size_t kMaximumDashboardHtmlBytes = 32768;
 static const size_t kMaximumAlbumUploadBytes = 1500000;
 static const size_t kMaximumAlbumUploadTitleBytes = 64;
+static const size_t kMaximumMyAiChatItems = 24;
+static const size_t kMaximumMyAiChatTextBytes = 2048;
+static const size_t kMaximumMyAiChatAggregateBytes = 16384;
+static const size_t kMaximumMyAiChatJsonBytes = 24576;
+
+struct MyAiChatMessage {
+  uint64_t sequence;
+  std::string role;
+  std::string text;
+
+  MyAiChatMessage() : sequence(0), role(), text() {}
+};
+
+struct MyAiChatHistory {
+  std::vector<MyAiChatMessage> messages;
+  bool truncated;
+
+  MyAiChatHistory() : messages(), truncated(false) {}
+};
 
 struct AlbumUploadResult {
   std::string assetId;
@@ -443,6 +462,15 @@ class IPortalAdapter {
       const std::string& prompt, std::string* error) {
     (void)prompt;
     if (error) *error = "aigc_unavailable";
+    return false;
+  }
+  virtual bool readMyAiChatHistory(MyAiChatHistory* history) const {
+    if (!history) return false;
+    *history = MyAiChatHistory();
+    return true;
+  }
+  virtual bool clearMyAiChatHistory(std::string* error) {
+    if (error) *error = "myai_chat_clear_unavailable";
     return false;
   }
   virtual DiagnosticsSnapshot diagnostics() const = 0;

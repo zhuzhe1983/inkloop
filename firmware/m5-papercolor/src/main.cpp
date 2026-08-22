@@ -8,7 +8,6 @@
 #include "AlbumPrimitives.h"
 #include "AlbumStore.h"
 #include "AudioPrompt.h"
-#include "BusyButtonCapture.h"
 #include "ButtonRouter.h"
 #include "CompatibilityPrimitives.h"
 #include "Diagnostics.h"
@@ -20,6 +19,7 @@
 #include "PaperColorApplicationRuntime.h"
 #include "PageSelectionPrimitives.h"
 #include "SettingsStore.h"
+#include "ResponsiveWorkExecutor.h"
 #include "Storage.h"
 #include "StorageRecoveryPrimitives.h"
 #include "TaskStore.h"
@@ -46,7 +46,6 @@ ButtonRouter buttons;
 AlbumStore album(storage);
 AudioPrompt audioPrompt;
 DisplayTransaction displayTransaction(storage, album, tasks);
-BusyButtonCapture busyButtonCapture;
 WiFiManager wifiManager;
 WifiProvisioningState wifiProvisioning;
 
@@ -57,6 +56,7 @@ void acceptPendingPage(
   uint32_t nowMilliseconds
 );
 void clearPendingPage(uint32_t nowMilliseconds);
+void pollSerialConsole();
 PaperColorApplicationRuntime applicationRuntime(
   storage,
   sdStorage,
@@ -74,6 +74,8 @@ PaperColorApplicationRuntime applicationRuntime(
 
 String wifiAccessPoint;
 String serialCommand;
+bool pendingVoiceButton = false;
+bool pendingVoiceIntroduction = false;
 uint32_t lastSyncAt = 0;
 uint32_t lastScheduleAt = 0;
 uint32_t lastHeartbeatAt = 0;
@@ -86,6 +88,14 @@ volatile uint8_t lastWifiDisconnectReason = 0;
 volatile bool wifiDisconnectObserved = false;
 StorageRecoveryState storageRecovery = storageRecoveryState(false, false);
 bool pendingPageReady = false;
+
+void pumpResponsiveWork(void*, ResponsiveWorkKind kind) {
+  M5.update();
+  buttons.poll();
+  pollSerialConsole();
+  audioPrompt.poll();
+  if (applicationRuntimeReady) applicationRuntime.pumpResponsiveUi(kind);
+}
 size_t pendingPage = 0;
 StorageBackendRef pendingPageBackend;
 uint32_t pendingPageAt = 0;
@@ -223,7 +233,18 @@ void onButton(ButtonEvent event, void*) {
     return;
   }
   if (event == ButtonEvent::Voice) {
-    if (applicationRuntimeReady) applicationRuntime.handleButton(event);
+    // Gateway selection performs several bounded TLS requests.  Defer the
+    // work out of the M5 button callback so it runs from the shallow main-loop
+    // frame and cannot exhaust loopTask's stack.
+    pendingVoiceButton = true;
+    return;
+  }
+  if (applicationRuntimeReady && responsiveWorkExecutor().active() &&
+      responsiveWorkExecutor().activeKind() ==
+          ResponsiveWorkKind::StorageHardware) {
+    applicationRuntime.notifyPageBusy();
+    audioPrompt.requestDisplayBusy();
+    Diagnostics::event("PAGE_REJECTED", "STORAGE_TRANSACTION_BUSY");
     return;
   }
   if (!storageRecovery.taskStoreReady) {
@@ -738,6 +759,8 @@ bool isKnownSerialCommand(const String& command) {
     command == "led-test" || command == "led-map" || command == "led-map 0" ||
     command == "led-map 1" || command == "led-map swap" || command == "led-map auto" ||
     command == "sound-test" || command == "screen-test" ||
+    command == "voice-intro" || command == "voice-tap" ||
+    command == "aigc-test" ||
     command == "myai-enable" || command == "myai-disable" || command == "reboot";
 }
 
@@ -756,7 +779,7 @@ void executeSerialCommand(String command) {
     return;
   }
   if (command == "help") {
-    Diagnostics::event("HELP", "help,status,pair-code,portal-recover-bound,album-status,display-txn,display-recover [target|previous],led-test,led-map [0|1|swap|auto],sound-test,screen-test,myai-enable,myai-disable,reboot");
+    Diagnostics::event("HELP", "help,status,pair-code,portal-recover-bound,album-status,display-txn,display-recover [target|previous],led-test,led-map [0|1|swap|auto],sound-test,screen-test,voice-intro,voice-tap,aigc-test,myai-enable,myai-disable,reboot");
   } else if (command == "status" || command == "diag") {
     printDiagnosticStatus();
   } else if (command == "pair-code") {
@@ -812,6 +835,24 @@ void executeSerialCommand(String command) {
       safeShowStatus("Inkloop diagnostics", "Screen refresh completed", client.hardwareId(), GREEN);
       Diagnostics::event("TEST", "SCREEN_OK");
     }
+  } else if (command == "voice-intro") {
+    pendingVoiceIntroduction = true;
+    Diagnostics::event("VOICE_INTRO_TEST", "QUEUED");
+  } else if (command == "voice-tap") {
+    // Exact serial equivalent of one physical top-button tap. It deliberately
+    // routes through the same deferred main-loop owner as the GPIO callback so
+    // AI coding can exercise the real microphone/ASR path without bypassing
+    // VoiceRuntime state, confirmations, LEDs, or display-busy gates.
+    pendingVoiceButton = true;
+    Diagnostics::event("VOICE_TAP_TEST", "QUEUED");
+  } else if (command == "aigc-test") {
+    std::string error;
+    const bool accepted = applicationRuntime.generateImage(
+      "红色灯塔与深蓝色大海，鲜艳六色墨水屏配色，强对比，大色块，简洁竖向构图，无文字",
+      &error);
+    Diagnostics::event(
+      "AIGC_DIAGNOSTIC",
+      accepted ? "QUEUED" : (error.empty() ? "REJECTED" : error.c_str()));
   } else if (command == "myai-enable" || command == "myai-disable") {
     const bool enabled = command == "myai-enable";
     Diagnostics::event(
@@ -886,10 +927,13 @@ void completeOnlineInitialization() {
         applicationRuntime.portalAccessCode().c_str(),
         RED
       );
+      applicationRuntime.noteMyAiUnavailableDisplayApplied();
     } else if (startupDisplay == StableStartupDisplay::SettingsReady) {
       safeShowSettingsPortal(
         "Inkloop settings",
-        "Connect to Settings Wi-Fi, then open inkloop.local",
+        applicationRuntime.settingsAccessPointActive()
+          ? "Connect to Settings Wi-Fi, then open inkloop.local"
+          : "Open inkloop.local on the same Wi-Fi",
         applicationRuntime.settingsAccessPoint(),
         applicationRuntime.settingsIpAddress(),
         applicationRuntime.portalAccessCode().c_str(),
@@ -1002,10 +1046,18 @@ void setup() {
   const PersistenceReadiness readiness(settingsReady, identityReady);
   if (!readiness.safeToStartNetwork()) recoverPersistentState(readiness, displayReady, ledReady);
   buttons.begin(onButton, nullptr);
-  if (!busyButtonCapture.begin(display)) {
-    Diagnostics::event("ERROR", "BUSY_BUTTON_CAPTURE_FAILED");
+  if (!responsiveWorkExecutor().begin()) {
+    Diagnostics::event("FATAL", "RESPONSIVE_IO_WORKER_UNAVAILABLE");
+  } else {
+    responsiveWorkExecutor().setPump(pumpResponsiveWork, nullptr);
+    Diagnostics::event("RESPONSIVE_IO_WORKER", "READY");
+    Diagnostics::event(
+      "TASK_TOPOLOGY",
+      String("CONTROL_CORE_") + String(xPortGetCoreID()) +
+      ":PRIORITY_" + String(uxTaskPriorityGet(nullptr)) +
+      ":IO_CORE_0:PRIORITY_1:INPUT_CORE_1:PRIORITY_4"
+    );
   }
-
   beginWifiProvisioning();
   printDiagnosticStatus();
 }
@@ -1013,11 +1065,11 @@ void setup() {
 void loop() {
   M5.update();
   buttons.poll();
-  const uint8_t busyAttempts = busyButtonCapture.takeAttempts();
-  if (busyAttempts) {
+  const bool suppressedPageAttempt = buttons.takeSuppressedPageAttempt();
+  if (suppressedPageAttempt) {
     if (applicationRuntimeReady) applicationRuntime.notifyPageBusy();
     audioPrompt.requestDisplayBusy();
-    Diagnostics::event("BUTTON_REJECTED_BUSY", String(busyAttempts));
+    Diagnostics::event("BUTTON_REJECTED_BUSY", "CAPTURED");
   }
   pollSerialConsole();
   if (wifiProvisioning.provisioning()) {
@@ -1028,6 +1080,20 @@ void loop() {
   if (!onlineInitializationComplete) {
     delay(kProvisioningLoopIntervalMs);
     return;
+  }
+  if (pendingVoiceButton) {
+    pendingVoiceButton = false;
+    const bool accepted = applicationRuntimeReady &&
+      applicationRuntime.handleButton(ButtonEvent::Voice);
+    Diagnostics::event(
+      "VOICE_BUTTON_DISPATCH", accepted ? "ACCEPTED" : "REJECTED");
+  }
+  if (pendingVoiceIntroduction) {
+    pendingVoiceIntroduction = false;
+    Diagnostics::event(
+      "VOICE_INTRO_DISPATCH",
+      applicationRuntimeReady && applicationRuntime.requestVoiceIntroduction()
+        ? "ACCEPTED" : "REJECTED");
   }
   audioPrompt.setEnabled(
       !applicationRuntimeReady || applicationRuntime.voiceAssistanceEnabled());
@@ -1064,9 +1130,14 @@ void loop() {
       return;
     }
   }
-  if (now - lastHeartbeatAt >= 5000) {
+  if (now - lastHeartbeatAt >= 30000) {
     lastHeartbeatAt = now;
     Diagnostics::event("HEARTBEAT", String(now));
   }
-  delay(50);
+  // The selected gateway allows only a short interval between HTTP 101 and
+  // session.update.  WebSocketsClient consumes handshake headers across loop
+  // calls, so poll much faster while that handshake is pending.
+  delay(applicationRuntimeReady && applicationRuntime.voiceHandshakePending()
+    ? 2 : (applicationRuntimeReady && applicationRuntime.voiceRealtimeActive()
+        ? 5 : 50));
 }

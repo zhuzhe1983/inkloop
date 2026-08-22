@@ -937,6 +937,8 @@ const en: Record<string, string> = {
   "也可直接粘贴": "or paste it",
   "试试这些": "Try these",
   "在线编码已就绪 ·": "Online coding is ready ·",
+  "在线模型已发现 ·": "Online model discovered ·",
+  "在线模型暂不可用 · 当前使用本地模板": "Online model is temporarily unavailable · using the local template",
   "自动选择模型": "Auto-select model",
   "屏幕预览": "Screen preview",
   "保持主题：": "Keep theme: ",

@@ -10,6 +10,7 @@
 #include "AppConfig.h"
 #include "Diagnostics.h"
 #include "InkloopPairingPrimitives.h"
+#include "ResponsiveWorkExecutor.h"
 
 extern "C" char inkloop_api_url_slot[192];
 
@@ -159,10 +160,26 @@ int InkloopClient::postJsonWithClient(
   if (authenticate && deviceId_.length() && deviceSecret_.length()) {
     http.addHeader("Authorization", "InkloopDevice " + deviceId_ + ":" + deviceSecret_);
   }
-  const int status = http.POST(body);
-  if (status > 0) response = http.getString();
-  http.end();
-  return status;
+  struct PostWork {
+    HTTPClient* http;
+    const String* body;
+    String* response;
+    int status;
+  } work{&http, &body, &response, -1};
+  const bool dispatched = responsiveWorkExecutor().execute(
+      ResponsiveWorkKind::InkloopNetwork,
+      [](void* raw) {
+        PostWork* work = static_cast<PostWork*>(raw);
+        work->status = work->http->POST(*work->body);
+        if (work->status > 0) *work->response = work->http->getString();
+        work->http->end();
+      },
+      &work);
+  if (!dispatched) {
+    http.end();
+    return -1;
+  }
+  return work.status;
 }
 
 int InkloopClient::postJson(const String& body, String& response, bool authenticate) {
@@ -298,27 +315,56 @@ bool InkloopClient::downloadFrameWithClient(Client& client, const String& frameU
   }
   http.setTimeout(30000);
   http.addHeader("Authorization", "InkloopDevice " + deviceId_ + ":" + deviceSecret_);
-  const int status = http.GET();
-  const int size = http.getSize();
+  struct DownloadWork {
+    HTTPClient* http;
+    DownloadedFrame* frame;
+    int status;
+    int size;
+    size_t received;
+    bool allocated;
+  } work{&http, &frame, -1, -1, 0, false};
+  const bool dispatched = responsiveWorkExecutor().execute(
+      ResponsiveWorkKind::InkloopNetwork,
+      [](void* raw) {
+        DownloadWork* work = static_cast<DownloadWork*>(raw);
+        work->status = work->http->GET();
+        work->size = work->http->getSize();
+        if (work->status == HTTP_CODE_OK && work->size > 24 &&
+            static_cast<size_t>(work->size) <= kMaxFrameBytes) {
+          work->frame->bytes = static_cast<uint8_t*>(heap_caps_malloc(
+              work->size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+          if (!work->frame->bytes)
+            work->frame->bytes = static_cast<uint8_t*>(malloc(work->size));
+          work->allocated = work->frame->bytes != nullptr;
+          if (work->allocated) {
+            WiFiClient* stream = work->http->getStreamPtr();
+            work->received = stream->readBytes(
+                work->frame->bytes, work->size);
+          }
+        }
+        work->http->end();
+      },
+      &work);
+  if (!dispatched) {
+    http.end();
+    Diagnostics::event("FRAME_DOWNLOAD_DIAG", "IO_WORKER_BUSY");
+    return false;
+  }
+  const int status = work.status;
+  const int size = work.size;
   if (status != HTTP_CODE_OK || size <= 24 || static_cast<size_t>(size) > kMaxFrameBytes) {
     String detail("HTTP_");
     detail += String(status);
     detail += ":SIZE_";
     detail += String(size);
     Diagnostics::event("FRAME_DOWNLOAD_DIAG", detail);
-    http.end();
     return false;
   }
-  frame.bytes = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!frame.bytes) frame.bytes = static_cast<uint8_t*>(malloc(size));
-  if (!frame.bytes) {
+  if (!work.allocated) {
     Diagnostics::event("FRAME_DOWNLOAD_DIAG", "ALLOC_FAILED");
-    http.end();
     return false;
   }
-  WiFiClient* stream = http.getStreamPtr();
-  const size_t received = stream->readBytes(frame.bytes, size);
-  http.end();
+  const size_t received = work.received;
   if (received != static_cast<size_t>(size)) {
     String detail("READ_");
     detail += String(received);

@@ -45,8 +45,15 @@ const char* AlbumStore::backendName() {
   return backend.valid() ? backend.identity : "unavailable";
 }
 
-bool AlbumStore::validatePng(const uint8_t* bytes, size_t length, bool& landscape) {
-  return validPaperColorPng(bytes, length, &landscape);
+bool AlbumStore::validatePng(
+    const uint8_t* bytes, size_t length, bool& landscape,
+    const char** failure) {
+  PaperColorPngStreamValidator validator(length);
+  const bool valid = validator.append(bytes, length) &&
+      validator.finish(length);
+  if (valid) landscape = validator.landscape();
+  if (failure) *failure = valid ? "none" : validator.failureName();
+  return valid;
 }
 
 String AlbumStore::sha256Hex(const uint8_t* bytes, size_t length) {
@@ -309,7 +316,12 @@ void AlbumStore::cleanupOrphans(IStorageBackend& storage, JsonArrayConst assets)
 bool AlbumStore::prepare(IStorageBackend& storage, JsonDocument& index) {
   if (!albumPrepareMayMutate(uploadActive_)) return false;
   if (!storage.capabilities().mounted || !storage.mkdir(kAlbumDirectory)) return false;
-  storage.remove(kAssetPartPath);
+  // FS.remove() logs an error when the recovery file is absent. Album reads
+  // call prepare() frequently, so probe first instead of flooding serial with
+  // a harmless "asset.part does not exist" message.
+  if (storage.exists(kAssetPartPath) && !storage.remove(kAssetPartPath)) {
+    return false;
+  }
   BackendTransactionIo io(storage);
   const RecordRecovery recovery = recoverTransactionalRecord(
     io,
@@ -398,7 +410,16 @@ bool AlbumStore::cacheFrame(
   const String canonicalStrategy = hasRequestedStrategy
       ? displaypower::renderStrategyId(parsedStrategy) : String();
   bool landscape = false;
-  if (!validatePng(frame.bytes, frame.length, landscape) || landscape != frame.landscape) return false;
+  const char* pngFailure = "unknown";
+  if (!validatePng(frame.bytes, frame.length, landscape, &pngFailure)) {
+    Diagnostics::event(
+        "ALBUM_CACHE_REJECT", String("INVALID_PNG:") + pngFailure);
+    return false;
+  }
+  if (landscape != frame.landscape) {
+    Diagnostics::event("ALBUM_CACHE_REJECT", "ORIENTATION_MISMATCH");
+    return false;
+  }
   const String hash = sha256Hex(frame.bytes, frame.length);
   if (hash.length() != 64 || (expectedHash.length() && !hash.equalsIgnoreCase(expectedHash))) {
     Diagnostics::event("ERROR", "ALBUM_HASH_MISMATCH");
@@ -406,10 +427,16 @@ bool AlbumStore::cacheFrame(
   }
 
   const StorageBackendRef pinnedBackend = activeStorage();
-  if (!pinnedBackend.available()) return false;
+  if (!pinnedBackend.available()) {
+    Diagnostics::event("ALBUM_CACHE_REJECT", "BACKEND_UNAVAILABLE");
+    return false;
+  }
   IStorageBackend& backend = *pinnedBackend.backend;
   JsonDocument index;
-  if (!prepare(backend, index)) return false;
+  if (!prepare(backend, index)) {
+    Diagnostics::event("ALBUM_CACHE_REJECT", "PREPARE_FAILED");
+    return false;
+  }
   JsonArray assets = index["assets"].as<JsonArray>();
   int existing = findAsset(assets, hash);
   if (existing >= 0) {
@@ -492,9 +519,19 @@ bool AlbumStore::cacheFrame(
 
   BackendTransactionIo io(backend);
   TransactionalFileStore transaction(io);
-  if (!transaction.promoteBlob(kAssetPartPath, finalPath.c_str(), frame.bytes, frame.length) ||
-      !validateAssetFile(backend, finalPath.c_str(), frame.length) ||
-      sha256File(backend, finalPath.c_str()) != hash) {
+  if (!transaction.promoteBlob(
+          kAssetPartPath, finalPath.c_str(), frame.bytes, frame.length)) {
+    Diagnostics::event("ALBUM_CACHE_REJECT", "ASSET_PROMOTE_FAILED");
+    backend.remove(finalPath.c_str());
+    return false;
+  }
+  if (!validateAssetFile(backend, finalPath.c_str(), frame.length)) {
+    Diagnostics::event("ALBUM_CACHE_REJECT", "ASSET_VALIDATE_FAILED");
+    backend.remove(finalPath.c_str());
+    return false;
+  }
+  if (sha256File(backend, finalPath.c_str()) != hash) {
+    Diagnostics::event("ALBUM_CACHE_REJECT", "ASSET_HASH_FAILED");
     backend.remove(finalPath.c_str());
     return false;
   }

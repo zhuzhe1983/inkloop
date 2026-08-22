@@ -1,0 +1,5 @@
+dependencies:
+  m5stack/m5pm1:
+    version: "==1.0.7"
+  espressif/led_strip:
+    version: "==3.0.3"

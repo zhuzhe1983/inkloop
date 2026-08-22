@@ -1,0 +1,39 @@
+idf_component_register(
+  SRCS
+    "aigc_album_sink.cpp"
+    "album_index.cpp"
+    "esp_nvs_upgrade_inventory.cpp"
+    "esp_nvs_upgrade_marker_journal.cpp"
+    "esp_legacy_display_recovery.cpp"
+    "esp_upgrade_snapshot_source.cpp"
+    "legacy_display_recovery.cpp"
+    "legacy_file_transaction_recovery.cpp"
+    "local_chat_log.cpp"
+    "papercolor_png.cpp"
+    "persistence_compatibility.cpp"
+    "posix_upgrade_inventory.cpp"
+    "posix_atomic_album_store.cpp"
+    "posix_chat_store.cpp"
+    "posix_task_store.cpp"
+    "esp_storage_mount.cpp"
+    "esp_upgrade_boot_audit.cpp"
+    "sha256.cpp"
+    "upgrade_audit.cpp"
+    "upgrade_evidence_composer.cpp"
+    "upgrade_executor.cpp"
+    "upgrade_marker_journal.cpp"
+    "upgrade_recovery_planner.cpp"
+    "upgrade_snapshot_collector.cpp"
+  INCLUDE_DIRS "include"
+  REQUIRES
+    espressif__cjson
+    esp_driver_sdspi
+    esp_driver_spi
+    fatfs
+    inkloop_myai_idf
+    inkloop_myai
+    littlefs
+    partition_table
+    sdmmc
+    nvs_flash
+)

@@ -55,6 +55,10 @@ class MyAiClient final : public IWebSocketListener {
   Status requestResponse(const std::string& transcript);
   Status heartbeatVoice();
   Status disconnectVoice(const std::string& reason = "client_disconnect");
+  // Some compatible gateways terminate the final TTS segment without a
+  // response.done event.  The application may call this only after the audio
+  // sink reports tts.stop, the speaker is idle, and a grace window elapsed.
+  Status completeVoiceResponseAfterTtsStop();
 
   // Bounded degraded path for devices that cannot sustain realtime WebSocket.
   Status comboVoice(const std::string& pcm16Base64, size_t maxResponseBase64Bytes,

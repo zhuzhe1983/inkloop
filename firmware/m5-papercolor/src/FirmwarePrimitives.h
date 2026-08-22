@@ -46,10 +46,10 @@ struct LedFrame {
 
 constexpr RgbColor ledStateColor(LedState state) {
   return state == LedState::Connecting ? RgbColor{0, 100, 255}
-    : state == LedState::Listening ? RgbColor{0, 255, 255}
+    : state == LedState::Listening ? RgbColor{0, 255, 60}
     : state == LedState::Thinking ? RgbColor{150, 30, 255}
     : state == LedState::Speaking ? RgbColor{0, 255, 70}
-    : state == LedState::Generating ? RgbColor{180, 35, 255}
+    : state == LedState::Generating ? RgbColor{0, 255, 60}
     : state == LedState::Downloading ? RgbColor{0, 90, 255}
     : state == LedState::Caching ? RgbColor{255, 190, 0}
     : state == LedState::Writing ? RgbColor{255, 120, 0}

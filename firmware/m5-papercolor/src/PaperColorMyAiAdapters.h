@@ -4,9 +4,10 @@
 #include <HTTPClient.h>
 #include <M5Unified.h>
 #include <Preferences.h>
-#include <WebSocketsClient.h>
+#include <WiFiClientSecure.h>
 #include <lwip/sockets.h>
 
+#include <array>
 #include <functional>
 #include <map>
 #include <string>
@@ -83,18 +84,25 @@ class Esp32MyAiWebSocket final : public myai::IWebSocketTransport {
   void close(uint16_t code, const std::string& reason) override;
 
   void loop();
-  bool connected() const { return connected_; }
+ bool connected() const { return connected_; }
 
  private:
-  void onEvent(WStype_t type, uint8_t* payload, size_t length);
+  bool performHandshake(
+      const std::string& host, uint16_t port, const std::string& path,
+      const std::map<std::string, std::string>& headers);
+  bool sendMaskedFrame(uint8_t opcode, const uint8_t* payload, size_t length);
+  bool writeAll(const uint8_t* bytes, size_t length);
+  bool parseOneFrame();
+  void notifyClosed(uint16_t code, const char* safeReason);
   void rejectIngress(
       myai::IWebSocketListener* listener, uint16_t code,
       const char* safeReason);
 
-  WebSocketsClient socket_;
+  WiFiClientSecure client_;
   myai::IWebSocketListener* listener_ = nullptr;
-  std::string extraHeaders_;
+  std::vector<uint8_t> receiveBuffer_;
   bool connected_ = false;
+  bool openPending_ = false;
 };
 
 // Streaming TTS is staged by MyAiClient::IAudioSink::begin. The integration
@@ -108,21 +116,47 @@ class PaperColorStreamingAudio final : public myai::IAudioSink {
   void abort() override;
 
   myai::Status authorize();
-  bool active() const { return pending_ || authorized_ || M5.Speaker.isPlaying(); }
+  void poll();
+  bool active() const {
+    return pending_ || authorized_ || ending_ || queuedBytes_ != 0 ||
+        M5.Speaker.isPlaying();
+  }
+  bool receiveBackpressured() const {
+    return authorized_ && queueCapacity_ != 0 &&
+        queuedBytes_ + 4U * kMaximumMyAiWebSocketAudioFrameBytes >
+            queueCapacity_;
+  }
   void setVolume(uint8_t percent);
   void setEndedCallback(const std::function<void()>& callback) {
     endedCallback_ = callback;
   }
 
  private:
-  bool waitForPlayback(uint32_t timeoutMs);
+  static constexpr uint8_t kSpeakerChannel = 0;
+  static constexpr size_t kPlaybackBufferCount = 3;
+  static constexpr size_t kPlaybackChunkBytes = 4096;
+  static constexpr size_t kPreferredQueueBytes = 768U * 1024U;
+  static constexpr size_t kFallbackQueueBytes = 192U * 1024U;
+
+  bool ensureQueue();
+  bool appendQueued(const uint8_t* bytes, size_t length);
+  bool pumpPlayback();
+  void finishPlayback();
+  bool speakerIdle() const;
 
   uint32_t sampleRateHz_ = 16000;
   uint8_t channels_ = 1;
   uint8_t volumePercent_ = 60;
   bool pending_ = false;
   bool authorized_ = false;
-  std::vector<int16_t> playback_;
+  bool ending_ = false;
+  uint8_t* queue_ = nullptr;
+  size_t queueCapacity_ = 0;
+  size_t queueRead_ = 0;
+  size_t queueWrite_ = 0;
+  size_t queuedBytes_ = 0;
+  size_t playbackCursor_ = 0;
+  std::array<std::vector<int16_t>, kPlaybackBufferCount> playback_;
   std::function<void()> endedCallback_;
 };
 

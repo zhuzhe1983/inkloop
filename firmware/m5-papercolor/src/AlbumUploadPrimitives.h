@@ -97,6 +97,7 @@ class PaperColorPngStreamValidator {
     idatSequenceClosed_ = false;
     complete_ = false;
     failed_ = false;
+    failure_ = "none";
     landscape_ = false;
     colorType_ = 255;
     memset(chunkHeader_, 0, sizeof(chunkHeader_));
@@ -107,16 +108,18 @@ class PaperColorPngStreamValidator {
     if (!bytes || !length || failed_ || complete_ ||
         totalBytes_ > maximumBytes_ || length > maximumBytes_ - totalBytes_) {
       failed_ = true;
+      failure_ = complete_ ? "trailing_bytes" : "append_bounds";
       return false;
     }
     static const uint8_t signature[] = {
         0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
     for (size_t index = 0; index < length; ++index) {
-      if (complete_) return fail();
+      if (complete_) return fail("trailing_bytes");
       const uint8_t value = bytes[index];
       ++totalBytes_;
       if (phase_ == Phase::Signature) {
-        if (value != signature[signaturePosition_++]) return fail();
+        if (value != signature[signaturePosition_++])
+          return fail("signature");
         if (signaturePosition_ == sizeof(signature)) {
           phase_ = Phase::ChunkHeader;
           chunkHeaderPosition_ = 0;
@@ -147,7 +150,7 @@ class PaperColorPngStreamValidator {
         if (chunkCrcPosition_ == 4 && !finishChunk()) return false;
         continue;
       }
-      return fail();
+      return fail("invalid_phase");
     }
     return !failed_;
   }
@@ -159,6 +162,9 @@ class PaperColorPngStreamValidator {
 
   bool landscape() const { return landscape_; }
   size_t totalBytes() const { return totalBytes_; }
+  const char* failureName() const {
+    return failed_ ? failure_ : (complete_ ? "none" : "incomplete");
+  }
 
  private:
   enum class Phase : uint8_t {
@@ -198,21 +204,27 @@ class PaperColorPngStreamValidator {
         (static_cast<uint32_t>(chunkHeader_[2]) << 8) | chunkHeader_[3];
     if (!validChunkType() || totalBytes_ > maximumBytes_ ||
         maximumBytes_ - totalBytes_ < 4U ||
-        chunkLength_ > maximumBytes_ - totalBytes_ - 4U) return fail();
+        chunkLength_ > maximumBytes_ - totalBytes_ - 4U)
+      return fail("chunk_header_or_length");
     const bool ihdr = isType("IHDR");
     const bool plte = isType("PLTE");
     const bool idat = isType("IDAT");
     const bool iend = isType("IEND");
     const bool ancillary = (chunkHeader_[4] & 0x20U) != 0;
-    if (!sawIhdr_ && !ihdr) return fail();
-    if (ihdr && (sawIhdr_ || chunkLength_ != 13U)) return fail();
-    if (!ihdr && !plte && !idat && !iend && !ancillary) return fail();
+    if (!sawIhdr_ && !ihdr) return fail("ihdr_not_first");
+    if (ihdr && (sawIhdr_ || chunkLength_ != 13U))
+      return fail("ihdr_duplicate_or_length");
+    if (!ihdr && !plte && !idat && !iend && !ancillary)
+      return fail("unknown_critical_chunk");
     if (plte && (sawPlte_ || sawIdat_ || chunkLength_ == 0U ||
                  chunkLength_ > 768U || chunkLength_ % 3U != 0U ||
-                 colorType_ == 0U || colorType_ == 4U)) return fail();
+                 colorType_ == 0U || colorType_ == 4U))
+      return fail("plte_order_or_format");
     if (idat && (!sawIhdr_ || idatSequenceClosed_ || chunkLength_ == 0U ||
-                 (colorType_ == 3U && !sawPlte_))) return fail();
-    if (iend && (chunkLength_ != 0U || !sawIdat_)) return fail();
+                 (colorType_ == 3U && !sawPlte_)))
+      return fail("idat_order_or_length");
+    if (iend && (chunkLength_ != 0U || !sawIdat_))
+      return fail("iend_before_image");
     if (sawIdat_ && !idat && !iend) idatSequenceClosed_ = true;
     runningCrc_ = 0xffffffffUL;
     for (size_t index = 4; index < 8; ++index)
@@ -229,7 +241,8 @@ class PaperColorPngStreamValidator {
   }
 
   bool finishChunk() {
-    if (expectedCrc_ != (runningCrc_ ^ 0xffffffffUL)) return fail();
+    if (expectedCrc_ != (runningCrc_ ^ 0xffffffffUL))
+      return fail("chunk_crc");
     if (isType("IHDR")) {
       uint8_t header[33] = {
           0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a,
@@ -237,7 +250,7 @@ class PaperColorPngStreamValidator {
       memcpy(header + 16, ihdrData_, sizeof(ihdrData_));
       const PaperColorPngHeader parsed =
           parsePaperColorPngHeader(header, sizeof(header));
-      if (!parsed.valid) return fail();
+      if (!parsed.valid) return fail("ihdr_format_or_dimensions");
       sawIhdr_ = true;
       landscape_ = parsed.landscape;
       colorType_ = ihdrData_[9];
@@ -255,8 +268,9 @@ class PaperColorPngStreamValidator {
     return true;
   }
 
-  bool fail() {
+  bool fail(const char* reason) {
     failed_ = true;
+    failure_ = reason ? reason : "unknown";
     complete_ = false;
     phase_ = Phase::Failed;
     return false;
@@ -278,6 +292,7 @@ class PaperColorPngStreamValidator {
   bool idatSequenceClosed_ = false;
   bool complete_ = false;
   bool failed_ = false;
+  const char* failure_ = "none";
   bool landscape_ = false;
   uint8_t colorType_ = 255;
   uint8_t chunkHeader_[8]{};

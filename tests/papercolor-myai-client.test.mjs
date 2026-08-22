@@ -165,10 +165,16 @@ struct FakeEvents final : IMyAiEvents {
   PairingView pairing;
   int localCommands = 0, actions = 0, errors = 0;
   std::vector<VoiceState> voice;
+  std::vector<std::string> assistantText;
+  std::vector<bool> assistantFinal;
   void onActivationState(ActivationState, const Status&) override {}
   void onPairingReady(const PairingView& value) override { pairing = value; }
   void onVoiceState(VoiceState value) override { voice.push_back(value); }
   void onTranscript(const std::string&, bool) override {}
+  void onAssistantText(const std::string& text, bool final) override {
+    assistantText.push_back(text);
+    assistantFinal.push_back(final);
+  }
   void onLocalCommand(const std::string& name, const std::string&) override {
     assert(name == "storage.free" || name == "voice.runtime"); ++localCommands;
   }
@@ -300,10 +306,16 @@ int main() {
   assert(client.voiceState() == VoiceState::Ready);
   ws.listener->onWebSocketText("{\"type\":\"asr.final\",\"payload\":{\"text\":\"给我讲个故事\"}}" );
   assert(ws.texts.back().find("\"type\":\"response.create\"") != std::string::npos);
+  ws.listener->onWebSocketText("{\"type\":\"llm.delta\",\"payload\":{\"text\":\"从前\"}}" );
+  ws.listener->onWebSocketText("{\"type\":\"llm.done\",\"payload\":{\"text\":\"从前有座山\"}}" );
+  assert(events.assistantText.size() == 2);
+  assert(events.assistantText[0] == "从前" && !events.assistantFinal[0]);
+  assert(events.assistantText[1] == "从前有座山" && events.assistantFinal[1]);
   ws.listener->onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":16000,\"channels\":1}}" );
   ws.listener->onWebSocketBinary(pcm, sizeof(pcm));
   ws.listener->onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}" );
-  ws.listener->onWebSocketText("{\"type\":\"response.done\",\"payload\":{\"status\":\"complete\"}}" );
+  ws.listener->onWebSocketText("{\"type\":\"response.done\",\"payload\":{\"status\":\"complete\",\"text\":\"从前有座山\"}}" );
+  assert(events.assistantText.size() == 3 && events.assistantFinal.back());
   assert(audio.begins == 1 && audio.writes == 1 && audio.ends == 1);
   ws.listener->onWebSocketText("{\"type\":\"action.execute\",\"payload\":{\"action_id\":\"a1\",\"kind\":\"aigc.generate\",\"prompt\":\"paper art\"}}" );
   assert(events.actions == 1);
@@ -357,9 +369,10 @@ int main() {
   assert(unauthorized.httpStatus == 401);
   assert(unauthorized.detail.find("HTTP 401") != std::string::npos);
   assert(unauthorized.detail.find("error=forced") != std::string::npos);
-  assert(errorStore.value.deviceToken == "keep-on-402");
-  assert(errorStore.runtimeClears == 0);
-  assert(errorClient.activationState() == ActivationState::RecoveryRequired);
+  assert(errorStore.value.deviceToken.empty());
+  assert(errorStore.value.deviceId.empty());
+  assert(errorStore.runtimeClears == 1);
+  assert(errorClient.activationState() == ActivationState::Unconfigured);
   return 0;
 }
 `;

@@ -60,6 +60,9 @@ class FakeAdapter final : public IPortalAdapter {
   bool bypassAlbumBounds = false;
   mutable int albumPageReads = 0;
   mutable int albumLookups = 0;
+  mutable int chatReads = 0;
+  int chatClears = 0;
+  MyAiChatHistory chat;
 
   FakeAdapter() {
     durableSnapshot = testFreshSnapshot();
@@ -77,6 +80,17 @@ class FakeAdapter final : public IPortalAdapter {
     factory.origin = "factory";
     factory.factoryAsset = true;
     album.push_back(factory);
+
+    MyAiChatMessage userMessage;
+    userMessage.sequence = 1;
+    userMessage.role = "user";
+    userMessage.text = "帮我生成一张高对比海报";
+    chat.messages.push_back(userMessage);
+    MyAiChatMessage assistantMessage;
+    assistantMessage.sequence = 2;
+    assistantMessage.role = "assistant";
+    assistantMessage.text = "好的，图片会自动进入相册。";
+    chat.messages.push_back(assistantMessage);
   }
 
   std::string createNonce(const char* purpose) override {
@@ -169,6 +183,17 @@ class FakeAdapter final : public IPortalAdapter {
     }
     ++generateRequests;
     lastAppId = prompt;
+    return true;
+  }
+  bool readMyAiChatHistory(MyAiChatHistory* history) const override {
+    ++chatReads;
+    if (!history) return false;
+    *history = chat;
+    return true;
+  }
+  bool clearMyAiChatHistory(std::string*) override {
+    ++chatClears;
+    chat = MyAiChatHistory();
     return true;
   }
   bool mutationBusy() const override { return busy; }
@@ -566,6 +591,17 @@ int main() {
   assert(portal.authorizeStreamingAlbumPreview(previewAuth).status == 409);
   adapter.busy = false;
 
+  const PortalResponse chat = authenticated(
+      portal, "GET", "/api/myai/chat", 36);
+  assert(chat.status == 200);
+  assert(chat.body.find("\"retention\":\"runtime\"") != std::string::npos);
+  assert(chat.body.find("帮我生成一张高对比海报") != std::string::npos);
+  assert(chat.body.find("图片会自动进入相册") != std::string::npos);
+  assert(adapter.chatReads == 1);
+  assert(authenticated(
+      portal, "POST", "/api/myai/chat/clear", 36).status == 200);
+  assert(adapter.chatClears == 1 && adapter.chat.messages.empty());
+
   std::string dashboard = portal.renderDashboardHtml();
   const size_t dashboardHtmlSize = dashboard.size();
   const PortalResponse portalScript = authenticated(
@@ -587,21 +623,28 @@ int main() {
   assert(dashboard.find("name=\"voice_assistance\"") != std::string::npos);
   assert(dashboard.find("name=\"voice_assistance_present\"") != std::string::npos);
   assert(dashboard.find("type=\"range\" name=\"led_brightness\"") != std::string::npos);
-  assert(dashboard.find("data-settings-group=\"sound-led\"") != std::string::npos);
-  assert(dashboard.find("data-settings-group=\"ai-image\"") != std::string::npos);
+  assert(dashboard.find("data-settings-group=\"myai-voice\"") != std::string::npos);
+  assert(dashboard.find("data-settings-group=\"myai-prompts\"") != std::string::npos);
+  assert(dashboard.find("data-settings-group=\"led\"") != std::string::npos);
   assert(dashboard.find("data-settings-group=\"display-power\"") != std::string::npos);
   assert(dashboard.find("data-settings-group=\"storage\"") != std::string::npos);
   assert(dashboard.find("data-settings-group=\"password\"") != std::string::npos);
-  assert(dashboard.find("试听即时 · 保存后默认") != std::string::npos);
-  assert(dashboard.find("下次对话 / 生成生效") != std::string::npos);
+  assert(dashboard.find("本次运行") != std::string::npos);
+  assert(dashboard.find("下次请求生效") != std::string::npos);
   assert(dashboard.find("保存后重启生效") != std::string::npos);
   assert(dashboard.find("RGB 检测已排队") != std::string::npos);
   assert(dashboard.find("action=\"/api/led/test\"") == std::string::npos);
   assert(dashboard.find("/api/audio/preview") != std::string::npos);
   assert(dashboard.find("data-tab=\"album\"") != std::string::npos);
-  assert(dashboard.find("data-tab=\"ai\"") != std::string::npos);
+  assert(dashboard.find("data-tab=\"myai\"") != std::string::npos);
+  assert(dashboard.find("data-tab=\"ai\"") == std::string::npos);
+  assert(dashboard.find("/api/myai/chat") != std::string::npos);
+  assert(dashboard.find("body.textContent=message.text") != std::string::npos);
+  assert(dashboard.find("左灯绿色：正在监听") != std::string::npos);
+  assert(dashboard.find("右灯绿色：MyAI 正在生成图片") != std::string::npos);
   assert(dashboard.find("class=\"album-grid\"") != std::string::npos);
   assert(dashboard.find("class=\"album-thumb\"") != std::string::npos);
+  assert(dashboard.find(".album-thumb{display:block;width:100%;height:auto;aspect-ratio:2/3") != std::string::npos);
   assert(dashboard.find("/api/album/preview?asset_id=") != std::string::npos);
   assert(dashboard.find("loading=\"lazy\"") != std::string::npos);
   assert(dashboard.find("Inkloop 任务") != std::string::npos);
@@ -836,23 +879,25 @@ int main() {
   assert(inactiveHtml.find(">808080<") == std::string::npos);
   assert(inactiveHtml.find("https://myai.mess.host/#devices") != std::string::npos);
   assert(inactiveHtml.find("https://myai.mess.host/#billing") != std::string::npos);
-  assert(inactiveHtml.find("检查 MyAI 订阅账单") != std::string::npos);
+  assert(inactiveHtml.find("订阅与额度") != std::string::npos);
   assert(inactiveHtml.find("无需删除设备或重新绑定") != std::string::npos);
   const std::string inactiveJson = inactivePortal.renderStateJson();
   assert(inactiveJson.find("运行授权检查返回 402") != std::string::npos);
   assert(inactiveJson.find("设备列表显示已激活") != std::string::npos);
   assert(inactiveJson.find("无需重新绑定") != std::string::npos);
-  // A runtime credential rejection cannot contradict the durable terminal
-  // binding state or invite the user to create another pairing code.
+  // A runtime credential rejection keeps the durable Inkloop binding while
+  // making the fresh MyAI pairing action explicit.
   inactiveAdapter.reportedMyAiState = "unconfigured";
   const std::string rejectedHtml = inactivePortal.renderDashboardHtml();
-  assert(rejectedHtml.find("已绑定，运行授权待恢复") != std::string::npos);
-  assert(rejectedHtml.find("本机缺少可用的 MyAI 运行凭证") != std::string::npos);
+  assert(rejectedHtml.find("MyAI 运行授权需要恢复") != std::string::npos);
+  assert(rejectedHtml.find("本机没有可用的 MyAI 运行凭证") != std::string::npos);
   assert(rejectedHtml.find("MyAI 尚未配置") == std::string::npos);
-  assert(rejectedHtml.find("重新请求六位绑定码") == std::string::npos);
+  assert(rejectedHtml.find("/api/onboarding/myai/rebind") != std::string::npos);
+  assert(rejectedHtml.find("MyAI 与 Inkloop 已绑定。") == std::string::npos);
+  assert(rejectedHtml.find("Inkloop 已绑定；MyAI 运行授权需要恢复") != std::string::npos);
   const std::string rejectedJson = inactivePortal.renderStateJson();
   assert(rejectedJson.find("\"state\":\"credential_recovery\"") != std::string::npos);
-  assert(rejectedJson.find("无需重新绑定或重新请求六位码") != std::string::npos);
+  assert(rejectedJson.find("恢复 / 重新绑定 MyAI") != std::string::npos);
 
   // An authenticated owner can explicitly replace an unusable MyAI
   // credential without clearing the existing Inkloop binding or album.

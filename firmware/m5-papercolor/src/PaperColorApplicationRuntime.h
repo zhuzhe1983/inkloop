@@ -18,6 +18,7 @@
 #include "PaperColorPortalRuntime.h"
 #include "PaperColorStatusPng.h"
 #include "PaperColorVoiceAdapters.h"
+#include "ResponsiveWorkExecutor.h"
 #include "SettingsStore.h"
 #include "Storage.h"
 #include "TaskStore.h"
@@ -60,7 +61,9 @@ class PaperColorApplicationRuntime final
   bool recoverPortalBoundState(std::string* error = nullptr);
   bool activateDisplayOwner();
   void loop();
+  void pumpResponsiveUi(ResponsiveWorkKind kind);
   bool handleButton(ButtonEvent event);
+  bool requestVoiceIntroduction();
   bool refreshFrame(
       const String& assetId, const uint8_t* bytes, size_t length,
       bool transactionOwnsCommit = true,
@@ -73,10 +76,20 @@ class PaperColorApplicationRuntime final
   void notifyPageBusy();
   const std::string& portalAccessCode() const { return portal_.accessCode(); }
   const String& settingsAccessPoint() const { return settingsAccessPoint_; }
-  String settingsIpAddress() const { return WiFi.softAPIP().toString(); }
+  String settingsIpAddress() const {
+    return settingsAccessPointActive_
+        ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  }
+  bool settingsAccessPointActive() const { return settingsAccessPointActive_; }
   bool portalReady() const { return portal_.ready(); }
   bool myAiAuthorized() const { return myAiAuthorized_; }
+  bool voiceHandshakePending() const { return voiceConnectPending_; }
+  bool voiceRealtimeActive() const {
+    return voiceConnectPending_ || voice_.turnActive() ||
+        voice_.captureActive() || streamingAudio_.active();
+  }
   StableStartupDisplay stableStartupDisplay() const;
+  void noteMyAiUnavailableDisplayApplied();
   bool ownsDisplay() const { return displayRuntime_ && displayRuntime_->enabled(); }
   bool generationActive() const { return aigcPhase_ != AigcPhase::Idle; }
   bool acceptsUserInput() const;
@@ -90,6 +103,7 @@ class PaperColorApplicationRuntime final
   void onPairingReady(const myai::PairingView& pairing) override;
   void onVoiceState(myai::VoiceState state) override;
   void onTranscript(const std::string& text, bool final) override;
+  void onAssistantText(const std::string& text, bool final) override;
   void onLocalCommand(const std::string& commandName,
                       const std::string& transcript) override;
   void onVoiceAction(const myai::VoiceEvent& action) override;
@@ -130,6 +144,9 @@ class PaperColorApplicationRuntime final
       std::string* error) override;
   bool generateImage(
       const std::string& prompt, std::string* error) override;
+  bool readMyAiChatHistory(
+      portal::MyAiChatHistory* history) const override;
+  bool clearMyAiChatHistory(std::string* error) override;
   portal::DiagnosticsSnapshot portalDiagnostics() const override;
   bool beginAlbumUpload(
       const std::string& untrustedName,
@@ -189,7 +206,8 @@ class PaperColorApplicationRuntime final
   void pollPairing();
   void pollAigc();
   AlbumMutationResult runAlbumMutation(
-      const std::function<bool()>& mutation);
+      const std::function<bool()>& mutation,
+      bool dispatchMutation = true);
   void publishAlbumRevision(uint64_t revision, bool healthy);
   bool loadAlbumRevision();
   bool storeAlbumRevision(uint64_t next);
@@ -208,6 +226,16 @@ class PaperColorApplicationRuntime final
   bool enqueueAssistancePrompt(const char* promptId);
   bool enqueueOrdinalAssistance(size_t oneBasedOrdinal);
   void pollAssistancePromptQueue();
+  void appendMyAiChatMessage(
+      const char* role, const std::string& text);
+  void appendMyAiChatMessageInternal(
+      const char* role, const std::string& text, bool persist);
+  bool appendMyAiChatLogRecord(
+      const portal::MyAiChatMessage& message, const std::string& fullText);
+  bool loadMyAiChatHistoryFromStorage();
+  bool loadMyAiChatLogFile(const char* path);
+  void clearMyAiChatLogFiles();
+  void resetAssistantChatTurn();
 
   StorageManager& storage_;
   SdStorage& sd_;
@@ -257,6 +285,7 @@ class PaperColorApplicationRuntime final
 
   bool initialized_ = false;
   bool myAiAuthorized_ = false;
+  bool myAiRebindPending_ = false;
   bool pairingPollActive_ = false;
   bool pairingCallbackPending_ = false;
   myai::PairingView pendingPairing_;
@@ -268,11 +297,18 @@ class PaperColorApplicationRuntime final
   uint32_t lastPairingPollAt_ = 0;
   uint32_t lastHeartbeatAt_ = 0;
   uint32_t voiceReconnectAt_ = 0;
+  uint32_t voiceConnectDeadline_ = 0;
   uint32_t authorizationRetryAt_ = 0;
+  uint32_t myAiRebindRetryAt_ = 0;
   displaypower::RuntimeActivityState activityState_;
   bool voiceWasReady_ = false;
+  bool voiceConnectPending_ = false;
+  bool voiceResponseDonePending_ = false;
+  uint32_t voiceTtsSegmentEndedAt_ = 0;
   bool tutorialNarrationPending_ = false;
   bool tutorialNarrationInFlight_ = false;
+  bool introductionPending_ = false;
+  bool listenAfterConnect_ = false;
   bool volumePreviewActive_ = false;
   bool ledDiagnosticPending_ = false;
   bool wakeAnnouncementPending_ = false;
@@ -293,7 +329,13 @@ class PaperColorApplicationRuntime final
   std::string appliedSystemPrompt_;
   std::string portalMyAiState_;
   std::string portalUploadTitle_;
+  std::vector<portal::MyAiChatMessage> myAiChatHistory_;
+  std::string pendingAssistantText_;
+  uint64_t nextMyAiChatSequence_ = 1;
+  bool assistantChatFinalized_ = false;
+  bool myAiChatTruncated_ = false;
   String settingsAccessPoint_;
+  bool settingsAccessPointActive_ = false;
   uint64_t pendingDisplayRevision_ = 0;
   uint32_t pendingDisplayOrdinal_ = 0;
   uint32_t lastDisplayRefreshAt_ = 0;

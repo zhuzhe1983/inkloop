@@ -50,6 +50,14 @@ bool TaskStore::loadFile(const char* path, JsonDocument& tasks) {
 
 bool TaskStore::load(JsonDocument& tasks) {
   if (!ready()) return false;
+  if (recoveryChecked_) {
+    if (knownEmpty_) {
+      tasks.clear();
+      tasks.to<JsonArray>();
+      return true;
+    }
+    return loadFile(kTasksPath, tasks);
+  }
   BackendTransactionIo io(storage_);
   TaskPersistenceCore persistence(io);
   const RecordRecovery recovery = persistence.recover(
@@ -59,11 +67,16 @@ bool TaskStore::load(JsonDocument& tasks) {
     }
   );
   if (recovery == RecordRecovery::Empty) {
+    recoveryChecked_ = true;
+    knownEmpty_ = true;
     tasks.clear();
     tasks.to<JsonArray>();
     return true;
   }
-  return recovery != RecordRecovery::Failed && loadFile(kTasksPath, tasks);
+  if (recovery == RecordRecovery::Failed) return false;
+  recoveryChecked_ = true;
+  knownEmpty_ = false;
+  return loadFile(kTasksPath, tasks);
 }
 
 bool TaskStore::save(JsonArrayConst tasks) {
@@ -90,6 +103,8 @@ bool TaskStore::save(JsonArrayConst tasks) {
     Diagnostics::event("TASK_INDEX_COMMIT_FAILED", recordCommitResultName(committed));
     return false;
   }
+  recoveryChecked_ = true;
+  knownEmpty_ = false;
   return true;
 }
 

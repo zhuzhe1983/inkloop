@@ -1,0 +1,27 @@
+menu "Inkloop signed OTA"
+
+config INKLOOP_OTA_MANIFEST_URL
+    string "Reviewed OTA manifest URL"
+    default ""
+    help
+        Absolute HTTPS URL for the reviewed signed OTA manifest. Leave empty
+        to keep remote OTA disabled. Credentials, query strings, fragments,
+        IP literals and placeholder/example origins are rejected at runtime.
+
+config INKLOOP_OTA_ED25519_PUBLIC_KEY_HEX
+    string "Pinned OTA Ed25519 public key (lowercase hex)"
+    default ""
+    help
+        Exact 32-byte Ed25519 public key encoded as 64 lowercase hexadecimal
+        characters. Leave empty to keep remote OTA disabled. This is a public
+        verification key; never place a private key in project configuration.
+
+config INKLOOP_OTA_TOTAL_DEADLINE_MS
+    int "Total manifest and image acquisition deadline (ms)"
+    range 1 120000
+    default 120000
+    help
+        One shared deadline covering manifest HTTPS, parsing, image HTTPS and
+        staging. It never permits more than 120 seconds.
+
+endmenu

@@ -50,6 +50,8 @@ class TaskStore {
   static bool taskDue(JsonObjectConst task, time_t now, const tm& local);
 
   IStorageBackend& storage_;
+  bool recoveryChecked_ = false;
+  bool knownEmpty_ = false;
 };
 
 }  // namespace inkloop

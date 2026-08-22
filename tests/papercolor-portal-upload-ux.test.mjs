@@ -265,10 +265,23 @@ test("Portal upload is streamed, authenticated, transactional, and UI-bounded", 
   assert.match(application, /userUploadActive\(\)[\s\S]*externalPagePending/);
   assert.match(application, /beginAlbumUpload[\s\S]*ImageLedState::Downloading/);
   assert.match(application, /finishAlbumUpload[\s\S]*ImageLedState::Writing[\s\S]*ImageLedState::Complete/);
+  const myAiAdapters = await readFile(
+    new URL("PaperColorMyAiAdapters.cpp", sourceRoot), "utf8",
+  );
+  assert.match(myAiAdapters, /quartetLength_ == 2 \|\| quartetLength_ == 3/);
+  assert.match(myAiAdapters, /while \(quartetLength_ < 4\) quartet_\[quartetLength_\+\+\] = '='/);
+  assert.match(myAiAdapters, /HTTPClient::getStreamPtr\(\)[\s\S]*chunk-size lines/);
+  assert.match(myAiAdapters, /http\.writeToStream\(&decoder\)/);
+  const outputTransport = myAiAdapters.slice(
+    myAiAdapters.indexOf("Status Esp32AigcOutputTransport::postAndDecodeBase64"),
+    myAiAdapters.indexOf("Status AlbumImageSink::begin"),
+  );
+  assert.doesNotMatch(outputTransport, /getStreamPtr\(\)/);
   assert.match(application, /readAlbumPage[\s\S]*userUploadActive\(\)[\s\S]*readCatalogPage/);
   assert.match(application, /findAlbumItem[\s\S]*userUploadActive\(\)[\s\S]*findCatalogEntry/);
   assert.match(runtime, /authorizeStreamingAlbumPreview/);
-  assert.match(runtime, /streamFile\(file, "image\/png"\)/);
+  assert.match(runtime, /streamFile\(\*work->file, "image\/png"\)/);
+  assert.match(runtime, /ResponsiveWorkKind::PortalTransfer/);
   assert.match(runtime, /X-Content-Type-Options/);
   assert.match(application, /openAlbumPreview[\s\S]*mutationBusy\(\)[\s\S]*findCatalogEntry[\s\S]*FILE_READ/);
   assert.match(application, /readAllEntries[\s\S]*userUploadActive\(\)[\s\S]*readCatalogPage/);

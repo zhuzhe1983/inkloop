@@ -1133,6 +1133,12 @@ input:focus-visible {
   color: var(--green);
 }
 
+.generator-note > span.degraded {
+  border-color: #c98b1f;
+  background: #fff1c7;
+  color: #805100;
+}
+
 .generator-note p {
   min-width: 0;
   margin: -1px 0 0;

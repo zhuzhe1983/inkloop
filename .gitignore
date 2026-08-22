@@ -46,3 +46,6 @@ next-env.d.ts
 /config/.dev.vars
 /data/
 /firmware/**/.pio/
+**/__pycache__/
+/.butler/
+/.chief-of-staff/

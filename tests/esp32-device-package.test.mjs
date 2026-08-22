@@ -101,7 +101,9 @@ test("PaperColor beta 保持 0.2 协议并建立单写屏边界", async () => {
   assert.match(allSource, /Authorization", "InkloopDevice " \+ deviceId_ \+ ":" \+ deviceSecret_/);
   assert.match(allSource, /width == 600 && height == 400/);
   assert.match(allSource, /width != 400 \|\| height != 600/);
-  assert.equal(allSource.match(/xSemaphoreCreateMutex\(\)/g)?.length, 4, "display/LED controllers and their runtime adapters own bounded mutexes");
+  assert.equal(allSource.match(/xSemaphoreCreateMutex\(\)/g)?.length, 5, "display/LED adapters plus the bounded I/O dispatcher own mutexes");
+  assert.match(allSource, /dispatch_ = xSemaphoreCreateMutex\(\)/);
+  assert.match(allSource, /queue_ = xQueueCreate\(1, sizeof\(WorkItem\)\)/);
   assert.doesNotMatch(allSource, /Diagnostics::event\([^;]*deviceSecret_/s);
   assert.doesNotMatch(allSource, /status\["(?:secret|deviceSecret|token)"\]/);
 });
@@ -118,9 +120,10 @@ test("PaperColor Slice 1 只启用事务相册且硬件抽象可逆", async () =
   assert.match(source, /bool experimentalRenderEnabled = false/);
   assert.match(source, /bool deepSleepEnabled = false/);
   assert.match(source, /preferences_\.begin\(kNamespace, false\)/);
-  assert.match(source, /M5\.BtnC\.wasPressed\(\).*PhysicalButton::C/s);
-  assert.match(source, /M5\.BtnA\.wasPressed\(\).*PhysicalButton::A/s);
-  assert.match(source, /M5\.BtnB\.wasPressed\(\).*PhysicalButton::B/s);
+  assert.match(source, /GPIO_NUM_10, GPIO_NUM_9, GPIO_NUM_1/);
+  assert.match(source, /ButtonEvent::PreviousPage, ButtonEvent::NextPage, ButtonEvent::Voice/);
+  assert.match(source, /xTaskCreatePinnedToCore\([\s\S]*"inkloop-input"[\s\S]*this, 4, &task_, 1\)/);
+  assert.doesNotMatch(source, /M5\.Btn[ABC]\.wasPressed\(\)/);
   assert.match(source, /attachOptionalSdBackend/);
   assert.match(source, /beginDataSafeMode/);
   assert.match(source, /led-map swap/);
@@ -153,8 +156,8 @@ test("PaperColor Slice 1 的相册写入顺序、SD 策略和分页拒绝边界�
   const source = entries.map(([, value]) => value).join("\n");
   const album = entries.find(([name]) => name === "AlbumStore.cpp")?.[1] || "";
   const transaction = entries.find(([name]) => name === "TransactionalIo.h")?.[1] || "";
-  const assetPromote = album.indexOf("transaction.promoteBlob(kAssetPartPath");
-  const indexCommit = album.indexOf("commitIndex(backend, index)", assetPromote);
+  const assetPromote = album.indexOf("transaction.promoteBlob(");
+  const indexCommit = album.indexOf("commitIndex(backend, predictedIndex)", assetPromote);
 
   assert.ok(assetPromote >= 0 && assetPromote < indexCommit);
   assert.match(transaction, /writeAll\(temporaryPath, bytes, length\)[\s\S]*contentEquals\(temporaryPath, bytes, length\)[\s\S]*rename\(temporaryPath, finalPath\)/);
@@ -180,10 +183,11 @@ test("PaperColor Slice 1 的相册写入顺序、SD 策略和分页拒绝边界�
   assert.match(source, /pendingPageBackend/);
   assert.match(source, /audioPrompt\.requestDisplayBusy\(\)/);
   assert.match(source, /buttons\.suppressUntilRelease\(\)/);
-  assert.match(source, /xQueueCreate\(8, sizeof\(uint8_t\)\)/);
-  assert.match(source, /xTaskCreate\(taskEntry, "inkloop-buttons"/);
+  assert.match(source, /xQueueCreate\(16, sizeof\(uint8_t\)\)/);
+  assert.match(source, /xTaskCreatePinnedToCore\([\s\S]*"inkloop-input"[\s\S]*this, 4, &task_, 1\)/);
   assert.match(source, /GPIO_NUM_10[\s\S]*GPIO_NUM_9[\s\S]*GPIO_NUM_1/);
-  assert.match(source, /display_->busy\(\)[\s\S]*xQueueSend\(queue_, &event, 0\)/);
+  assert.match(source, /xQueueSend\(queue_, &event, 0\)/);
+  assert.match(source, /buttons\.suppressUntilRelease\(\)/);
   assert.match(source, /LedState::Downloading/);
   assert.match(source, /LedState::Caching/);
   assert.match(source, /LedState::Writing/);

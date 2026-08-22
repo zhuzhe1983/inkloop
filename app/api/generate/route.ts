@@ -807,16 +807,14 @@ export async function GET() {
   const baseUrl = normalizeBaseUrl(env.LLM_BASE_URL);
   const defaultModel = env.LLM_MODEL?.trim() || AUTO_MODEL;
   const gatewayModels = apiKey ? await listGatewayModels(baseUrl, apiKey) : [];
-  const models = [...new Set([
-    ...(defaultModel === AUTO_MODEL ? [] : [defaultModel]),
-    ...gatewayModels,
-  ])];
   return Response.json({
     configured: Boolean(apiKey),
+    available: Boolean(apiKey && gatewayModels.length),
+    defaultModelAvailable: defaultModel === AUTO_MODEL || gatewayModels.includes(defaultModel),
     provider: "LLM Gateway",
     endpoint: baseUrl,
     model: defaultModel,
-    models,
+    models: gatewayModels,
   });
 }
 

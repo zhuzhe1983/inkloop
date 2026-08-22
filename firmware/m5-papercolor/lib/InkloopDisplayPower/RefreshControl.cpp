@@ -70,7 +70,7 @@ LedOutput imageLedOutput(
       nowMilliseconds - stateStartedAtMilliseconds);
   switch (state) {
     case ImageLedState::Generating:
-      return LedOutput(true, scaleColor(RgbPixel(180, 35, 255),
+      return LedOutput(true, scaleColor(RgbPixel(0, 255, 60),
           triangleBrightness(elapsed, 2000, 48)), true);
     case ImageLedState::Downloading:
       return LedOutput(true, scaleColor(RgbPixel(0, 90, 255),

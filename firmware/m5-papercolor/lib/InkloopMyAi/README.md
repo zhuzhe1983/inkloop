@@ -59,3 +59,8 @@ gateway leases are rejected before persistence, session start, WebSocket, or
 business traffic. On reboot, a bound `active=true` snapshot restores `Bound`;
 a bound `active=false` snapshot keeps its credential but restores
 `PaymentRequired` until a later online authorization check succeeds.
+Center device tokens are stable for the lifetime of a bound device. A 401 from
+an authenticated device request therefore clears the unusable runtime
+credential atomically while preserving the installation fingerprint; the
+firmware then starts a fresh six-digit pairing flow. A failed clear remains a
+storage-recovery error and never silently creates a second credential.

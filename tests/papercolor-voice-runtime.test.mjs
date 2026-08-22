@@ -239,8 +239,21 @@ TranscriptDecision voiceCommand(VoiceRuntime& runtime, FakePlayer& player,
 int main() {
   LocalCommandParser parser;
   assert(parser.parse("查询剩余空间。").kind == CommandKind::QueryFreeSpace);
+  assert(parser.parse("可用空间").kind == CommandKind::QueryFreeSpace);
+  assert(parser.parse("还有多少存储空间？").kind == CommandKind::QueryFreeSpace);
+  assert(parser.parse("查询空间 ").kind == CommandKind::QueryFreeSpace);
+  assert(parser.parse("设备还有多少容量").kind == CommandKind::QueryFreeSpace);
+  assert(parser.parse("check free space").kind == CommandKind::QueryFreeSpace);
   assert(parser.parse("第二张").targetId == "@2");
   assert(parser.parse("delete image asset-123").kind == CommandKind::DeleteImage);
+  assert(parser.parse("第四张").targetId == "@4");
+  assert(parser.parse("第二十五张").targetId == "@25");
+  assert(parser.parse("第九百九十九张").targetId == "@999");
+  assert(parser.parse("image 4").targetId == "@4");
+  assert(parser.parse("25th image").targetId == "@25");
+  assert(parser.parse("图片步数 28").key == "steps");
+  assert(parser.parse("图片生成提示词 高对比大色块 {prompt}").key == "prompt_template");
+  assert(parser.parse("image negative prompt watermark").key == "negative_prompt");
   const char* invalidIds[] = {".", "..", ".hidden", "a..", "a..b", "../x", "a\\b", "a%2fb", "c:"};
   for (size_t i = 0; i < sizeof(invalidIds) / sizeof(invalidIds[0]); ++i)
     assert(!parser.parse(std::string("delete image ") + invalidIds[i]).matched());

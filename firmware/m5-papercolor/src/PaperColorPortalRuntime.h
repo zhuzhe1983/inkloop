@@ -46,6 +46,9 @@ class IPaperColorPortalServices {
       std::string* error) = 0;
   virtual bool generateImage(
       const std::string& prompt, std::string* error) = 0;
+  virtual bool readMyAiChatHistory(
+      portal::MyAiChatHistory* history) const = 0;
+  virtual bool clearMyAiChatHistory(std::string* error) = 0;
   virtual portal::DiagnosticsSnapshot portalDiagnostics() const = 0;
   virtual bool beginAlbumUpload(
       const std::string& untrustedName,
@@ -86,6 +89,7 @@ class PaperColorPortalRuntime final : public portal::IPortalAdapter {
 
   bool onWifiConfigured(bool configured, std::string* error = nullptr);
   bool requestMyAiPairing(std::string* error = nullptr);
+  bool requestMyAiRebind(std::string* error = nullptr);
   bool onMyAiPairingResumed(std::string* error = nullptr);
   bool onMyAiPairingCancelled(std::string* error = nullptr);
   bool onAuthoritativeMyAiCode(
@@ -134,6 +138,9 @@ class PaperColorPortalRuntime final : public portal::IPortalAdapter {
       std::string* error) override;
   bool generateImage(
       const std::string& prompt, std::string* error) override;
+  bool readMyAiChatHistory(
+      portal::MyAiChatHistory* history) const override;
+  bool clearMyAiChatHistory(std::string* error) override;
   portal::DiagnosticsSnapshot diagnostics() const override;
 
  private:
@@ -164,6 +171,8 @@ class PaperColorPortalRuntime final : public portal::IPortalAdapter {
   std::string pendingPhysicalId_;
   bool serverStarted_ = false;
   bool requestActive_ = false;
+  uint32_t lastPortalRequestAt_ = 0;
+  uint32_t lastPortalPollAt_ = 0;
   bool uploadAuthorized_ = false;
   bool uploadStarted_ = false;
   bool uploadEnded_ = false;

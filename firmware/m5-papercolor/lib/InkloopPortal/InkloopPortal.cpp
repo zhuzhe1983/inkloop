@@ -23,7 +23,7 @@ static const uint64_t kConfirmationLifetimeSeconds = 30;
 static const uint32_t kMaximumRateWindowSeconds = 3600;
 
 const char kPortalCss[] = R"PORTALCSS(
-:root{color-scheme:light;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172019;background:#f3f5f1}*{box-sizing:border-box}body{margin:0;background:#f3f5f1}main{width:min(920px,100%);margin:auto;padding:24px 16px 64px}h1{font-size:clamp(1.7rem,5vw,2.5rem);margin:0 0 18px}h2{font-size:1.15rem;margin:0 0 14px}section{background:#fff;border:1px solid #dfe5dc;border-radius:16px;padding:18px;margin:14px 0;box-shadow:0 6px 22px rgba(20,35,24,.05)}p{line-height:1.55}.muted{color:#667068}.notice{padding:12px 14px;border-radius:10px;background:#eef5ea;border-left:4px solid #4b7f45}.warning{background:#fff4dd;border-left-color:#c47813}.code-help strong{color:#111}.status{min-height:24px;padding:10px 12px;border-radius:10px;background:#edf1ec}.status[data-kind="error"]{background:#fde9e6;color:#9d261d}.status[data-kind="success"]{background:#e5f5e8;color:#17642c}form{display:grid;gap:12px;margin:12px 0}label{display:grid;gap:6px;font-weight:600}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;padding:10px 12px;border:1px solid #b9c4b9;border-radius:10px;background:#fff}textarea{min-height:92px;resize:vertical}button{border:0;border-radius:10px;padding:11px 16px;background:#172019;color:#fff;font-weight:700;cursor:pointer}button:hover{background:#2b3a2d}button:disabled{opacity:.55;cursor:wait}button.danger{background:#a32b20}.actions{display:flex;gap:10px;flex-wrap:wrap}.inline{display:inline-grid;margin:6px 6px 6px 0}ul{list-style:none;padding:0;display:grid;gap:10px}li{padding:12px;border:1px solid #e3e7e0;border-radius:10px;overflow-wrap:anywhere}.myai-qr a{font-weight:700}.grid{display:grid;gap:14px}.access-groups{display:flex;gap:6px;flex-wrap:wrap}.access-groups span{font-family:ui-monospace,SFMono-Regular,monospace;padding:4px 7px;background:#edf1ec;border-radius:6px}.upload-preview{display:none;max-width:330px;max-height:220px;border:1px solid #b9c4b9;background:#fff}.upload-preview[data-ready="1"]{display:block}.album-grid{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.album-card{display:grid;align-content:start;gap:9px;padding:10px}.album-thumb{display:block;width:100%;aspect-ratio:2/3;object-fit:contain;background:#f4f4ee;border:1px solid #dfe5dc;border-radius:8px}.album-meta{margin:0}.album-source{display:inline-flex;width:max-content;padding:3px 8px;border-radius:999px;background:#e8f1fb;color:#24547d;font-size:.75rem;font-weight:700}.album-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}.album-actions .inline{min-width:0;margin:0}.album-actions .inline:only-child{grid-column:1/-1}.album-actions button{width:100%;min-width:0;padding:10px 8px}.tabs{display:flex;gap:8px;overflow-x:auto;margin:16px 0;padding:4px;background:#e6ebe4;border-radius:12px}.tabs button{white-space:nowrap;background:transparent;color:#38443a}.tabs button.active{background:#172019;color:#fff}.tab-panel{display:none}.tab-panel.active{display:block}@media(min-width:720px){.grid.two{grid-template-columns:1fr 1fr}.settings-grid{grid-template-columns:1fr 1fr}.settings-grid .wide{grid-column:1/-1}}
+:root{color-scheme:light;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172019;background:#f3f5f1}*{box-sizing:border-box}body{margin:0;background:#f3f5f1}main{width:min(920px,100%);margin:auto;padding:24px 16px 64px}h1{font-size:clamp(1.7rem,5vw,2.5rem);margin:0 0 18px}h2{font-size:1.15rem;margin:0 0 14px}section{background:#fff;border:1px solid #dfe5dc;border-radius:16px;padding:18px;margin:14px 0;box-shadow:0 6px 22px rgba(20,35,24,.05)}p{line-height:1.55}.muted{color:#667068}.notice{padding:12px 14px;border-radius:10px;background:#eef5ea;border-left:4px solid #4b7f45}.warning{background:#fff4dd;border-left-color:#c47813}.code-help strong{color:#111}.status{min-height:24px;padding:10px 12px;border-radius:10px;background:#edf1ec}.status[data-kind="error"]{background:#fde9e6;color:#9d261d}.status[data-kind="success"]{background:#e5f5e8;color:#17642c}form{display:grid;gap:12px;margin:12px 0}label{display:grid;gap:6px;font-weight:600}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;padding:10px 12px;border:1px solid #b9c4b9;border-radius:10px;background:#fff}textarea{min-height:92px;resize:vertical}button{border:0;border-radius:10px;padding:11px 16px;background:#172019;color:#fff;font-weight:700;cursor:pointer}button:hover{background:#2b3a2d}button:disabled{opacity:.55;cursor:wait}button.danger{background:#a32b20}.actions{display:flex;gap:10px;flex-wrap:wrap}.inline{display:inline-grid;margin:6px 6px 6px 0}ul{list-style:none;padding:0;display:grid;gap:10px}li{padding:12px;border:1px solid #e3e7e0;border-radius:10px;overflow-wrap:anywhere}.myai-qr a{font-weight:700}.grid{display:grid;gap:14px}.access-groups{display:flex;gap:6px;flex-wrap:wrap}.access-groups span{font-family:ui-monospace,SFMono-Regular,monospace;padding:4px 7px;background:#edf1ec;border-radius:6px}.upload-preview{display:none;max-width:330px;max-height:220px;border:1px solid #b9c4b9;background:#fff}.upload-preview[data-ready="1"]{display:block}.album-grid{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}.album-card{display:grid;align-content:start;gap:9px;padding:10px}.album-thumb{display:block;width:100%;height:auto;aspect-ratio:2/3;object-fit:contain;background:#f4f4ee;border:1px solid #dfe5dc;border-radius:8px}.album-meta{margin:0}.album-source{display:inline-flex;width:max-content;padding:3px 8px;border-radius:999px;background:#e8f1fb;color:#24547d;font-size:.75rem;font-weight:700}.album-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}.album-actions .inline{min-width:0;margin:0}.album-actions .inline:only-child{grid-column:1/-1}.album-actions button{width:100%;min-width:0;padding:10px 8px}.tabs{display:flex;gap:8px;overflow-x:auto;margin:16px 0;padding:4px;background:#e6ebe4;border-radius:12px}.tabs button{white-space:nowrap;background:transparent;color:#38443a}.tabs button.active{background:#172019;color:#fff}.tab-panel{display:none}.tab-panel.active{display:block}.chat-list{display:grid;gap:10px;max-height:420px;overflow:auto;padding:4px;margin:12px 0}.chat-message{max-width:88%;white-space:pre-wrap}.chat-message[data-role="user"]{justify-self:end;background:#e5f5e8}.chat-message[data-role="assistant"]{justify-self:start;background:#eef2f8}.chat-message[data-role="tool"]{justify-self:start;background:#fff4dd;font-size:.9rem}.chat-role{display:block;margin-bottom:4px;color:#667068;font-size:.75rem;font-weight:700}.led-legend{display:grid;gap:8px;padding:0}.led-legend li{display:flex;align-items:center;gap:8px;padding:8px}.led-dot{display:inline-block;width:13px;height:13px;border-radius:50%;flex:0 0 auto}.led-dot.green{background:#00d23c}.led-dot.red{background:#f02b20}.led-dot.blue{background:#196dff}.led-dot.orange{background:#ff8700}@media(min-width:720px){.grid.two{grid-template-columns:1fr 1fr}.settings-grid{grid-template-columns:1fr 1fr}.settings-grid .wide{grid-column:1/-1}}
 )PORTALCSS";
 
 const char kSettingsCss[] = R"PORTALCSS(
@@ -38,12 +38,16 @@ const char kDashboardScript[] = R"PORTALJS(
 (()=>{"use strict";const meta=document.querySelector('meta[name="inkloop-csrf"]'),status=document.querySelector("#page-status");if(!meta||!status)return;const csrf=meta.content,errText={app_not_registered:"inkloop 应用尚未在 MyAI 注册，暂时无法生成六位绑定码。",device_busy:"设备正在写屏、生成图片、播放语音或测试灯光，请稍后重试。",audio_busy:"语音或麦克风正在使用，请稍后再试听。",myai_not_activated:"请先完成 MyAI 绑定与激活。",invalid_aigc_prompt:"请输入1–1024字节的图片主题。",album_item_not_found:"相册中找不到这张图片，请刷新页面。",page_queue_failed:"图片上屏任务未能排队，请稍后重试。",confirmation_expired:"确认已超时，请重新发起操作。",origin_or_csrf_rejected:"安全校验失败，请刷新页面后重试。",rate_limited:"操作过于频繁，请稍后重试。",invalid_local_management_password:"本地管理密码需为8–63位。",local_password_mismatch:"两次输入的本地管理密码不一致。",image_prompt_template_invalid:"AIGC 图片提示词模板不能为空且不能超过512字节。"};const show=(m,k)=>{status.textContent=m;status.dataset.kind=k||"info";status.scrollIntoView({block:"nearest"})};async function read(r){const l=Number(r.headers.get("content-length")||0);if(l>4096)throw new Error("response_too_large");const x=await r.text();if(x.length>4096)throw new Error("response_too_large");let j={};try{j=JSON.parse(x)}catch(_){throw new Error("invalid_response")}if(!r.ok||j.ok===false){const e=j.error||("http_"+r.status);throw new Error(e)}return j}async function api(path,body){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);try{return await read(await fetch(path,{method:body===undefined?"GET":"POST",headers:body===undefined?{}:{"Content-Type":"application/x-www-form-urlencoded","X-Inkloop-CSRF":csrf},body,signal:c.signal}))}finally{clearTimeout(t)}}function message(e){return e.name==="AbortError"?"设备响应超时，请重试。":(errText[e.message]||("操作失败："+e.message))}const tabs=[...document.querySelectorAll("[data-tab]")],panels=[...document.querySelectorAll("[data-tab-panel]")];function openTab(name){tabs.forEach(x=>x.classList.toggle("active",x.dataset.tab===name));panels.forEach(x=>x.classList.toggle("active",x.dataset.tabPanel===name));try{localStorage.setItem("inkloop-tab",name)}catch(_){}}tabs.forEach(x=>x.addEventListener("click",()=>openTab(x.dataset.tab)));if(tabs.length)openTab((()=>{try{return localStorage.getItem("inkloop-tab")||"device"}catch(_){return"device"}})());const volume=document.querySelector('input[name="volume"]'),volumeOut=document.querySelector("#volume-value");if(volume&&volumeOut){let previewing=false;const sync=()=>{volumeOut.textContent=volume.value+"%"};volume.addEventListener("input",sync);volume.addEventListener("change",async()=>{if(previewing)return;previewing=true;try{const value=volume.value;show("正在试听 "+value+"% 音量…","info");await api("/api/audio/preview",new URLSearchParams({volume:value}));show("音量试听已开始；保存设置后才会正式生效。","success")}catch(x){show(message(x),"error")}finally{previewing=false}});sync()}function params(form){const p=new URLSearchParams(new FormData(form));p.delete("_csrf");return p}function actionName(v){return v==="format_sd"?"格式化 TF / SD":v==="clear_album"?"清空用户相册":"删除这张图片"}async function waitPhysical(){for(let i=0;i<34;i++){await new Promise(r=>setTimeout(r,900));const j=await api("/api/state"),p=j.physicalConfirmation||{};if(p.state==="awaiting_device_button")continue;if(p.state==="complete"){show("设备顶部按钮确认成功，操作已完成。","success");setTimeout(()=>location.reload(),700);return}if(p.state==="failed")throw new Error(p.error||"confirmed_operation_failed");if(p.state==="expired")throw new Error("confirmation_expired")}throw new Error("confirmation_expired")}async function destructive(form){const prep=await api("/api/actions/prepare",params(form));if(!confirm("二次确认：确定要"+actionName(prep.action)+"吗？此操作不可撤销。")){show("已取消，设备上不会执行任何操作。","info");return}const p=new URLSearchParams({confirmation_id:prep.confirmationId,phrase:prep.requiredPhrase});await api("/api/actions/confirm",p);show("请在30秒内短按设备顶部按钮（语音键 BtnC / GPIO1）确认；不要按左右翻页键。","info");await waitPhysical()}document.querySelectorAll("form[data-portal]").forEach(form=>form.addEventListener("submit",async e=>{e.preventDefault();const b=form.querySelector("button");if(!b||b.disabled)return;b.disabled=true;try{if(form.dataset.destructive==="1")await destructive(form);else{const j=await api(form.action.replace(location.origin,""),params(form));if(form.action.endsWith("/api/led/test"))show("灯光测试已开始（约4.6秒）：先双灯白亮0.8秒验证供电和总线，再由语音角色蓝/青闪2次、图片角色黄/橙闪2次；结束后恢复当前状态。","success");else if(form.action.endsWith("/api/album/display"))show("已排队上屏；彩色墨水屏刷新需要一些时间，请勿重复点击。","success");else if(form.action.endsWith("/api/aigc/generate"))show("MyAI 已开始生成；完成后会自动缓存并上屏。","success");else if(form.action.endsWith("/api/settings")){if(j.localManagementPassword&&j.localManagementPassword.restartRequired)show("设置已保存。本地管理密码将在重启后同时用于 Settings Wi‑Fi 和网页登录；请记住新密码。","success");else{show("设置已保存。","success");setTimeout(()=>location.reload(),700)}}else if(form.action.endsWith("/api/tutorial/restart")){show("语音教程已重新排队。","success");setTimeout(()=>location.reload(),700)}else if(form.action.endsWith("/api/onboarding/myai/start")){show("已发起 MyAI 配对请求；只有拿到六位码后才会显示二维码。","success");setTimeout(()=>location.reload(),1000)}else show(j.state||"操作成功。","success")}}catch(x){show(message(x),"error")}finally{b.disabled=false}}));let polls=0;const timer=setInterval(async()=>{if(++polls>60){clearInterval(timer);return}try{const j=await api("/api/state"),m=j.myAi||{},el=document.querySelector("#myai-status");if(el&&m.message)el.textContent=m.message;if(j.onboarding&&j.onboarding.onboardingCode&&!document.querySelector(".myai-qr"))location.reload()}catch(_){clearInterval(timer)}},3000)})();
 )PORTALJS";
 
+const char kMyAiChatScript[] = R"PORTALJS(
+(()=>{"use strict";const list=document.querySelector("#myai-chat-list"),empty=document.querySelector("#myai-chat-empty"),refresh=document.querySelector("#myai-chat-refresh"),clear=document.querySelector("#myai-chat-clear"),meta=document.querySelector('meta[name="inkloop-csrf"]'),status=document.querySelector("#page-status");if(!list||!empty||!meta)return;let loading=false;const labels={user:"我",assistant:"MyAI",tool:"设备工具"};function note(message,kind){if(!status)return;status.textContent=message;status.dataset.kind=kind||"info"}async function readJson(response){const length=Number(response.headers.get("content-length")||0);if(length>24576)throw Error("response_too_large");const text=await response.text();if(text.length>24576)throw Error("response_too_large");let json;try{json=JSON.parse(text)}catch(_){throw Error("invalid_response")}if(!response.ok||json.ok===false)throw Error(json.error||("http_"+response.status));return json}function render(json){list.replaceChildren();const messages=Array.isArray(json.messages)?json.messages:[];for(const message of messages){if(!message||!labels[message.role]||typeof message.text!=="string")continue;const item=document.createElement("li"),role=document.createElement("span"),body=document.createElement("span");item.className="chat-message";item.dataset.role=message.role;role.className="chat-role";role.textContent=labels[message.role];body.textContent=message.text;item.append(role,body);list.append(item)}empty.hidden=list.childElementCount>0;empty.textContent=json.truncated?"较早的聊天已按容量上限自动移除。":"TF / SD 中还没有聊天记录。";if(list.lastElementChild)list.lastElementChild.scrollIntoView({block:"nearest"})}async function load(){if(loading)return;loading=true;if(refresh)refresh.disabled=true;try{render(await readJson(await fetch("/api/myai/chat",{headers:{Accept:"application/json"}})))}catch(error){empty.hidden=false;empty.textContent="聊天暂不可用："+error.message}finally{loading=false;if(refresh)refresh.disabled=false}}document.querySelectorAll('[data-tab="myai"]').forEach(button=>button.addEventListener("click",load));if(document.querySelector('[data-tab="myai"].active'))load();if(refresh)refresh.addEventListener("click",load);if(clear)clear.addEventListener("click",async()=>{if(!confirm("清空设备 TF / SD 上的聊天记录？"))return;clear.disabled=true;try{await readJson(await fetch("/api/myai/chat/clear",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","X-Inkloop-CSRF":meta.content},body:""}));render({messages:[],truncated:false});note("TF / SD 聊天记录已清空。","success")}catch(error){note("清空失败："+error.message,"error")}finally{clear.disabled=false}});setInterval(()=>{const panel=document.querySelector('[data-tab-panel="myai"].active');if(panel)load()},8000)})();
+)PORTALJS";
+
 const char kLedBrightnessScript[] = R"PORTALJS(
 (()=>{"use strict";const slider=document.querySelector('input[name="led_brightness"]'),output=document.querySelector("#led-brightness-value");if(!slider||!output)return;const sync=()=>{output.textContent=slider.value+"%"};slider.addEventListener("input",sync);sync()})();
 )PORTALJS";
 
 const char kDisplayStatusScript[] = R"PORTALJS(
-(()=>{"use strict";const status=document.querySelector("#page-status");if(!status)return;let tracking=false;async function poll(){try{const response=await fetch("/api/state",{headers:{Accept:"application/json"}});if(!response.ok)return;const text=await response.text();if(text.length>4096)return;const state=JSON.parse(text).display?.state;if(state==="refreshing"){tracking=true;status.textContent="屏幕正在刷新，请稍候…";status.dataset.kind="display"}else if(state==="cooldown"){tracking=true;status.textContent="屏幕刷新已完成，设备正在进行 30 秒保护冷却。";status.dataset.kind="display"}else if(state==="ready"&&tracking){tracking=false;status.textContent="屏幕已就绪。";status.dataset.kind="success"}}catch(_){}}poll();setInterval(poll,2000)})();
+(()=>{"use strict";const status=document.querySelector("#page-status");if(!status)return;let tracking=false;function render(event){const json=event&&event.detail?event.detail:window.inkloopLatestState;if(!json)return;const state=json.display?.state;if(state==="refreshing"){tracking=true;status.textContent="屏幕正在刷新，请稍候…";status.dataset.kind="display"}else if(state==="cooldown"){tracking=true;status.textContent="屏幕刷新已完成，设备正在进行 30 秒保护冷却。";status.dataset.kind="display"}else if(state==="ready"&&tracking){tracking=false;status.textContent="屏幕已就绪。";status.dataset.kind="success"}}const originalFetch=window.fetch.bind(window);window.fetch=async(...args)=>{const response=await originalFetch(...args),url=typeof args[0]==="string"?args[0]:(args[0]?.url||"");if(url.startsWith("/api/state")){response.clone().json().then(json=>{window.inkloopLatestState=json;window.dispatchEvent(new CustomEvent("inkloop:state",{detail:json}))}).catch(()=>{})}return response};window.addEventListener("inkloop:state",render);render()})();
 )PORTALJS";
 
 const char kSettingsScript[] = R"PORTALJS(
@@ -65,7 +69,7 @@ async function submit(form){
     if(!response.ok||json.ok===false)throw new Error(json.error||("http_"+response.status));
     if(json.ledDiagnosticRequested){
       if(!json.ledDiagnosticAccepted)throw new Error(json.ledDiagnosticError||"led_role_test_failed");
-      show("声音与指示灯设置已保存。RGB 检测已排队：双灯白亮，然后依次蓝/青、黄/橙闪烁；设备忙时会在空闲后自动开始。","success");
+      show("指示灯设置已保存。RGB 检测已排队：双灯白亮，然后依次蓝/青、黄/橙闪烁；设备忙时会在空闲后自动开始。","success");
     }else if(json.localManagementPassword&&json.localManagementPassword.restartRequired){
       show("本地访问密码已保存，重启设备后用于 Settings Wi-Fi 和网页登录。","success");
     }else{
@@ -258,10 +262,11 @@ const char* myAiStateMessage(const std::string& state, bool hasCode) {
   if (state == "inactive")
     return "MyAI 已绑定，但运行授权检查返回 402。即使设备列表显示已激活，试用或订阅过期、设备额度不足、降级后超额也会阻止服务。请检查订阅账单和授权设备数；处理后设备会自动重试，无需重新绑定。";
   if (state == "auth_rejected")
-    return "MyAI 与 Inkloop 的绑定关系仍然保留，但运行凭证校验返回 HTTP 401。设备会自动重试授权；无需重新绑定或重新请求六位码。";
+    return "MyAI 运行凭证校验返回 HTTP 401。若你刚在 MyAI 删除了设备或凭证，请点击“恢复 / 重新绑定 MyAI”申请新六位码；Inkloop 绑定和相册不会受影响。";
   if (state == "credential_recovery")
-    return "MyAI 与 Inkloop 的绑定关系仍然保留，但本机缺少可用的 MyAI 运行凭证。无需重新绑定或重新请求六位码；请在 MyAI 设备管理中保留此设备，等待凭证恢复。";
-  if (state == "recovery") return "MyAI 设备凭据需要恢复，请先处理原设备。";
+    return "本机没有可用的 MyAI 运行凭证。请点击“恢复 / 重新绑定 MyAI”申请新六位码；Inkloop 绑定和相册不会受影响。";
+  if (state == "recovery")
+    return "本机保存的旧 MyAI device_token 已失效。若你已在 MyAI 删除旧设备或凭证，请点击“恢复 / 重新绑定 MyAI”申请新六位码。";
   if (state == "offline") return "MyAI 服务暂时不可用，设备会继续重试。";
   if (state == "pairing") return hasCode
       ? "六位绑定码已就绪，请在 MyAI 完成绑定。"
@@ -571,6 +576,7 @@ std::string InkloopPortal::normalizedRateRoute(const std::string& path) const {
       "/api/album", "/api/diagnostics", "/api/serial-log",
       "/api/album/upload", "/api/album/preview", "/api/album/display",
       "/api/album/render", "/api/aigc/generate",
+      "/api/myai/chat", "/api/myai/chat/clear",
       "/api/audio/preview",
       "/api/onboarding/myai/start", "/api/onboarding/myai/rebind",
       "/api/tutorial/advance",
@@ -876,7 +882,7 @@ PortalResponse InkloopPortal::handleAuthenticated(const PortalRequest& request) 
     response.contentType = "application/javascript; charset=utf-8";
     response.body.reserve(kMaximumPortalScriptBytes);
     const char* scripts[] = {
-        kDashboardScript, kLedBrightnessScript, kDisplayStatusScript,
+        kDashboardScript, kMyAiChatScript, kLedBrightnessScript, kDisplayStatusScript,
         kSettingsScript, kAlbumUploadScript, kAlbumRenderScript};
     for (size_t index = 0; index < sizeof(scripts) / sizeof(scripts[0]); ++index) {
       if (!boundedAppend(
@@ -894,6 +900,9 @@ PortalResponse InkloopPortal::handleAuthenticated(const PortalRequest& request) 
   }
   if (request.method == "GET" && request.path == "/api/settings") {
     return jsonResponse(200, renderSettingsJson());
+  }
+  if (request.method == "GET" && request.path == "/api/myai/chat") {
+    return renderMyAiChatResponse();
   }
   if (request.method == "GET" &&
       (request.path == "/api/album" ||
@@ -915,6 +924,16 @@ PortalResponse InkloopPortal::handleAuthenticated(const PortalRequest& request) 
   if (!parseFields(request, &fields, &failure)) return failure;
   fields.erase("_csrf");
 
+  if (request.method == "POST" && request.path == "/api/myai/chat/clear") {
+    if (!fields.empty()) return errorResponse(400, "unexpected_field");
+    std::string error;
+    if (!adapter_.clearMyAiChatHistory(&error)) {
+      return errorResponse(
+          409, error.empty() ? "myai_chat_clear_failed" : error);
+    }
+    return jsonResponse(200, "{\"ok\":true,\"state\":\"cleared\"}");
+  }
+
   if (request.method == "POST" && request.path == "/api/onboarding/myai/start") {
     if (!fields.empty()) return errorResponse(400, "unexpected_field");
     std::string error;
@@ -930,16 +949,8 @@ PortalResponse InkloopPortal::handleAuthenticated(const PortalRequest& request) 
   if (request.method == "POST" && request.path == "/api/onboarding/myai/rebind") {
     if (!fields.empty()) return errorResponse(400, "unexpected_field");
     std::string error;
-    OnboardingState next = onboarding_;
-    if (!next.requestMyAiRebind(adapter_, &error)) {
+    if (!requestMyAiRebind(&error)) {
       return errorResponse(409, error.empty() ? "myai_rebind_not_started" : error);
-    }
-    if (!persistState(
-            next, settings_, SnapshotOnboardingStage | SnapshotMyAiActive |
-                SnapshotCodeOwnership | SnapshotOnboardingCode |
-                SnapshotInkloopCode | SnapshotCodeExpiry,
-            &error)) {
-      return errorResponse(503, error);
     }
     return jsonResponse(
         202, "{\"ok\":true,\"state\":\"myai_rebind_started\"}");
@@ -1416,6 +1427,16 @@ bool InkloopPortal::requestMyAiPairing(std::string* error) {
   return persistState(next, settings_, SnapshotOnboardingStage, error);
 }
 
+bool InkloopPortal::requestMyAiRebind(std::string* error) {
+  OnboardingState next = onboarding_;
+  if (!next.requestMyAiRebind(adapter_, error)) return false;
+  return persistState(
+      next, settings_, SnapshotOnboardingStage | SnapshotMyAiActive |
+          SnapshotCodeOwnership | SnapshotOnboardingCode |
+          SnapshotInkloopCode | SnapshotCodeExpiry,
+      error);
+}
+
 bool InkloopPortal::onMyAiPairingResumed(std::string* error) {
   OnboardingState next = onboarding_;
   if (!next.resumeMyAiPairing(error)) return false;
@@ -1597,6 +1618,46 @@ std::string InkloopPortal::renderStateJson() const {
 
 std::string InkloopPortal::renderAlbumJson() const {
   return renderAlbumResponse(std::string()).body;
+}
+
+PortalResponse InkloopPortal::renderMyAiChatResponse() const {
+  MyAiChatHistory history;
+  if (!adapter_.readMyAiChatHistory(&history)) {
+    return errorResponse(503, "myai_chat_unavailable");
+  }
+  if (history.messages.size() > kMaximumMyAiChatItems) {
+    return errorResponse(422, "myai_chat_invalid");
+  }
+  size_t aggregate = 0;
+  uint64_t previousSequence = 0;
+  std::string output = std::string("{\"ok\":true,\"retention\":\"runtime\",\"truncated\":") +
+      boolJson(history.truncated) + ",\"messages\":[";
+  for (size_t index = 0; index < history.messages.size(); ++index) {
+    const MyAiChatMessage& message = history.messages[index];
+    const bool validRole = message.role == "user" ||
+        message.role == "assistant" || message.role == "tool";
+    if (!validRole || message.sequence == 0 ||
+        (index && message.sequence <= previousSequence) ||
+        message.text.empty() ||
+        message.text.size() > kMaximumMyAiChatTextBytes ||
+        aggregate > kMaximumMyAiChatAggregateBytes - message.text.size()) {
+      return errorResponse(422, "myai_chat_invalid");
+    }
+    aggregate += message.text.size();
+    previousSequence = message.sequence;
+    std::ostringstream item;
+    if (index) item << ',';
+    item << "{\"sequence\":" << message.sequence
+         << ",\"role\":\"" << jsonEscape(message.role)
+         << "\",\"text\":\"" << jsonEscape(message.text) << "\"}";
+    if (!boundedAppend(&output, item.str(), kMaximumMyAiChatJsonBytes)) {
+      return errorResponse(413, "myai_chat_too_large");
+    }
+  }
+  if (!boundedAppend(&output, "]}", kMaximumMyAiChatJsonBytes)) {
+    return errorResponse(413, "myai_chat_too_large");
+  }
+  return jsonResponse(200, output);
 }
 
 bool InkloopPortal::parseAlbumCursor(
@@ -1782,6 +1843,99 @@ PortalResponse InkloopPortal::renderDashboardResponse() const {
       onboarding_.stage() == OnboardingStage::WifiConfigured &&
       onboarding_.onboardingCode().empty() &&
       !onboarding_.terminalBindingComplete();
+  const bool myAiCredentialRecovery =
+      myAiState == "auth_rejected" ||
+      myAiState == "credential_recovery" || myAiState == "recovery";
+  const bool showMyAiAccountActions =
+      myAiState == "inactive" || myAiCredentialRecovery;
+  std::ostringstream myAiPanel;
+  myAiPanel << "<div class=\"tab-panel\" data-tab-panel=\"myai\"><div class=\"settings-stack\">"
+            << "<section><div class=\"section-heading\"><h2>MyAI 状态与绑定</h2>"
+            << "<span class=\"effect-badge\">应用 inkloop</span></div>"
+            << "<p id=\"myai-status\" class=\"notice"
+            << (myAiState == "app_not_registered" ? " warning" : "")
+            << "\">" << htmlEscape(myAiStateMessage(
+                   myAiState, !onboarding_.onboardingCode().empty())) << "</p>"
+            << (showMyAiAccountActions
+                    ? "<div class=\"actions\"><a class=\"secondary-action\" href=\"https://myai.mess.host/#devices\" target=\"_blank\" rel=\"noopener noreferrer\">MyAI 设备</a><a class=\"secondary-action\" href=\"https://myai.mess.host/#billing\" target=\"_blank\" rel=\"noopener noreferrer\">订阅与额度</a></div><p class=\"muted\">设备已激活时，以 MyAI 返回的授权状态为准；保持联网后会自动更新，通常无需删除设备或重新绑定。</p>"
+                    : "")
+            << (myAiCredentialRecovery
+                    ? "<form class=\"inline\" data-portal=\"1\" method=\"post\" action=\"/api/onboarding/myai/rebind\" onsubmit=\"return confirm('清除旧 MyAI 凭据并申请新六位码？Inkloop 和相册不受影响。')\"><button class=\"danger\" type=\"submit\">恢复 / 重新绑定 MyAI</button></form><p class=\"muted\">如提示凭据恢复，请先在 MyAI 停用旧设备。</p>"
+                    : "")
+            << (onboarding_.terminalBindingComplete()
+                    ? (myAiState == "bound"
+                           ? "<p>MyAI 与 Inkloop 已绑定，可以使用语音和图片生成。</p>"
+                           : "<p>Inkloop 已绑定；MyAI 运行授权需要恢复后才能使用语音和图片生成。</p>")
+                    : (onboarding_.onboardingCode().empty()
+                           ? std::string()
+                           : std::string("<div class=\"myai-qr\" data-qr-target=\"") +
+                                 htmlEscape(onboarding_.myAiRegistrationUrl()) +
+                                 "\"><a rel=\"noreferrer\" href=\"" +
+                                 htmlEscape(onboarding_.myAiRegistrationUrl()) +
+                                 "\">注册或绑定 MyAI</a></div><p>六位码：<strong>" +
+                                 htmlEscape(onboarding_.onboardingCode()) +
+                                 "</strong></p>"));
+  if (canRetryMyAi) {
+    myAiPanel << "<form data-portal=\"1\" method=\"post\" action=\"/api/onboarding/myai/start\">"
+              << "<input type=\"hidden\" name=\"_csrf\" value=\""
+              << htmlEscape(access_.csrfToken)
+              << "\"><button type=\"submit\">重新请求六位绑定码</button></form>";
+  }
+  myAiPanel << "</section><section><div class=\"section-heading\"><h2>聊天内容</h2>"
+            << "<span class=\"effect-badge preview\">本次运行</span></div>"
+            << "<p class=\"setting-help\">显示设备收到的最终语音转写、MyAI 回复和本地工具结果。为保护隐私和闪存寿命，重启或深度休眠后自动清空。</p>"
+            << "<p id=\"myai-chat-empty\" class=\"muted\">正在读取聊天…</p>"
+            << "<ol id=\"myai-chat-list\" class=\"chat-list\" aria-live=\"polite\" aria-label=\"MyAI 聊天内容\"></ol>"
+            << "<div class=\"actions\"><button id=\"myai-chat-refresh\" type=\"button\">刷新聊天</button>"
+            << "<button id=\"myai-chat-clear\" class=\"danger\" type=\"button\">清空聊天</button></div></section>"
+            << "<section><div class=\"section-heading\"><h2>语音与 AI 状态灯</h2>"
+            << "<span class=\"effect-badge preview\">即时状态</span></div>"
+            << "<ul class=\"led-legend\"><li><span class=\"led-dot green\"></span>左灯绿色：正在监听</li>"
+            << "<li><span class=\"led-dot red\"></span>左灯红色：语音被阻断或当前不可监听</li>"
+            << "<li><span class=\"led-dot green\"></span>右灯绿色：MyAI 正在生成图片</li>"
+            << "<li><span class=\"led-dot blue\"></span>右灯蓝色：正在下载</li>"
+            << "<li><span class=\"led-dot orange\"></span>右灯橙色：正在转换或写屏</li></ul>"
+            << "<form class=\"settings-grid grid two\" data-settings-group=\"myai-voice\" data-success=\"MyAI 语音设置已保存。\" method=\"post\" action=\"/api/settings\">"
+            << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
+            << "\"><label>语音音量 <span id=\"volume-value\">"
+            << static_cast<unsigned int>(settings_.volume)
+            << "%</span><input type=\"range\" name=\"volume\" min=\"0\" max=\"100\" value=\""
+            << static_cast<unsigned int>(settings_.volume)
+            << "\"><span class=\"field-note\">松开滑杆立即播放短提示音；保存后用于 MyAI 语音。</span></label>"
+            << "<input type=\"hidden\" name=\"voice_assistance_present\" value=\"1\">"
+            << "<label class=\"check-row\"><input type=\"checkbox\" name=\"voice_assistance\" value=\"1\""
+            << (settings_.voiceAssistanceEnabled ? " checked" : "")
+            << ">启用语音辅助提示<span class=\"field-note\">关闭本地操作播报，不影响主动语音对话。</span></label>"
+            << "<button class=\"wide-action\" type=\"submit\">保存语音设置</button></form></section>"
+            << "<section><div class=\"section-heading\"><h2>智能体与图片生成设置</h2>"
+            << "<span class=\"effect-badge next\">下次请求生效</span></div>"
+            << "<p class=\"setting-help\">这些设置只影响后续 MyAI 对话与图片生成，不会为展示中间状态而刷新墨水屏。</p>"
+            << "<form class=\"settings-grid grid two\" data-settings-group=\"myai-prompts\" data-reload=\"1\" data-success=\"MyAI 设置已保存，下次请求开始使用。\" method=\"post\" action=\"/api/settings\">"
+            << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
+            << "\"><label class=\"wide\">智能体提示词 <textarea name=\"assistant_prompt\" maxlength=\"512\">"
+            << htmlEscape(settings_.assistantPrompt) << "</textarea></label>"
+            << "<label class=\"wide\">AIGC 图片提示词模板 <textarea name=\"image_prompt_template\" maxlength=\"512\">"
+            << htmlEscape(settings_.imagePromptTemplate) << "</textarea>"
+            << "<span class=\"field-note\">建议保留 {prompt}；默认针对底边朝下的六色墨水屏、鲜艳高对比、大色块和少细字。</span></label>"
+            << "<label>图片尺寸 <select name=\"image_size\"><option value=\"400x600\""
+            << (settings_.image.width == 400 ? " selected" : "")
+            << ">竖版</option><option value=\"600x400\""
+            << (settings_.image.width == 600 ? " selected" : "")
+            << ">横版</option></select></label>"
+            << "<label>生成步数 <input type=\"number\" name=\"image_steps\" min=\"1\" max=\"50\" value=\""
+            << static_cast<unsigned int>(settings_.image.steps) << "\"></label>"
+            << "<label class=\"wide\">负面提示词 <textarea name=\"negative_prompt\" maxlength=\"384\">"
+            << htmlEscape(settings_.image.negativePrompt) << "</textarea></label>"
+            << "<button class=\"wide-action\" type=\"submit\">保存 MyAI 设置</button></form></section>"
+            << "<section><h2>手动生成图片</h2>"
+            << "<p class=\"notice\">生成成功后会自动进入相册并上屏；相册中会标记为“MyAI 生成”。</p>"
+            << "<form data-portal=\"1\" method=\"post\" action=\"/api/aigc/generate\">"
+            << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
+            << "\"><label>图片主题<textarea name=\"prompt\" maxlength=\"1024\" required placeholder=\"例如：一只戴黄色雨帽的猫，站在高对比的蓝色海边，六色墨水屏海报风格\"></textarea></label>"
+            << "<button type=\"submit\">开始生成并上屏</button></form></section>"
+            << "<section><h2>语音教程</h2><form data-portal=\"1\" method=\"post\" action=\"/api/tutorial/restart\">"
+            << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
+            << "\"><button type=\"submit\">重播语音教程</button></form></section></div></div>";
   std::ostringstream prefix;
   prefix << "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
          << "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -1793,44 +1947,13 @@ PortalResponse InkloopPortal::renderDashboardResponse() const {
          << "<nav class=\"tabs\" aria-label=\"设置分类\">"
          << "<button type=\"button\" data-tab=\"device\">设备</button>"
          << "<button type=\"button\" data-tab=\"album\">相册</button>"
-         << "<button type=\"button\" data-tab=\"ai\">AI 生图</button>"
+         << "<button type=\"button\" data-tab=\"myai\">MyAI</button>"
          << "<button type=\"button\" data-tab=\"settings\">设置</button></nav>"
          << "<div class=\"tab-panel active\" data-tab-panel=\"device\">"
          << "<section><h2>初始化</h2>"
-         << "<p>状态：" << htmlEscape(onboarding_.terminalBindingComplete()
-                ? (myAiState == "bound" ? "已就绪" : "已绑定，运行授权待恢复")
-                : onboardingStageName(onboarding_.stage())) << "</p>"
-         << "<p>MyAI 应用：<strong>inkloop</strong></p>"
-         << "<p id=\"myai-status\" class=\"notice"
-         << (myAiState == "app_not_registered" ? " warning" : "")
-         << "\">" << htmlEscape(myAiStateMessage(
-                myAiState, !onboarding_.onboardingCode().empty())) << "</p>"
-         << (myAiState == "inactive" || myAiState == "auth_rejected" ||
-                 myAiState == "credential_recovery"
-                 ? "<div class=\"actions\"><a class=\"secondary-action\" href=\"https://myai.mess.host/#devices\" target=\"_blank\" rel=\"noopener noreferrer\">MyAI 设备</a><a class=\"secondary-action\" href=\"https://myai.mess.host/#billing\" target=\"_blank\" rel=\"noopener noreferrer\">检查 MyAI 订阅账单</a></div><p class=\"muted\">设备已激活时，以订阅和额度为准；保持联网 30 秒内自动更新，无需删除设备或重新绑定。</p>"
-                 : "")
-         << (myAiState == "auth_rejected" ||
-                 myAiState == "credential_recovery"
-                 ? "<form class=\"inline\" data-portal=\"1\" method=\"post\" action=\"/api/onboarding/myai/rebind\" onsubmit=\"return confirm('清除旧 MyAI 凭据并申请新六位码？Inkloop 和相册不受影响。')\"><button class=\"danger\" type=\"submit\">恢复 / 重新绑定 MyAI</button></form><p class=\"muted\">如提示凭据恢复，请先在 MyAI 停用旧设备。</p>"
-                 : "")
-         << (onboarding_.terminalBindingComplete()
-                 ? "<p>MyAI 与 Inkloop 已绑定。</p>"
-                 : (onboarding_.onboardingCode().empty()
-                        ? std::string()
-                        : std::string("<div class=\"myai-qr\" data-qr-target=\"") +
-                              htmlEscape(onboarding_.myAiRegistrationUrl()) +
-                              "\"><a rel=\"noreferrer\" href=\"" +
-                              htmlEscape(onboarding_.myAiRegistrationUrl()) +
-                              "\">注册或绑定 MyAI</a></div><p>六位码：<strong>" +
-                              htmlEscape(onboarding_.onboardingCode()) +
-                              "</strong></p>"));
-  if (canRetryMyAi) {
-    prefix << "<form data-portal=\"1\" method=\"post\" action=\"/api/onboarding/myai/start\">"
-           << "<input type=\"hidden\" name=\"_csrf\" value=\""
-           << htmlEscape(access_.csrfToken)
-           << "\"><button type=\"submit\">重新请求六位绑定码</button></form>";
-  }
-  prefix << "</section><section class=\"code-help\"><h2>本地访问安全</h2>"
+         << "<p>Inkloop：<strong>" << (onboarding_.inkloopBound() ? "已绑定" : "等待绑定")
+         << "</strong></p><p class=\"muted\">MyAI 的授权、聊天、语音和图片生成设置已集中到 MyAI 页签。</p>"
+         << "</section><section class=\"code-help\"><h2>本地访问安全</h2>"
          << "<p class=\"notice\"><strong>设备屏幕上的本地管理密码</strong>同时用于 Settings Wi‑Fi "
          << "和本地网页登录；默认复用已保存的家庭 Wi‑Fi 密码，也可以在下方修改。</p>"
          << "<p class=\"muted\">它不是 MyAI / Inkloop 的六位绑定码。</p>"
@@ -1926,29 +2049,14 @@ PortalResponse InkloopPortal::renderDashboardResponse() const {
          << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
          << "\"><input type=\"hidden\" name=\"action\" value=\"clear_album\">"
          << "<button class=\"danger\" type=\"submit\">清空用户相册（需顶部键确认）</button></form></section></div>"
-         << "<div class=\"tab-panel\" data-tab-panel=\"ai\"><section><h2>MyAI 图片生成</h2>"
-         << "<p class=\"notice\">输入主题后会调用已绑定的 MyAI 渲染服务；生成结果会自动缓存到相册并上屏。</p>"
-         << "<form data-portal=\"1\" method=\"post\" action=\"/api/aigc/generate\">"
-         << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
-         << "\"><label>图片主题<textarea name=\"prompt\" maxlength=\"1024\" required "
-         << "placeholder=\"例如：一只戴黄色雨帽的猫，站在高对比的蓝色海边，六色墨水屏海报风格\"></textarea></label>"
-         << "<p class=\"muted\">会自动套用“设置”里的图片提示词模板、负面提示词、尺寸和生成步数。</p>"
-         << "<button type=\"submit\">开始生成并上屏</button></form></section></div>"
+         << myAiPanel.str()
          << "<div class=\"tab-panel\" data-tab-panel=\"settings\"><div class=\"settings-stack\">"
-         << "<section><div class=\"section-heading\"><h2>声音与指示灯</h2>"
-         << "<span class=\"effect-badge preview\">试听即时 · 保存后默认</span></div>"
-         << "<p class=\"setting-help\">滑杆用于现场预览；保存后成为设备默认值。LED 亮度或左右角色发生变化时，设备会自动执行完整 RGB 检测。</p>"
-         << "<form class=\"settings-grid grid two\" data-settings-group=\"sound-led\" data-success=\"声音与指示灯设置已保存。\" method=\"post\" action=\"/api/settings\">"
+         << "<section><div class=\"section-heading\"><h2>指示灯硬件</h2>"
+         << "<span class=\"effect-badge preview\">保存后自动检测</span></div>"
+         << "<p class=\"setting-help\">MyAI 状态颜色图例在 MyAI 页签。亮度或左右角色发生变化时，设备会自动执行完整 RGB 检测。</p>"
+         << "<form class=\"settings-grid grid two\" data-settings-group=\"led\" data-success=\"指示灯设置已保存。\" method=\"post\" action=\"/api/settings\">"
          << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
-         << "\"><label>音量 <span id=\"volume-value\">"
-         << static_cast<unsigned int>(settings_.volume)
-         << "%</span><input type=\"range\" name=\"volume\" min=\"0\" max=\"100\" value=\""
-         << static_cast<unsigned int>(settings_.volume) << "\"><span class=\"field-note\">松开滑杆立即播放短提示音；保存后用于后续语音。</span></label>"
-         << "<input type=\"hidden\" name=\"voice_assistance_present\" value=\"1\">"
-         << "<label class=\"check-row\"><input type=\"checkbox\" name=\"voice_assistance\" value=\"1\""
-         << (settings_.voiceAssistanceEnabled ? " checked" : "")
-         << ">启用语音辅助提示<span class=\"field-note\">关闭本地操作播报，不影响主动语音对话。</span></label>"
-         << "<label>LED 最大亮度 <span id=\"led-brightness-value\">"
+         << "\"><label>LED 最大亮度 <span id=\"led-brightness-value\">"
          << static_cast<unsigned int>(settings_.ledMaximumBrightnessPercent)
          << "%</span><input type=\"range\" name=\"led_brightness\" min=\"1\" max=\"100\" value=\""
          << static_cast<unsigned int>(settings_.ledMaximumBrightnessPercent)
@@ -1958,28 +2066,7 @@ PortalResponse InkloopPortal::renderDashboardResponse() const {
          << ">默认</option><option value=\"1\""
          << (settings_.ledRolesSwapped ? " selected" : "")
          << ">交换</option></select><span class=\"field-note\">修改后同样会自动运行 RGB 检测。</span></label>"
-         << "<button class=\"wide-action\" type=\"submit\">保存声音与指示灯</button></form></section>"
-
-         << "<section><div class=\"section-heading\"><h2>智能体与图片生成</h2>"
-         << "<span class=\"effect-badge next\">下次对话 / 生成生效</span></div>"
-         << "<p class=\"setting-help\">这些内容只影响后续 MyAI 对话、生成和浏览器上传画布，不会主动刷新当前墨水屏。</p>"
-         << "<form class=\"settings-grid grid two\" data-settings-group=\"ai-image\" data-reload=\"1\" data-success=\"AI 与图片生成设置已保存，下次请求开始使用。\" method=\"post\" action=\"/api/settings\">"
-         << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
-         << "\"><label class=\"wide\">智能体提示词（设备身份、人格与本地工具） <textarea name=\"assistant_prompt\" maxlength=\"512\">"
-         << htmlEscape(settings_.assistantPrompt) << "</textarea></label>"
-         << "<label class=\"wide\">AIGC 图片提示词模板（与负面提示词分开） <textarea name=\"image_prompt_template\" maxlength=\"512\">"
-         << htmlEscape(settings_.imagePromptTemplate) << "</textarea>"
-         << "<span class=\"field-note\">建议保留 {prompt} 作为主题位置；默认针对底边朝下的 400×600 六色屏、鲜艳高对比、大色块和少细字。</span></label>"
-         << "<label>图片尺寸 <select name=\"image_size\"><option value=\"400x600\""
-         << (settings_.image.width == 400 ? " selected" : "")
-         << ">400×600</option><option value=\"600x400\""
-         << (settings_.image.width == 600 ? " selected" : "")
-         << ">600×400</option></select></label>"
-         << "<label>生成步数 <input type=\"number\" name=\"image_steps\" min=\"1\" max=\"50\" value=\""
-         << static_cast<unsigned int>(settings_.image.steps) << "\"></label>"
-         << "<label class=\"wide\">负面提示词 <textarea name=\"negative_prompt\" maxlength=\"384\">"
-         << htmlEscape(settings_.image.negativePrompt) << "</textarea></label>"
-         << "<button class=\"wide-action\" type=\"submit\">保存 AI 与图片设置</button></form></section>"
+         << "<button class=\"wide-action\" type=\"submit\">保存指示灯设置</button></form></section>"
 
          << "<section><div class=\"section-heading\"><h2>显示与电源</h2>"
          << "<span class=\"effect-badge\">保存后立即生效</span></div>"
@@ -2038,10 +2125,7 @@ PortalResponse InkloopPortal::renderDashboardResponse() const {
          << "<label>再次输入新密码 <input type=\"password\" name=\"local_password_confirm\" minlength=\"8\" maxlength=\"63\" autocomplete=\"new-password\" required></label>"
          << "<p class=\"wide warning\">不要求大小写或特殊字符；只需满足 Wi-Fi 的 8–63 位长度。保存后请重启设备。</p>"
          << "<button class=\"wide-action\" type=\"submit\">保存新密码</button></form></section>"
-         << "<section><h2>教程与诊断</h2><form data-portal=\"1\" method=\"post\" action=\"/api/tutorial/restart\">"
-         << "<input type=\"hidden\" name=\"_csrf\" value=\"" << htmlEscape(access_.csrfToken)
-         << "\"><button type=\"submit\">重播语音教程</button></form>"
-         << "<p><a href=\"/api/diagnostics\">查看诊断</a> · <a href=\"/api/serial-log\">导出串口日志</a></p></section>"
+         << "<section><h2>诊断</h2><p><a href=\"/api/diagnostics\">查看诊断</a> · <a href=\"/api/serial-log\">导出串口日志</a></p></section>"
          << "<section><h2>安全说明</h2><p>所有修改请求都需要本地会话、同源 Origin 和 CSRF。"
          << "格式化、删图和清空相册还必须完成浏览器二次确认，并在 30 秒内短按设备顶部语音键 "
          << "BtnC / GPIO1；左右翻页键不会确认。</p>"

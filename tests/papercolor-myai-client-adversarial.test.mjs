@@ -519,19 +519,30 @@ int main() {
     env.store.failClearRuntime = true;
     env.http.forcedPath = "/devices/check"; env.http.forcedStatus = 401;
     env.http.forcedError = "unauthorized"; bool authorized = false;
-    assert(env.client->checkAuthorization(authorized).code == ErrorCode::Unauthorized);
+    assert(env.client->checkAuthorization(authorized).code == ErrorCode::Storage);
     assert(env.store.value.deviceToken == "device-token");
     assert(env.store.runtimeClears == 0);
-    assert(env.client->activationState() == ActivationState::RecoveryRequired);
+    assert(env.client->activationState() == ActivationState::Error);
   }
   {
     Env env; env.seedBound(); env.construct(); assert(env.client->initialize().ok());
     env.store.failNextLoad = true;
     env.http.forcedPath = "/devices/check"; env.http.forcedStatus = 401;
     env.http.forcedError = "unauthorized"; bool authorized = false;
-    assert(env.client->checkAuthorization(authorized).code == ErrorCode::Unauthorized);
-    assert(env.store.value.deviceToken == "device-token");
-    assert(env.client->activationState() == ActivationState::RecoveryRequired);
+    assert(env.client->checkAuthorization(authorized).code == ErrorCode::Storage);
+    assert(env.store.value.deviceToken.empty());
+    assert(env.client->activationState() == ActivationState::Error);
+  }
+  {
+    Env env; env.seedBound(); env.construct(); assert(env.client->initialize().ok());
+    env.http.forcedPath = "/devices/check"; env.http.forcedStatus = 401;
+    env.http.forcedError = "unauthorized"; bool authorized = true;
+    const Status rejected = env.client->checkAuthorization(authorized);
+    assert(rejected.code == ErrorCode::Unauthorized && !authorized);
+    assert(env.store.value.deviceToken.empty());
+    assert(env.store.value.deviceId.empty());
+    assert(env.store.runtimeClears == 1);
+    assert(env.client->activationState() == ActivationState::Unconfigured);
   }
   {
     Env env; env.seedBound(); env.construct(); assert(env.client->initialize().ok());
