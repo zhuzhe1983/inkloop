@@ -454,6 +454,31 @@ test("native wake composition is capability-injected and preserves the panel", (
   // proactive MyAI connection preserves the false interaction authority,
   // while a button-raised turn remains active through Connecting.
   assert.match(nativeVoiceHeader, /bool interactiveAudioBusy\(\) const/);
+  assert.match(nativeVoiceHeader, /bool aigcBusy\(\) const/);
+  assert.match(
+    nativeVoice,
+    /bool NativeVoiceService::aigcBusy\(\) const[\s\S]{0,260}aigc_admission_pending_[\s\S]{0,100}aigc_phase_ != AigcPhase::Idle \|\| aigc_exclusive_/,
+  );
+  assert.match(
+    nativeVoice,
+    /enqueueImageGenerationImpl[\s\S]{0,1400}aigc_admission_pending_ = true[\s\S]{0,120}aigc_admission_ticket_ = ticket[\s\S]{0,800}supervisor_\.post\(envelope\)/,
+  );
+  assert.match(
+    nativeVoice,
+    /acceptAigcPrompt\(std::string prompt,[\s\S]{0,900}aigc_admission_ticket_ == queued_ticket[\s\S]{0,500}aigc_admission_pending_ = false[\s\S]{0,160}aigc_phase_ = AigcPhase::PendingHandoff/,
+  );
+  assert.match(
+    nativePower,
+    /PowerBlocker::AigcGeneration,[\s\S]{0,100}aigc_busy \|\| image == ImageLedMode::Generating/,
+  );
+  assert.match(
+    nativePower,
+    /capturePowerInputs\(PowerInputs& inputs\)[\s\S]{0,220}refreshBlockers\(inputs\.now_ms\)[\s\S]{0,180}activity_\.blockers\(\)/,
+  );
+  assert.match(
+    nativePower,
+    /quiesceNetwork\(\)[\s\S]{0,280}voice_\.portalBusy\(\)[\s\S]{0,280}wifi_\.prepareForSleep\(\)/,
+  );
   assert.match(
     nativePower,
     /PowerBlocker::VoiceSession, voice_busy, now_ms/,

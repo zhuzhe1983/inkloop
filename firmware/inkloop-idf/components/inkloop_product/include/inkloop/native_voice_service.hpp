@@ -153,6 +153,10 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   void networkTick(bool wifi_online);
   void portalTick(bool album_mutation_allowed = true);
   bool portalBusy() const;
+  // True from accepted PendingHandoff through terminal cleanup. Power uses
+  // this live signal instead of waiting for the presentation LEDs so a newly
+  // queued image cannot race the final deep-sleep snapshot.
+  bool aigcBusy() const;
   // Presentation state is not an execution lock. This reports only a
   // button-initiated MyAI turn or local/capture/playback audio so power
   // admission cannot be held awake by proactive gateway reconnect LEDs.
@@ -225,7 +229,9 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   myai::Status startPairingNow(uint32_t now_ms);
   void serviceRequestedPairingActions(uint32_t now_ms);
   bool acceptAigcPrompt(std::string prompt,
-                        bool serial_diagnostic = false);
+                        bool serial_diagnostic = false,
+                        uint64_t queued_ticket = 0U);
+  void cancelQueuedAigcAdmission(uint64_t queued_ticket);
   void restoreVolumeAfterPreview();
   bool beginTrackedStorageWork();
   void finishTrackedStorageWork();
@@ -311,6 +317,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   uint32_t next_aigc_poll_ms_ = 0;
   enum class AigcPhase : uint8_t { Idle, PendingHandoff, Start, Poll, Download };
   AigcPhase aigc_phase_ = AigcPhase::Idle;
+  bool aigc_admission_pending_ = false;
+  uint64_t aigc_admission_ticket_ = 0U;
   std::string aigc_prompt_;
   std::string aigc_render_strategy_ = "official-quality";
   std::array<char, local_tools::kMaximumStoredPromptBytes + 1U>

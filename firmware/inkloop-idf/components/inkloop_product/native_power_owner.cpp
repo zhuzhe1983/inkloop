@@ -109,23 +109,28 @@ void NativePowerOwner::refreshBlockers(uint32_t now_ms) {
   const ImageLedMode image = led.imageMode();
   const NativeMyAiOnboardingSnapshot onboarding = voice_.onboardingSnapshot();
   const bool voice_busy = voice_.interactiveAudioBusy();
+  const bool aigc_busy = voice_.aigcBusy();
+  const bool display_busy = display_.busy();
+  const bool inkloop_busy = inkloop_.busy();
+  const bool portal_mutation_busy = portal_.mutationBusy();
   const uint32_t portal_access = portal_.lastAccessMs();
   const bool portal_recent = portal_access != 0U &&
       static_cast<uint32_t>(now_ms - portal_access) <
           kPortalActivityWindowMs;
   portENTER_CRITICAL(&mux_);
-  activity_.setBlocker(PowerBlocker::DisplayRefresh, display_.busy(), now_ms);
+  activity_.setBlocker(PowerBlocker::DisplayRefresh, display_busy, now_ms);
   activity_.setBlocker(PowerBlocker::VoiceSession, voice_busy, now_ms);
   activity_.setBlocker(PowerBlocker::AigcGeneration,
-                       image == ImageLedMode::Generating, now_ms);
+                       aigc_busy || image == ImageLedMode::Generating,
+                       now_ms);
   activity_.setBlocker(PowerBlocker::AssetDownload,
                        image == ImageLedMode::Downloading, now_ms);
   activity_.setBlocker(PowerBlocker::ContentConversion,
                        image == ImageLedMode::Converting, now_ms);
   activity_.setBlocker(PowerBlocker::TaskFinalization,
                        image == ImageLedMode::Writing, now_ms);
-  activity_.setBlocker(PowerBlocker::TaskSync, inkloop_.busy(), now_ms);
-  activity_.setBlocker(PowerBlocker::AlbumUpload, portal_.mutationBusy(),
+  activity_.setBlocker(PowerBlocker::TaskSync, inkloop_busy, now_ms);
+  activity_.setBlocker(PowerBlocker::AlbumUpload, portal_mutation_busy,
                        now_ms);
   activity_.setBlocker(
       PowerBlocker::Pairing,
@@ -174,6 +179,9 @@ void NativePowerOwner::tick(uint32_t now_ms) {
 PowerSnapshotResult NativePowerOwner::capturePowerInputs(PowerInputs& inputs) {
   inputs = PowerInputs();
   inputs.now_ms = capture_now_ms_;
+  // Sleep admission captures twice. Re-sample every owner for both snapshots
+  // so work admitted after the outer tick cannot inherit stale blockers.
+  refreshBlockers(inputs.now_ms);
   portENTER_CRITICAL(&mux_);
   inputs.last_meaningful_activity_ms = activity_.lastMeaningfulActivityMs();
   inputs.blockers = activity_.blockers();
@@ -227,7 +235,13 @@ bool NativePowerOwner::quiesceVoiceAndAudio() {
 }
 
 bool NativePowerOwner::quiesceNetwork() {
-  if (wifi_.provisioningActive()) return false;
+  // This is the last check before Wi-Fi is stopped. A command can be admitted
+  // after settle/quiesce-voice, so never disconnect beneath new live work.
+  if (wifi_.provisioningActive() || voice_.portalBusy() ||
+      voice_.interactiveAudioBusy() || display_.busy() || inkloop_.busy() ||
+      portal_.mutationBusy()) {
+    return false;
+  }
   network_quiesced_ = wifi_.prepareForSleep() == ESP_OK;
   return network_quiesced_;
 }

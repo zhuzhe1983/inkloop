@@ -58,8 +58,10 @@ Main now includes the former `codex/esp-idf-serial-diagnostics` work through
 `6f06d01`: bounded secret-free diagnostics, authenticated Portal acceptance,
 the reusable board-porting contract and fail-closed descriptor validation. Its
 pre-merge complete ESP-IDF host suite was 271/271 PASS and both C151 and mock
-SKU linked. Source is now versioned `0.4.0-beta.15`; it must receive a fresh
-clean build, signature and independent candidate gate before any flash or OTA.
+SKU linked. Source is now versioned `0.4.0-beta.16`; this candidate adds an
+atomic queued-AIGC admission latch plus live sleep rechecks so an accepted
+generation cannot race deep sleep. It must receive a fresh clean build,
+signature and independent candidate gate before any flash or OTA.
 
 ## 3. Target ownership model
 

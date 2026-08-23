@@ -302,7 +302,8 @@ bool NativeVoiceService::beginStorageMaintenance() {
   // Keep the admission gate locked while inspecting AIGC; acceptAigcPrompt()
   // takes locks in this same order, closing the check/admit race.
   portENTER_CRITICAL(&aigc_mux_);
-  const bool aigc_busy = aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
+  const bool aigc_busy = aigc_admission_pending_ ||
+      aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
   portEXIT_CRITICAL(&aigc_mux_);
   if (aigc_busy || audio_bridge_->captureBusy() ||
       audio_bridge_->playbackBusy()) {
@@ -530,6 +531,8 @@ void NativeVoiceService::shutdown() {
   sequence_ = 0U;
   portEXIT_CRITICAL(&sequence_mux_);
   portENTER_CRITICAL(&aigc_mux_);
+  aigc_admission_pending_ = false;
+  aigc_admission_ticket_ = 0U;
   aigc_phase_ = AigcPhase::Idle;
   aigc_request_ = myai::ImageRequest{};
   aigc_generated_ = myai::AigcGenerateResponse{};
@@ -723,9 +726,27 @@ AdmissionResult NativeVoiceService::enqueueImageGenerationImpl(
       prompt.size() > kAigcPromptMaximum) {
     return AdmissionResult::InvalidEnvelope;
   }
-  if (maintenanceBlocksInteractiveWork()) return AdmissionResult::QueueFull;
   const uint64_t ticket = text_pool_.put(ProductTextKind::AigcState, prompt);
   if (ticket == 0U) return AdmissionResult::QueueFull;
+  // Reserve the AIGC slot before posting to Network. The consumer can run as
+  // soon as post() returns, and power admission must see accepted queued work
+  // even before Network turns it into PendingHandoff. Keep the established
+  // maintenance -> AIGC lock order so storage maintenance cannot cross it.
+  portENTER_CRITICAL(&maintenance_mux_);
+  portENTER_CRITICAL(&aigc_mux_);
+  const bool available = !storage_maintenance_active_ && storage_available_ &&
+      !aigc_admission_pending_ && aigc_phase_ == AigcPhase::Idle &&
+      !aigc_exclusive_;
+  if (available) {
+    aigc_admission_pending_ = true;
+    aigc_admission_ticket_ = ticket;
+  }
+  portEXIT_CRITICAL(&aigc_mux_);
+  portEXIT_CRITICAL(&maintenance_mux_);
+  if (!available) {
+    text_pool_.release(ticket);
+    return AdmissionResult::QueueFull;
+  }
   WorkEnvelope envelope{};
   envelope.generation = 1;
   envelope.request_id = ticket;
@@ -736,7 +757,10 @@ AdmissionResult NativeVoiceService::enqueueImageGenerationImpl(
   envelope.disposition = WorkDisposition::Accepted;
   envelope.flags = serial_diagnostic ? 1U : 0U;
   const AdmissionResult admitted = supervisor_.post(envelope);
-  if (admitted != AdmissionResult::Admitted) text_pool_.release(ticket);
+  if (admitted != AdmissionResult::Admitted) {
+    text_pool_.release(ticket);
+    cancelQueuedAigcAdmission(ticket);
+  }
   return admitted;
 }
 
@@ -1307,7 +1331,9 @@ WorkDisposition NativeVoiceService::handleNetworkCommand(
     if (envelope.flags > 1U ||
         !text_pool_.take(envelope.request_id, kind, prompt) ||
         kind != ProductTextKind::AigcState ||
-        !acceptAigcPrompt(std::move(prompt), serial_diagnostic)) {
+        !acceptAigcPrompt(std::move(prompt), serial_diagnostic,
+                          envelope.request_id)) {
+      cancelQueuedAigcAdmission(envelope.request_id);
       queueChat(ProductTextKind::AigcState,
                 "aigc.rejected_busy_or_invalid source=portal");
       postImageLed(ImageLedMode::Error);
@@ -1369,7 +1395,8 @@ WorkDisposition NativeVoiceService::handleNetworkCommand(
 }
 
 bool NativeVoiceService::acceptAigcPrompt(std::string prompt,
-                                          bool serial_diagnostic) {
+                                          bool serial_diagnostic,
+                                          uint64_t queued_ticket) {
   if (prompt.empty() || prompt.size() > kAigcPromptMaximum) return false;
   bool accepted = false;
   portENTER_CRITICAL(&maintenance_mux_);
@@ -1378,10 +1405,18 @@ bool NativeVoiceService::acceptAigcPrompt(std::string prompt,
     return false;
   }
   portENTER_CRITICAL(&aigc_mux_);
-  if (aigc_phase_ == AigcPhase::Idle && !aigc_exclusive_) {
+  const bool queued_admission = queued_ticket != 0U;
+  const bool reservation_matches = queued_admission
+      ? aigc_admission_pending_ && aigc_admission_ticket_ == queued_ticket
+      : !aigc_admission_pending_;
+  if (reservation_matches && aigc_phase_ == AigcPhase::Idle &&
+      !aigc_exclusive_) {
     // Moving a pre-allocated string is bounded and allocation-free. The
-    // protected phase becomes visible only after its prompt is complete.
+    // queued reservation and protected phase change under the same lock, so
+    // power never observes a false idle gap between them.
     aigc_prompt_.swap(prompt);
+    aigc_admission_pending_ = false;
+    aigc_admission_ticket_ = 0U;
     aigc_phase_ = AigcPhase::PendingHandoff;
     aigc_serial_diagnostic_ = serial_diagnostic;
     accepted = true;
@@ -1389,6 +1424,16 @@ bool NativeVoiceService::acceptAigcPrompt(std::string prompt,
   portEXIT_CRITICAL(&aigc_mux_);
   portEXIT_CRITICAL(&maintenance_mux_);
   return accepted;
+}
+
+void NativeVoiceService::cancelQueuedAigcAdmission(uint64_t queued_ticket) {
+  portENTER_CRITICAL(&aigc_mux_);
+  if (queued_ticket != 0U && aigc_admission_pending_ &&
+      aigc_admission_ticket_ == queued_ticket) {
+    aigc_admission_pending_ = false;
+    aigc_admission_ticket_ = 0U;
+  }
+  portEXIT_CRITICAL(&aigc_mux_);
 }
 
 void NativeVoiceService::scheduleReconnect(uint32_t delay_ms) {
@@ -1612,7 +1657,8 @@ void NativeVoiceService::serviceRequestedPairingActions(uint32_t now_ms) {
 
   if (rebind_requested_) {
     portENTER_CRITICAL(&aigc_mux_);
-    const bool image_busy = aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
+    const bool image_busy = aigc_admission_pending_ ||
+        aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
     portEXIT_CRITICAL(&aigc_mux_);
     if (image_busy) return;
 
@@ -1736,10 +1782,15 @@ void NativeVoiceService::portalTick(bool album_mutation_allowed) {
 }
 
 bool NativeVoiceService::portalBusy() const {
+  return aigcBusy() || storageMaintenanceActive();
+}
+
+bool NativeVoiceService::aigcBusy() const {
   portENTER_CRITICAL(&aigc_mux_);
-  const bool busy = aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
+  const bool busy = aigc_admission_pending_ ||
+      aigc_phase_ != AigcPhase::Idle || aigc_exclusive_;
   portEXIT_CRITICAL(&aigc_mux_);
-  return busy || storageMaintenanceActive();
+  return busy;
 }
 
 bool NativeVoiceService::interactiveAudioBusy() const {
@@ -1912,6 +1963,8 @@ void NativeVoiceService::finishAigc(bool success, const char* state) {
   aigc_generated_ = myai::AigcGenerateResponse();
   aigc_status_ = myai::AigcStatusResponse();
   portENTER_CRITICAL(&aigc_mux_);
+  aigc_admission_pending_ = false;
+  aigc_admission_ticket_ = 0U;
   aigc_phase_ = AigcPhase::Idle;
   aigc_exclusive_ = false;
   aigc_serial_diagnostic_ = false;

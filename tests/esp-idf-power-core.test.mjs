@@ -59,6 +59,7 @@ class FakePreparation final : public ISleepPreparation {
   bool voice = true;
   bool network = true;
   bool restore = true;
+  bool inject_aigc_during_network = false;
   int captures = 0;
   int task_calls = 0;
   int display_calls = 0;
@@ -80,7 +81,13 @@ class FakePreparation final : public ISleepPreparation {
   bool settleTasksAndSync() override { ++task_calls; return tasks; }
   bool quiesceDisplay() override { ++display_calls; return display; }
   bool quiesceVoiceAndAudio() override { ++voice_calls; return voice; }
-  bool quiesceNetwork() override { ++network_calls; return network; }
+  bool quiesceNetwork() override {
+    ++network_calls;
+    if (inject_aigc_during_network) {
+      final.blockers.set(PowerBlocker::AigcGeneration, true);
+    }
+    return network;
+  }
   bool restoreAwakeServices() override { ++restore_calls; return restore; }
 };
 
@@ -224,6 +231,18 @@ int main() {
   assert(outcome.decision.blocker == PowerBlocker::AlbumUpload);
   assert(outcome.restore_attempted && outcome.restore_succeeded);
   assert(appeared.restore_calls == 1 && not_entered.calls == 0);
+
+  // Work accepted during network quiescence must be visible in the live final
+  // snapshot, restore networking and cancel the sleep entry.
+  FakePreparation queued_aigc;
+  queued_aigc.inject_aigc_during_network = true;
+  outcome = executeSleepAttempt(policy, queued_aigc, not_entered);
+  assert(outcome.result == SleepAttemptResult::RecheckNotEligible);
+  assert(outcome.decision.reason == SleepDecisionReason::Blocked);
+  assert(outcome.decision.blocker == PowerBlocker::AigcGeneration);
+  assert(queued_aigc.captures == 2 && queued_aigc.network_calls == 1);
+  assert(outcome.restore_attempted && outcome.restore_succeeded);
+  assert(queued_aigc.restore_calls == 1 && not_entered.calls == 0);
 
   FakePreparation failed_quiescence;
   failed_quiescence.voice = false;
