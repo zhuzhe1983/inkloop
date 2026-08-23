@@ -58,7 +58,7 @@ Main now includes the former `codex/esp-idf-serial-diagnostics` work through
 `6f06d01`: bounded secret-free diagnostics, authenticated Portal acceptance,
 the reusable board-porting contract and fail-closed descriptor validation. Its
 pre-merge complete ESP-IDF host suite was 271/271 PASS and both C151 and mock
-SKU linked. Source is now versioned `0.4.0-beta.13`; it must receive a fresh
+SKU linked. Source is now versioned `0.4.0-beta.14`; it must receive a fresh
 clean build, signature and independent candidate gate before any flash or OTA.
 
 ## 3. Target ownership model
@@ -69,8 +69,8 @@ queues, immutable IDs, deadlines, cancellation and generation numbers.
 | Priority | Task | Core | Sole ownership |
 |---|---|---:|---|
 | 22 | input | 1 | GPIO ISR/debounce and gesture timestamps |
+| 21 | control | 1 | device/product state machine, button semantics and arbitration |
 | 20 | voice | 1 | capture/playback state, VAD, TTS pacing, interactive intent |
-| 18 | control | 1 | device/product state machine and arbitration |
 | 8 | LED | 1 | two-pixel desired-state animation only |
 | 7 | storage | 0 | NVS, LittleFS, SD, album/index/task transactions |
 | 6 | display | 0 | decode/quantize/panel refresh; sole panel writer |

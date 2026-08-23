@@ -94,6 +94,7 @@ class NativeInkloopService final {
   void portalTickAdmitted(bool wifi_online, bool slow_io_allowed,
                           bool scheduled_display_allowed,
                           const NativeMyAiOnboardingSnapshot& onboarding);
+  bool admittedSlowIoBusy() const;
   bool reconcileTaskAssets();
   void runDueTask(uint32_t now_ms, bool download_allowed);
   bool queueDisplay(const storage::InkloopTaskRecord& task, size_t ordinal,

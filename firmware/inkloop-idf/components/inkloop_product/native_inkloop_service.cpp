@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "inkloop/product_opcodes.hpp"
+#include "inkloop/slow_io_arbitration.hpp"
 
 namespace inkloop {
 namespace {
@@ -475,17 +476,30 @@ void NativeInkloopService::portalTickAdmitted(
   const uint32_t now = nowMs();
   expireDisplayResult(now);
   drainAcknowledgement(now);
-  if (!slow_io_allowed || busy()) return;
+  // portalTick() has already acquired this owner's Portal-lane lease, so the
+  // public busy() view is necessarily true here.  Only competing storage or
+  // Display work can block the admitted owner itself.
+  if (!slow_io_allowed || admittedSlowIoBusy()) return;
   if (wifi_online && due(now, next_sync_ms_)) synchronize(onboarding, now);
   if (scheduled_display_allowed && !registration_required_ &&
       tasks_synchronized_)
     runDueTask(now, wifi_online);
 }
 
+bool NativeInkloopService::admittedSlowIoBusy() const {
+  portENTER_CRITICAL(&mux_);
+  const bool value = SlowIoArbitration::inkloopOwnerAdmittedBusy(
+      storage_maintenance_,
+      display_mailbox_.phase != DisplayMailboxPhase::Idle);
+  portEXIT_CRITICAL(&mux_);
+  return value;
+}
+
 bool NativeInkloopService::busy() const {
   portENTER_CRITICAL(&mux_);
-  const bool value = storage_maintenance_ || portal_operation_active_ ||
-      display_mailbox_.phase != DisplayMailboxPhase::Idle;
+  const bool value = SlowIoArbitration::inkloopOwnerBusy(
+      storage_maintenance_, portal_operation_active_,
+      display_mailbox_.phase != DisplayMailboxPhase::Idle);
   portEXIT_CRITICAL(&mux_);
   return value;
 }

@@ -30,6 +30,14 @@ int main() {
   assert(!SlowIoArbitration::inkloopMayRun(true, false, false));
   assert(!SlowIoArbitration::inkloopMayRun(false, false, true));
   assert(SlowIoArbitration::inkloopMayRun(false, false, false));
+
+  // Regression: once NativeInkloopService owns the Portal lane its public
+  // busy view is true, but that ownership flag must not reject the admitted
+  // synchronize/runDueTask section itself.
+  assert(SlowIoArbitration::inkloopOwnerBusy(false, true, false));
+  assert(!SlowIoArbitration::inkloopOwnerAdmittedBusy(false, false));
+  assert(SlowIoArbitration::inkloopOwnerAdmittedBusy(true, false));
+  assert(SlowIoArbitration::inkloopOwnerAdmittedBusy(false, true));
   return 0;
 }
 `;
@@ -74,4 +82,22 @@ test("product runtime re-samples each slow owner between serialized stages", () 
     runtime,
     /const bool slow_io_idle[\s\S]{0,180}!voice_\.portalBusy\(\)[\s\S]{0,180}portal_\.tick/,
   );
+
+  const service = readFileSync(
+    join(product, "native_inkloop_service.cpp"),
+    "utf8",
+  );
+  const admittedAt = service.indexOf(
+    "void NativeInkloopService::portalTickAdmitted",
+  );
+  const admittedEnd = service.indexOf(
+    "bool NativeInkloopService::admittedSlowIoBusy",
+    admittedAt,
+  );
+  assert.ok(admittedAt >= 0 && admittedEnd > admittedAt);
+  const admitted = service.slice(admittedAt, admittedEnd);
+  assert.match(admitted, /admittedSlowIoBusy\(\)/);
+  assert.doesNotMatch(admitted, /!slow_io_allowed\s*\|\|\s*busy\(\)/);
+  assert.match(admitted, /synchronize\(onboarding, now\)/);
+  assert.match(admitted, /runDueTask\(now, wifi_online\)/);
 });

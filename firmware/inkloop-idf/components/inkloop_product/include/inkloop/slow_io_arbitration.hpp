@@ -24,6 +24,23 @@ class SlowIoArbitration final {
                                       bool portal_mutation_busy) {
     return !aigc_busy && !display_busy && !portal_mutation_busy;
   }
+
+  // NativeInkloopService raises portal_operation_active before entering its
+  // admitted Portal-lane section.  That flag protects callers on other lanes,
+  // but it must not make the admitted owner reject itself.  Keep the public
+  // busy view and the already-admitted view explicit so they cannot be
+  // accidentally collapsed back into the circular self-gate.
+  static constexpr bool inkloopOwnerBusy(bool storage_maintenance,
+                                         bool portal_operation_active,
+                                         bool display_mailbox_busy) {
+    return storage_maintenance || portal_operation_active ||
+        display_mailbox_busy;
+  }
+
+  static constexpr bool inkloopOwnerAdmittedBusy(bool storage_maintenance,
+                                                 bool display_mailbox_busy) {
+    return storage_maintenance || display_mailbox_busy;
+  }
 };
 
 }  // namespace inkloop
