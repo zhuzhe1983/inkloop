@@ -483,7 +483,7 @@ bool NativeVoiceService::finishStorageMaintenance(bool storage_changed,
         xSemaphoreTake(chat_snapshot_mutex_, pdMS_TO_TICKS(10)) != pdTRUE) {
       return false;
     }
-    chat_snapshot_mailbox_ = NativeLocalChatSnapshot{};
+    clearChatSnapshotMailbox();
     portENTER_CRITICAL(&chat_snapshot_state_mux_);
     chat_snapshot_request_pending_ = false;
     chat_snapshot_ready_ = true;
@@ -710,7 +710,7 @@ void NativeVoiceService::shutdown() {
   tutorial_snapshot_ = NativeTutorialSnapshot{};
   portEXIT_CRITICAL(&tutorial_mux_);
   portENTER_CRITICAL(&chat_snapshot_state_mux_);
-  chat_snapshot_mailbox_ = NativeLocalChatSnapshot{};
+  clearChatSnapshotMailbox();
   chat_snapshot_request_pending_ = false;
   chat_snapshot_ready_ = false;
   portEXIT_CRITICAL(&chat_snapshot_state_mux_);
@@ -1929,6 +1929,10 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     publishOnboarding(nullptr);
     if (!authorization_verified_) return;
   }
+  // Bound only means a token exists locally. A failed check schedules a
+  // bounded retry; ticks inside that retry window must not bypass the check
+  // and open a gateway session with an unverified or stale token.
+  if (!authorization_verified_) return;
 
   // A manually submitted or voice-authored image request does not depend on
   // an already-open voice socket. Hand it to the exclusive Portal pipeline
@@ -2424,7 +2428,7 @@ WorkDisposition NativeVoiceService::handleStorage(
     if (recovered) recovered = chat_log_->recover(chat_recovery).ok();
     if (recovered && chat_snapshot_mutex_ &&
         xSemaphoreTake(chat_snapshot_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
-      chat_snapshot_mailbox_ = NativeLocalChatSnapshot{};
+      clearChatSnapshotMailbox();
       portENTER_CRITICAL(&chat_snapshot_state_mux_);
       chat_snapshot_request_pending_ = false;
       chat_snapshot_ready_ = true;
@@ -2467,7 +2471,7 @@ WorkDisposition NativeVoiceService::handleStorage(
     }
     // Publish the empty snapshot from the same sole Storage owner that
     // unlinked both JSONL generations. Portal never guesses that clear won.
-    chat_snapshot_mailbox_ = NativeLocalChatSnapshot{};
+    clearChatSnapshotMailbox();
     portENTER_CRITICAL(&chat_snapshot_state_mux_);
     chat_snapshot_request_pending_ = false;
     chat_snapshot_ready_ = true;
@@ -2547,7 +2551,7 @@ WorkDisposition NativeVoiceService::readLocalChatSnapshot(
     return WorkDisposition::Busy;
   }
 
-  chat_snapshot_mailbox_ = NativeLocalChatSnapshot{};
+  clearChatSnapshotMailbox();
   chat_snapshot_mailbox_.after_sequence = after_sequence;
   chat_snapshot_mailbox_.next_after_sequence = after_sequence;
   chat_snapshot_mailbox_.has_more = page.has_more;
@@ -2583,6 +2587,22 @@ WorkDisposition NativeVoiceService::readLocalChatSnapshot(
   finishRequest(true);
   xSemaphoreGive(chat_snapshot_mutex_);
   return WorkDisposition::Complete;
+}
+
+void NativeVoiceService::clearChatSnapshotMailbox() {
+  // Do not assign `NativeLocalChatSnapshot{}` here. The compiler materializes
+  // that 16 KiB value on the caller's task stack; Storage formerly had an
+  // 8 KiB stack, so even an unrelated append branch jumped past the FreeRTOS
+  // canary and corrupted scheduler TCB/list metadata. Clear the resident
+  // mailbox in place and keep every caller's fixed stack frame small.
+  chat_snapshot_mailbox_.items.fill(NativeLocalChatItem{});
+  chat_snapshot_mailbox_.text.fill('\0');
+  chat_snapshot_mailbox_.after_sequence = 0U;
+  chat_snapshot_mailbox_.next_after_sequence = 0U;
+  chat_snapshot_mailbox_.item_count = 0U;
+  chat_snapshot_mailbox_.text_bytes = 0U;
+  chat_snapshot_mailbox_.has_more = false;
+  chat_snapshot_mailbox_.corruption_observed = false;
 }
 
 bool NativeVoiceService::queueChat(ProductTextKind kind,

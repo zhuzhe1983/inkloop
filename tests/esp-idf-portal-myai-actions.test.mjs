@@ -102,6 +102,7 @@ test("Portal distinguishes a token from live MyAI authorization and reports real
   );
   assert.match(network, /checkAuthorization\(authorized\)/);
   assert.match(network, /authorization_verified_ = checked\.ok\(\) && authorized/);
+  assert.match(network, /if \(!authorization_verified_\) return;[\s\S]*handoffAigcIfReady/);
   assert.match(network, /publishOnboarding\(nullptr\)/);
   const publish = body(
     voice,
@@ -158,8 +159,9 @@ test("local chat clear is a sole Storage-lane operation and publishes an empty s
   assert.match(enqueue, /WorkClass::Storage/);
   const storage = body(voice, "WorkDisposition NativeVoiceService::handleStorage", "WorkDisposition NativeVoiceService::readLocalChatSnapshot");
   assert.match(storage, /chat_log_->clear\(\)/);
-  assert.match(storage, /chat_snapshot_mailbox_ = NativeLocalChatSnapshot\{\}/);
+  assert.match(storage, /clearChatSnapshotMailbox\(\)/);
   assert.match(storage, /chat_snapshot_ready_ = true/);
+  assert.doesNotMatch(voice, /chat_snapshot_mailbox_\s*=\s*NativeLocalChatSnapshot\{\}/);
 });
 
 test("Portal storage maintenance is fail-closed, drained, and cache-safe", () => {

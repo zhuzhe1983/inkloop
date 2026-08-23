@@ -103,7 +103,17 @@ test("Portal reads local chat through a bounded Storage-owner snapshot", () => {
   assert.match(read, /kNativeLocalChatItemBytes/);
   assert.match(read, /kNativeLocalChatPageTextBytes/);
   assert.match(read, /chat_snapshot_mailbox_/);
+  assert.match(read, /clearChatSnapshotMailbox\(\)/);
   assert.doesNotMatch(read, /client_->|http_|wss_|MyAi/);
+
+  const clear = section(
+    voice,
+    "void NativeVoiceService::clearChatSnapshotMailbox",
+    "bool NativeVoiceService::queueChat",
+  );
+  assert.match(clear, /items\.fill\(NativeLocalChatItem\{\}\)/);
+  assert.match(clear, /text\.fill\('\\0'\)/);
+  assert.match(productCmake, /-Wframe-larger-than=4096/);
 
   const consume = section(
     voice,

@@ -243,6 +243,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   WorkDisposition handleVoice(const WorkEnvelope& envelope);
   WorkDisposition handleStorage(const WorkEnvelope& envelope);
   WorkDisposition readLocalChatSnapshot(const WorkEnvelope& envelope);
+  void clearChatSnapshotMailbox();
   void serviceVoice();
   void serviceAigc(bool album_mutation_allowed);
   void handoffAigcIfReady();

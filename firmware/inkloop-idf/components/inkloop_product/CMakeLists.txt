@@ -71,3 +71,8 @@ idf_component_register(
     "assets/settings_saved.wav"
     "assets/voice_error.wav"
 )
+
+# A 16 KiB aggregate temporary once compiled into every Storage handler call
+# and jumped across the FreeRTOS stack canary. Keep product owner frames small;
+# deep library call chains receive their margin from the task topology instead.
+target_compile_options(${COMPONENT_LIB} PRIVATE "-Wframe-larger-than=4096")

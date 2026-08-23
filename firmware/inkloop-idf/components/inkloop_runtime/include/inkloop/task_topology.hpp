@@ -30,7 +30,10 @@ inline constexpr std::array<TaskSpec, 8> kTaskTopology{{
     {"ink-led", 1, 8, 3072, 16, TaskLane::Led},
     // Voice transport must preempt image conversion/storage on the slow core;
     // otherwise a long PNG conversion can starve WSS audio ingress.
-    {"ink-storage", 0, 7, 8192, 8, TaskLane::Storage},
+    // LittleFS scanFile has a measured ~4 KiB frame before the VFS/flash call
+    // chain. Keep explicit headroom after eliminating the former 16 KiB chat
+    // snapshot temporary so storage corruption fails at the stack canary.
+    {"ink-storage", 0, 7, 12288, 8, TaskLane::Storage},
     {"ink-display", 0, 6, 12288, 4, TaskLane::Display},
     {"ink-network", 0, 9, 12288, 8, TaskLane::Network},
     // Portal also owns the legacy Inkloop cloud client. Its synchronous TLS
