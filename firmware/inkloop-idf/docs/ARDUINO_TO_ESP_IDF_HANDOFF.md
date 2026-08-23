@@ -34,33 +34,32 @@ than solve these ownership and scheduling failures.
 
 ## 2. Current device safety state
 
-The authorized C151 now runs the native ESP-IDF `0.4.0-beta.10` image from
-commit `1bd42f9`. It was flashed through the standard four-image boundaries and
-each written range was read back and verified. NVS, LittleFS and TF were not
-written, erased or formatted. Physical evidence already covers native boot,
-saved Wi-Fi, Portal health, LittleFS compatibility, roughly two-minute deep
-sleep and a timer wake that preserves the panel before sleeping again. This is
-an engineering test image, not a release, and it does not prove the remaining
+The authorized C151 now runs the native ESP-IDF `0.4.0-beta.11` image from
+commit `57ec42b`. It was flashed through the standard four-image boundaries and
+each written range was read back and verified. Two matching 16 MiB pre-flash
+backups were retained with restricted permissions, and NVS, LittleFS and TF
+were not written, erased or formatted. Physical evidence covers native boot,
+saved Wi-Fi, Portal health and session/Host boundaries, compatible protected
+storage, roughly two-minute deep sleep and a timer wake that preserves the
+panel before sleeping again. The fail-closed first-cycle evaluator passed with
+no panic, watchdog, unexpected reset or credential leak. This remains an
+engineering test image, not a release, and does not prove the remaining
 button/audio/LED/display/Portal/MyAI/OTA rows.
 
-The current main source is commit `57ec42b` and version `0.4.0-beta.11`. It
-updates the MyAI Center/Gateway credential and routing contract. Its clean C151
-application SHA-256 is
+The beta11 C151 application SHA-256 is
 `67d71ebf3d7e1982d413e671c9939c96ed1f86fdb9b68c1ffd3e201ac411b89b`;
 the signed manifest SHA-256 is
 `ff02c70072cca92d382bb7dcf59e3d8f64b26507cb94d4b408ec34355285e188`.
-The independent digital candidate gate passed. A fail-closed watcher is waiting
-for 100 successful beta10 sleep/wake health cycles, then must create and verify
-two fresh 16 MiB whole-flash backups with matching NVS/LittleFS digests before
-it may write and read back only bootloader, partition table, OTA data and app.
-Do not manually flash around that chain.
+Its independent digital candidate gate and guarded physical first-cycle gate
+both passed. The 100-cycle beta10 baseline completed 100/100 before beta11 was
+allowed to replace it.
 
-The isolated `codex/esp-idf-serial-diagnostics` branch adds bounded, secret-free
-physical acceptance commands and an authenticated Portal acceptance harness.
-Its complete ESP-IDF host suite is 270/270 PASS and both C151 and mock SKU link,
-but it intentionally retains the beta11 version. It must not be flashed until
-beta11 physical smoke passes, the branch is merged, the version is bumped to a
-strictly newer beta12, and a fresh build/sign/acceptance gate succeeds.
+Main now includes the former `codex/esp-idf-serial-diagnostics` work through
+`6f06d01`: bounded secret-free diagnostics, authenticated Portal acceptance,
+the reusable board-porting contract and fail-closed descriptor validation. Its
+pre-merge complete ESP-IDF host suite was 271/271 PASS and both C151 and mock
+SKU linked. Source is now versioned `0.4.0-beta.12`; it must receive a fresh
+clean build, signature and independent candidate gate before any flash or OTA.
 
 ## 3. Target ownership model
 
