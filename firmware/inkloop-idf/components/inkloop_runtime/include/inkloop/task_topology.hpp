@@ -33,7 +33,10 @@ inline constexpr std::array<TaskSpec, 8> kTaskTopology{{
     {"ink-storage", 0, 7, 8192, 8, TaskLane::Storage},
     {"ink-display", 0, 6, 12288, 4, TaskLane::Display},
     {"ink-network", 0, 9, 12288, 8, TaskLane::Network},
-    {"ink-portal", 0, 3, 8192, 4, TaskLane::Portal},
+    // Portal also owns the legacy Inkloop cloud client. Its synchronous TLS
+    // stack was measured overflowing 8 KiB on physical C151 hardware, so keep
+    // the slow lane low-priority but give the call chain an explicit margin.
+    {"ink-portal", 0, 3, 16384, 4, TaskLane::Portal},
 }};
 
 esp_err_t validate_task_topology();

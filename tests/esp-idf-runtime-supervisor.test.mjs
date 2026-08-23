@@ -210,5 +210,6 @@ test("native supervisor preserves ISR, queue and startup contracts", async () =>
   assert.match(topology, /"ink-input", 1, 22/);
   assert.match(topology, /"ink-voice", 1, 20/);
   assert.match(topology, /"ink-portal", 0, 3/);
+  assert.match(topology, /"ink-portal", 0, 3, 16384, 4/);
   assert.doesNotMatch(combined, /Arduino\.h|M5Unified|WiFiManager|WebServer|HTTPClient/);
 });
