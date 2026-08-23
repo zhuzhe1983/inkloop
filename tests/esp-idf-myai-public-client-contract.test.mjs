@@ -34,6 +34,10 @@ struct Security final : IEndpointSecurity {
     assert(url.rfind("https://", 0) == 0);
     return Status::success();
   }
+  Status validatePublicEndpoint(const std::string& url) override {
+    assert(url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0);
+    return Status::success();
+  }
 };
 
 struct Store final : ICredentialStore {
@@ -99,7 +103,7 @@ struct Store final : ICredentialStore {
   }
 };
 
-enum class HttpMode { PairSuccess, PairError, Voice, Image };
+enum class HttpMode { PairSuccess, PairError, Voice, Image, ImageGatewayUnauthorized };
 
 struct Http final : IHttpTransport {
   HttpMode mode;
@@ -139,16 +143,14 @@ struct Http final : IHttpTransport {
       response.body = "{\"authorized\":true,\"device\":{\"active\":true}}";
     } else if (request.url.find("/model-preferences") != std::string::npos) {
       ++preferences;
-      assert(mode == HttpMode::Voice);
-      assert(request.url.find("app_id=inkloop") != std::string::npos);
-      response.body = "{\"provider_profile_id\":\"voice-profile\"}";
+      assert(false && "session routing must not prefetch model preferences");
     } else if (request.url.find("/client/sessions/select") != std::string::npos) {
       assert(request.body.find("\"gateway_id\":\"fast\"") !=
              std::string::npos);
       response.body =
           "{\"gateway_token\":\"gateway-secret\",\"gateway\":{"
-          "\"id\":\"fast\",\"base_url\":\"https://fast.example.com\","
-          "\"ping_url\":\"https://fast.example.com/ping\"}}";
+          "\"id\":\"fast\",\"base_url\":\"http://183.128.44.67:18090\","
+          "\"ping_url\":\"http://183.128.44.67:18090/gateway/v1/gateway-ping\"}}";
     } else if (request.url.find("/client/sessions/disconnect") !=
                std::string::npos) {
       ++disconnects;
@@ -165,25 +167,41 @@ struct Http final : IHttpTransport {
       }
       response.status = 201;
       response.body =
-          "{\"session\":{\"id\":\"session-1\"},\"gateways\":[{"
-          "\"id\":\"fast\",\"base_url\":\"https://fast.example.com\","
-          "\"ping_url\":\"https://fast.example.com/ping\"}]}";
-    } else if (request.url.find("/gateway/sessions/start") !=
+          "{\"session\":{\"id\":\"session-1\"},"
+          "\"probe_token\":\"probe-secret\",\"gateways\":[{"
+          "\"id\":\"fast\",\"base_url\":\"http://183.128.44.67:18090\","
+          "\"ping_url\":\"http://183.128.44.67:18090/gateway/v1/gateway-ping\"}]}";
+    } else if (request.url.find("/gateway/v1/gateway/sessions/start") !=
                std::string::npos) {
-      assert(request.url.rfind("https://fast.example.com/", 0) == 0);
+      assert(request.url.rfind("http://183.128.44.67:18090/", 0) == 0);
+      assert(!request.tlsPeerVerificationRequired);
+      assert(request.plaintextPublicGatewayAllowed);
       assert(request.headers.at("X-Gateway-Session-Token") ==
              "gateway-secret");
-      assert(request.headers.find("Authorization") == request.headers.end());
-      response.body = "{}";
+      assert(request.headers.at("Authorization") == "Bearer gateway-secret");
+      assert(request.headers.at("X-Gateway-Session-ID") == "session-1");
+      assert(request.headers.at("X-Gateway-ID") == "fast");
+      response.body = mode == HttpMode::Voice
+          ? "{\"provider_profile_id\":\"voice-profile\"}" : "{}";
     } else if (request.url.find("/gateway/v1/aigc/generate") !=
                std::string::npos) {
       ++business;
-      assert(mode == HttpMode::Image);
-      assert(request.url.rfind("https://fast.example.com/", 0) == 0);
+      assert(mode == HttpMode::Image ||
+             mode == HttpMode::ImageGatewayUnauthorized);
+      assert(request.url.rfind("http://183.128.44.67:18090/", 0) == 0);
+      assert(!request.tlsPeerVerificationRequired);
+      assert(request.plaintextPublicGatewayAllowed);
       assert(authorization != request.headers.end() &&
-             authorization->second == "Bearer device-secret");
+             authorization->second == "Bearer gateway-secret");
+      assert(request.headers.at("X-Gateway-Session-Token") ==
+             "gateway-secret");
       assert(request.body.find("pairing-secret") == std::string::npos);
-      response.body = "{\"prompt_id\":\"prompt-1\",\"status\":\"queued\"}";
+      if (mode == HttpMode::ImageGatewayUnauthorized) {
+        response.status = 401;
+        response.body = "{\"error\":\"gateway_token_expired\"}";
+      } else {
+        response.body = "{\"prompt_id\":\"prompt-1\",\"status\":\"queued\"}";
+      }
     } else {
       assert(false && "unexpected HTTP route");
     }
@@ -197,7 +215,10 @@ struct Probes final : IGatewayProbeSet {
                          uint32_t deadline,
                          std::vector<GatewayProbe>& results) override {
     assert(candidates.size() == 1);
-    assert(headers.at("Authorization") == "Bearer device-secret");
+    assert(headers.size() == 1);
+    assert(headers.at("Authorization") == "Bearer probe-secret");
+    assert(headers.find("X-Device-ID") == headers.end());
+    assert(headers.find("X-Device-MAC") == headers.end());
     assert(deadline == GatewayProbeContract::kTotalDeadlineMs);
     GatewayProbe probe;
     probe.gatewayId = "fast";
@@ -217,9 +238,14 @@ struct WebSocket final : IWebSocketTransport {
   Status connect(const std::string& url,
                  const std::map<std::string, std::string>& headers,
                  IWebSocketListener& next) override {
-    assert(url.rfind("wss://fast.example.com/gateway/v1/voice/ws?", 0) == 0);
+    assert(url.rfind("ws://183.128.44.67:18090/gateway/v1/voice/ws?", 0) == 0);
     assert(url.find("app_id=inkloop") != std::string::npos);
-    assert(headers.at("Authorization") == "Bearer device-secret");
+    assert(url.find("session_id=session-1") != std::string::npos);
+    assert(url.find("gateway_id=fast") != std::string::npos);
+    assert(headers.at("Authorization") == "Bearer gateway-secret");
+    assert(headers.at("X-Gateway-Session-Token") == "gateway-secret");
+    assert(headers.at("X-Gateway-Session-ID") == "session-1");
+    assert(headers.at("X-Gateway-ID") == "fast");
     listener = &next;
     listener->onWebSocketOpen();
     return Status::success();
@@ -402,7 +428,7 @@ int main() {
                       codec, clock, voiceAudio, local, voiceEvents);
     assert(client.initialize().ok());
     assert(client.connectVoice().ok());
-    assert(http.preferences == 1);
+    assert(http.preferences == 0);
     assert(socket.text.size() == 1);
     assert(socket.text[0].find("\"type\":\"session.update\"") !=
            std::string::npos);
@@ -435,6 +461,21 @@ int main() {
     client.onWebSocketBinary(downlink, sizeof(downlink));
     assert(voiceAudio.writes == writesBeforeStale);
     assert(socket.closes == 1 && voiceAudio.aborts >= 1);
+  }
+
+  {
+    Store store;
+    Http http(HttpMode::ImageGatewayUnauthorized);
+    WebSocket socket;
+    MyAiClient client(config(), http, probes, socket, output, security, store,
+                      codec, clock, audio, local, events);
+    assert(client.initialize().ok());
+    ImageRequest request;
+    request.prompt = "gateway expiry boundary";
+    AigcGenerateResponse generated;
+    const Status expired = client.startImage(request, generated);
+    assert(expired.code == ErrorCode::Unauthorized && expired.httpStatus == 401);
+    assert(store.value.deviceToken == "device-secret" && store.value.active);
   }
   return 0;
 }

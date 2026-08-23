@@ -59,6 +59,18 @@ bool nonEmptyOpaqueValue(const std::string& value, size_t maximumBytes) {
   return true;
 }
 
+void scrubString(std::string& value) {
+  value.assign(value.size(), '\0');
+  value.clear();
+}
+
+void applyGatewayTransportPolicy(HttpRequest& request) {
+  if (request.url.compare(0, 7, "http://") == 0) {
+    request.tlsPeerVerificationRequired = false;
+    request.plaintextPublicGatewayAllowed = true;
+  }
+}
+
 std::string httpFailureDetail(const char* summary, int httpStatus,
                               const std::string& error) {
   std::ostringstream detail;
@@ -523,25 +535,6 @@ Status MyAiClient::openGatewaySession(Capability capability,
   Status status = checkAuthorization(authorized);
   if (!status.ok()) return status;
 
-  std::string providerProfileId;
-  if (capability == Capability::Voice) {
-    HttpResponse preferenceResponse;
-    status = perform(centerRequest(
-                         "GET",
-                         std::string("/api/v1/model-preferences?app_id=") +
-                             urlEncode(kAppId),
-                         "", true),
-                     preferenceResponse, RequestKind::CenterAuthenticated);
-    if (!status.ok()) return status;
-    status = codec_.parseModelPreference(preferenceResponse.body,
-                                         providerProfileId);
-    if (!status.ok()) return status;
-    if (!nonEmptyOpaqueValue(providerProfileId, 512)) {
-      return Status(ErrorCode::Protocol, 0,
-                    "invalid MyAI provider profile id");
-    }
-  }
-
   HttpResponse requestedResponse;
   status = perform(
       centerRequest("POST", "/api/v1/client/sessions",
@@ -553,9 +546,17 @@ Status MyAiClient::openGatewaySession(Capability capability,
   if (!status.ok()) return status;
   SessionRequestResponse requested;
   status = codec_.parseSessionRequest(requestedResponse.body, requested);
-  if (!status.ok()) return status;
-  if (!nonEmptyOpaqueValue(requested.sessionId, 512))
-    return Status(ErrorCode::Protocol, 0, "MyAI session omitted session id");
+  scrubString(requestedResponse.body);
+  if (!status.ok()) {
+    scrubString(requested.probeToken);
+    return status;
+  }
+  if (!nonEmptyOpaqueValue(requested.sessionId, 512) ||
+      !nonEmptyOpaqueValue(requested.probeToken, 2048)) {
+    scrubString(requested.probeToken);
+    return Status(ErrorCode::Protocol, 0,
+                  "MyAI session omitted session or probe token");
+  }
 
   status = GatewayProbeContract::validateCandidates(requested.gateways);
   if (!status.ok()) return status;
@@ -569,9 +570,15 @@ Status MyAiClient::openGatewaySession(Capability capability,
   }
 
   std::vector<GatewayProbe> probes;
+  std::map<std::string, std::string> probeHeaders;
+  probeHeaders["Authorization"] = "Bearer " + requested.probeToken;
   status = gatewayProbes_.probeConcurrent(
-      requested.gateways, deviceHeaders(false),
+      requested.gateways, probeHeaders,
       GatewayProbeContract::kTotalDeadlineMs, probes);
+  std::string& probeAuthorization = probeHeaders["Authorization"];
+  scrubString(probeAuthorization);
+  probeHeaders.clear();
+  scrubString(requested.probeToken);
   if (!status.ok()) return status;
   GatewayCandidate selectedCandidate;
   status = GatewayProbeContract::selectFastest(
@@ -587,14 +594,18 @@ Status MyAiClient::openGatewaySession(Capability capability,
   if (!status.ok()) return status;
   SessionSelectResponse selected;
   status = codec_.parseSessionSelect(selectResponse.body, selected);
-  if (!status.ok()) return status;
+  scrubString(selectResponse.body);
+  if (!status.ok()) {
+    scrubString(selected.gatewayToken);
+    return status;
+  }
   if (!nonEmptyOpaqueValue(selected.gatewayToken, 2048) ||
       !nonEmptyOpaqueValue(selected.gateway.id, 256) ||
       selected.gateway.id != selectedCandidate.id ||
       !isPublicGatewayUrl(selected.gateway.baseUrl) ||
       normalizedBaseUrl(selected.gateway.baseUrl) !=
           normalizedBaseUrl(selectedCandidate.baseUrl)) {
-    selected.gatewayToken.assign(selected.gatewayToken.size(), '\0');
+    scrubString(selected.gatewayToken);
     return Status(ErrorCode::Protocol, 0, "selected gateway identity/URL rejected");
   }
 
@@ -604,12 +615,10 @@ Status MyAiClient::openGatewaySession(Capability capability,
   lease.sessionId = requested.sessionId;
   lease.gatewayId = selected.gateway.id;
   lease.gatewayBaseUrl = normalizedBaseUrl(selected.gateway.baseUrl);
-  lease.gatewayToken = selected.gatewayToken;
-  lease.providerProfileId = providerProfileId;
+  lease.gatewayToken.swap(selected.gatewayToken);
   lease.startedAtMs = clock_.monotonicMs();
 
-  if (!lease.valid() ||
-      (capability == Capability::Voice && lease.providerProfileId.empty())) {
+  if (!lease.valid()) {
     lease.clearSensitive();
     lease = GatewayLease();
     return Status(ErrorCode::Protocol, 0, "incomplete selected gateway lease");
@@ -617,12 +626,19 @@ Status MyAiClient::openGatewaySession(Capability capability,
 
   HttpRequest start;
   start.method = "POST";
-  start.url = lease.gatewayBaseUrl + "/api/v1/gateway/sessions/start";
+  start.url = lease.gatewayBaseUrl + "/gateway/v1/gateway/sessions/start";
   start.body = codec_.gatewayStartBody(lease);
-  start.headers["Content-Type"] = "application/json";
-  start.headers["X-Gateway-Session-Token"] = lease.gatewayToken;
+  start.headers = gatewayHeaders(lease, true);
+  applyGatewayTransportPolicy(start);
   HttpResponse startResponse;
   status = perform(start, startResponse, RequestKind::GatewaySessionStart);
+  if (!status.ok()) {
+    lease.clearSensitive();
+    lease = GatewayLease();
+    return status;
+  }
+  status = codec_.parseGatewayStart(startResponse.body,
+                                    lease.providerProfileId);
   if (!status.ok()) {
     lease.clearSensitive();
     lease = GatewayLease();
@@ -641,12 +657,12 @@ Status MyAiClient::connectVoice() {
     setVoice(VoiceState::Error);
     return status;
   }
-  if (!voiceLease_.valid() || credentials_.deviceToken.empty()) {
+  if (!voiceLease_.valid()) {
     disconnectLease(voiceLease_, "invalid_voice_lease");
     setVoice(VoiceState::Error);
     return Status(ErrorCode::Protocol, 0, "invalid MyAI voice lease");
   }
-  status = endpointSecurity_.validatePublicTlsEndpoint(voiceLease_.gatewayBaseUrl);
+  status = endpointSecurity_.validatePublicEndpoint(voiceLease_.gatewayBaseUrl);
   if (!status.ok()) {
     status = Status(ErrorCode::Security, 0,
                     "MyAI WebSocket endpoint failed DNS/TLS validation");
@@ -656,8 +672,8 @@ Status MyAiClient::connectVoice() {
     events_.onError(status);
     return status;
   }
-  std::map<std::string, std::string> headers;
-  headers["Authorization"] = "Bearer " + credentials_.deviceToken;
+  const std::map<std::string, std::string> headers =
+      gatewayHeaders(voiceLease_, false);
   status = webSocket_.connect(voiceWebSocketUrl(voiceLease_), headers, *this);
   if (!status.ok()) {
     ++voiceReconnectAttempts_;
@@ -837,13 +853,18 @@ Status MyAiClient::downloadImage(const std::string& promptId,
   request.timeoutMs = 60000;
   request.maxResponseBytes = 0;
   Status status;
-  if (!request.tlsPeerVerificationRequired ||
+  const bool secureEndpoint = request.url.compare(0, 8, "https://") == 0 &&
+                              request.tlsPeerVerificationRequired;
+  const bool plaintextGateway = request.url.compare(0, 7, "http://") == 0 &&
+                                request.plaintextPublicGatewayAllowed &&
+                                !request.tlsPeerVerificationRequired;
+  if ((!secureEndpoint && !plaintextGateway) ||
       !request.rejectPrivateResolvedAddresses || request.redirectsAllowed ||
       !isPublicGatewayUrl(request.url)) {
     status = Status(ErrorCode::Security, 0,
                     "MyAI output endpoint security policy rejected the request");
   } else {
-    status = endpointSecurity_.validatePublicTlsEndpoint(request.url);
+    status = endpointSecurity_.validatePublicEndpoint(request.url);
   }
   if (!status.ok()) {
     status = Status(ErrorCode::Security, 0,
@@ -883,30 +904,49 @@ Status MyAiClient::disconnectLease(GatewayLease& lease,
 
 Status MyAiClient::perform(const HttpRequest& request, HttpResponse& response,
                            RequestKind kind) {
-  if (kind == RequestKind::GatewaySessionStart) {
+  if (kind == RequestKind::GatewaySessionStart ||
+      kind == RequestKind::GatewayBusiness) {
     const std::map<std::string, std::string>::const_iterator token =
         request.headers.find("X-Gateway-Session-Token");
-    if (token == request.headers.end() || token->second.empty()) {
-      return Status(ErrorCode::Protocol, 0, "missing gateway session token");
-    }
-  } else if (kind == RequestKind::GatewayBusiness) {
     const std::map<std::string, std::string>::const_iterator authorization =
         request.headers.find("Authorization");
-    if (authorization == request.headers.end() ||
-        authorization->second == "Bearer ") {
-      return Status(ErrorCode::Protocol, 0, "missing device credential");
+    const std::map<std::string, std::string>::const_iterator session =
+        request.headers.find("X-Gateway-Session-ID");
+    const std::map<std::string, std::string>::const_iterator gateway =
+        request.headers.find("X-Gateway-ID");
+    if (token == request.headers.end() || token->second.empty() ||
+        authorization == request.headers.end() ||
+        authorization->second != "Bearer " + token->second ||
+        session == request.headers.end() || session->second.empty() ||
+        gateway == request.headers.end() || gateway->second.empty()) {
+      return Status(ErrorCode::Protocol, 0, "missing gateway session token");
     }
   }
-  if (!request.tlsPeerVerificationRequired ||
+  const bool plaintextGateway =
+      request.url.compare(0, 7, "http://") == 0 &&
+      request.plaintextPublicGatewayAllowed &&
+      !request.tlsPeerVerificationRequired &&
+      (kind == RequestKind::GatewaySessionStart ||
+       kind == RequestKind::GatewayBusiness);
+  const bool secureEndpoint =
+      request.url.compare(0, 8, "https://") == 0 &&
+      request.tlsPeerVerificationRequired &&
+      !request.plaintextPublicGatewayAllowed;
+  if ((!secureEndpoint && !plaintextGateway) ||
       !request.rejectPrivateResolvedAddresses || request.redirectsAllowed ||
-      !isPublicGatewayUrl(request.url)) {
+      (kind != RequestKind::Health &&
+       kind != RequestKind::PairingStart &&
+       kind != RequestKind::PairingStatus &&
+       kind != RequestKind::DeviceCheck &&
+       kind != RequestKind::CenterAuthenticated &&
+       !isPublicGatewayUrl(request.url))) {
     Status rejected(ErrorCode::Security, 0,
                     "MyAI endpoint security policy rejected the request");
     setActivation(ActivationState::Error, rejected);
     events_.onError(rejected);
     return rejected;
   }
-  Status status = endpointSecurity_.validatePublicTlsEndpoint(request.url);
+  Status status = endpointSecurity_.validatePublicEndpoint(request.url);
   if (!status.ok()) {
     Status rejected(ErrorCode::Security, 0,
                     "MyAI endpoint failed DNS/TLS validation");
@@ -949,7 +989,8 @@ HttpRequest MyAiClient::gatewayRequest(const GatewayLease& lease,
   request.method = "POST";
   request.url = lease.gatewayBaseUrl + path;
   request.body = body;
-  request.headers = deviceHeaders(true);
+  request.headers = gatewayHeaders(lease, true);
+  applyGatewayTransportPolicy(request);
   return request;
 }
 
@@ -958,6 +999,17 @@ std::map<std::string, std::string> MyAiClient::deviceHeaders(bool json) const {
   headers["Authorization"] = "Bearer " + credentials_.deviceToken;
   headers["X-Device-ID"] = credentials_.deviceId;
   headers["X-Device-MAC"] = wireMacAddress();
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+std::map<std::string, std::string> MyAiClient::gatewayHeaders(
+    const GatewayLease& lease, bool json) const {
+  std::map<std::string, std::string> headers;
+  headers["Authorization"] = "Bearer " + lease.gatewayToken;
+  headers["X-Gateway-Session-Token"] = lease.gatewayToken;
+  headers["X-Gateway-Session-ID"] = lease.sessionId;
+  headers["X-Gateway-ID"] = lease.gatewayId;
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }
@@ -981,8 +1033,7 @@ Status MyAiClient::classifyHttp(const HttpResponse& response,
       if (!cleared.ok()) return cleared;
       setActivation(ActivationState::Unconfigured, status);
     } else if (kind == RequestKind::DeviceCheck ||
-               kind == RequestKind::CenterAuthenticated ||
-               kind == RequestKind::GatewayBusiness) {
+               kind == RequestKind::CenterAuthenticated) {
       // Center device tokens are stable for the lifetime of the bound device.
       // A 401 therefore means this durable runtime credential is unusable
       // (for example, the owner deleted the device). Preserve only the stable
@@ -991,6 +1042,12 @@ Status MyAiClient::classifyHttp(const HttpResponse& response,
       Status cleared = clearRuntimeCredentialFailClosed();
       if (!cleared.ok()) return cleared;
       setActivation(ActivationState::Unconfigured, status);
+    } else if (kind == RequestKind::GatewaySessionStart ||
+               kind == RequestKind::GatewayBusiness) {
+      status = Status(
+          ErrorCode::Unauthorized, 401,
+          httpFailureDetail("MyAI gateway session expired; reselect required",
+                            401, error));
     }
   } else if (httpStatus == 402) {
     status = Status(
@@ -1053,9 +1110,12 @@ void MyAiClient::setAigc(AigcState state, const std::string& detail) {
 std::string MyAiClient::voiceWebSocketUrl(const GatewayLease& lease) const {
   std::string url = lease.gatewayBaseUrl;
   if (url.compare(0, 8, "https://") == 0) url.replace(0, 8, "wss://");
+  else if (url.compare(0, 7, "http://") == 0) url.replace(0, 7, "ws://");
   return url + "/gateway/v1/voice/ws?device_id=" +
          urlEncode(credentials_.deviceId) + "&mac_address=" +
-         urlEncode(wireMacAddress()) + "&app_id=" + kAppId;
+         urlEncode(wireMacAddress()) + "&app_id=" + kAppId +
+         "&session_id=" + urlEncode(lease.sessionId) +
+         "&gateway_id=" + urlEncode(lease.gatewayId);
 }
 
 void MyAiClient::onWebSocketOpen() {
@@ -1163,7 +1223,7 @@ uint32_t MyAiClient::reconnectDelayMs(uint8_t attempt) {
 
 bool MyAiClient::isPublicGatewayUrl(const std::string& url) {
   HttpsEndpoint endpoint;
-  return EndpointPolicy::parseHttpsUrl(url, endpoint).ok();
+  return EndpointPolicy::parsePublicUrl(url, true, endpoint).ok();
 }
 
 }  // namespace myai

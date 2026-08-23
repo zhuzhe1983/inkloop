@@ -3,6 +3,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_transport.h"
 #include "esp_transport_ssl.h"
+#include "esp_transport_tcp.h"
 #include "esp_transport_ws.h"
 #include "inkloop/myai/EndpointPolicy.h"
 
@@ -43,16 +44,22 @@ bool lineSafe(const std::string& value) {
   return true;
 }
 
-Status parseWssUrl(const std::string& url, HttpsEndpoint& endpoint,
-                   std::string& path) {
-  if (url.compare(0, 6, "wss://") != 0) {
+Status parseWebSocketUrl(const std::string& url, HttpsEndpoint& endpoint,
+                         std::string& path, std::string& httpUrl) {
+  size_t authorityOffset = 0;
+  if (url.compare(0, 6, "wss://") == 0) {
+    httpUrl = std::string("https://") + url.substr(6);
+    authorityOffset = 6;
+  } else if (url.compare(0, 5, "ws://") == 0) {
+    httpUrl = std::string("http://") + url.substr(5);
+    authorityOffset = 5;
+  } else {
     return Status(ErrorCode::Security, 0,
-                  "MyAI WebSocket requires public WSS");
+                  "MyAI WebSocket requires public WS or WSS");
   }
-  const std::string https = std::string("https://") + url.substr(6);
-  Status status = EndpointPolicy::parseHttpsUrl(https, endpoint);
+  Status status = EndpointPolicy::parsePublicUrl(httpUrl, true, endpoint);
   if (!status.ok()) return status;
-  const size_t pathOffset = url.find_first_of("/?", 6);
+  const size_t pathOffset = url.find_first_of("/?", authorityOffset);
   if (pathOffset == std::string::npos) path = "/";
   else if (url[pathOffset] == '?') path = "/" + url.substr(pathOffset);
   else path = url.substr(pathOffset);
@@ -92,7 +99,7 @@ Status buildHeaderBlock(const std::map<std::string, std::string>& headers,
 }  // namespace
 
 EspWssTransport::EspWssTransport(EspEndpointSecurity& endpointSecurity)
-    : endpointSecurity_(endpointSecurity), ssl_(nullptr), websocket_(nullptr),
+    : endpointSecurity_(endpointSecurity), network_(nullptr), websocket_(nullptr),
       listener_(nullptr), port_(443), currentFrameOffset_(0),
       connected_(false), ingressReady_(nullptr),
       ingressReadyContext_(nullptr) {}
@@ -103,27 +110,29 @@ Status EspWssTransport::configure(
     const std::string& url,
     const std::map<std::string, std::string>& headers) {
   HttpsEndpoint endpoint;
-  Status status = parseWssUrl(url, endpoint, path_);
+  std::string httpUrl;
+  Status status = parseWebSocketUrl(url, endpoint, path_, httpUrl);
   if (!status.ok()) return status;
-  const std::string https = std::string("https://") + url.substr(6);
-  status = endpointSecurity_.validatePublicTlsEndpoint(https);
+  status = endpointSecurity_.validatePublicEndpoint(httpUrl);
   if (!status.ok()) return status;
   status = buildHeaderBlock(headers, headerBlock_);
   if (!status.ok()) return status;
   host_ = endpoint.host;
   port_ = endpoint.port;
 
-  ssl_ = esp_transport_ssl_init();
-  if (!ssl_) return transportError("MyAI WSS TLS allocation failed");
-  esp_transport_ssl_crt_bundle_attach(ssl_, esp_crt_bundle_attach);
-  esp_transport_ssl_set_common_name(ssl_, host_.c_str());
-  esp_transport_set_default_port(ssl_, 443);
-  websocket_ = esp_transport_ws_init(ssl_);
+  network_ = endpoint.tls ? esp_transport_ssl_init() : esp_transport_tcp_init();
+  if (!network_) return transportError("MyAI WebSocket allocation failed");
+  if (endpoint.tls) {
+    esp_transport_ssl_crt_bundle_attach(network_, esp_crt_bundle_attach);
+    esp_transport_ssl_set_common_name(network_, host_.c_str());
+  }
+  esp_transport_set_default_port(network_, endpoint.port);
+  websocket_ = esp_transport_ws_init(network_);
   if (!websocket_) {
     releaseTransport();
     return transportError("MyAI WSS transport allocation failed");
   }
-  esp_transport_set_default_port(websocket_, 443);
+  esp_transport_set_default_port(websocket_, endpoint.port);
   esp_transport_ws_config_t config{};
   config.ws_path = path_.c_str();
   config.user_agent = "inkloop-esp-idf/1";
@@ -312,9 +321,9 @@ void EspWssTransport::releaseTransport() {
     esp_transport_destroy(websocket_);
     websocket_ = nullptr;
   }
-  if (ssl_) {
-    esp_transport_destroy(ssl_);
-    ssl_ = nullptr;
+  if (network_) {
+    esp_transport_destroy(network_);
+    network_ = nullptr;
   }
   host_.clear();
   path_.clear();

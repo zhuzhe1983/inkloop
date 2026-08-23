@@ -123,6 +123,8 @@ class MyAiClient final : public IWebSocketListener {
   HttpRequest gatewayRequest(const GatewayLease& lease, const std::string& path,
                              const std::string& body) const;
   std::map<std::string, std::string> deviceHeaders(bool json) const;
+  std::map<std::string, std::string> gatewayHeaders(
+      const GatewayLease& lease, bool json) const;
   const std::string& wireMacAddress() const;
   Status classifyHttp(const HttpResponse& response, RequestKind kind);
   void setActivation(ActivationState state, const Status& status);

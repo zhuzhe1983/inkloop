@@ -13,7 +13,7 @@ typedef struct esp_transport_item_t* esp_transport_handle_t;
 namespace inkloop {
 namespace myai {
 
-// Cooperative native WSS adapter. connect/send/poll are called only by the
+// Cooperative native WS/WSS adapter. connect/send/poll are called only by the
 // slow voice/network owner; it creates no Arduino loop and no competing task.
 // pollIngress() consumes at most one 2 KiB transport chunk per call so buttons
 // and audio DMA remain higher priority.
@@ -46,7 +46,7 @@ class EspWssTransport final : public IWebSocketTransport {
   void notifyClosed(int code, const char* reason);
 
   EspEndpointSecurity& endpointSecurity_;
-  esp_transport_handle_t ssl_;
+  esp_transport_handle_t network_;
   esp_transport_handle_t websocket_;
   IWebSocketListener* listener_;
   WssIngressAssembler ingress_;

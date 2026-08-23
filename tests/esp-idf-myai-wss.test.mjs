@@ -121,12 +121,14 @@ test("WSS ingress survives adversarial fragmentation under ASan and UBSan", () =
   buildAndRun(true);
 });
 
-test("native WSS adapter rejects redirects and checks the connected TLS peer", () => {
+test("native WS/WSS adapter rejects redirects and checks the connected public peer", () => {
   const source = readFileSync(join(native, "esp_wss_transport.cpp"), "utf8");
   const cmake = readFileSync(join(native, "CMakeLists.txt"), "utf8");
   const defaults = readFileSync(join(repo, "firmware/inkloop-idf/sdkconfig.defaults"), "utf8");
-  assert.match(source, /esp_transport_ssl_crt_bundle_attach\(ssl_, esp_crt_bundle_attach\)/);
-  assert.match(source, /esp_transport_ssl_set_common_name\(ssl_, host_\.c_str\(\)\)/);
+  assert.match(source, /endpoint\.tls \? esp_transport_ssl_init\(\) : esp_transport_tcp_init\(\)/);
+  assert.match(source, /esp_transport_ssl_crt_bundle_attach\(network_, esp_crt_bundle_attach\)/);
+  assert.match(source, /esp_transport_ssl_set_common_name\(network_, host_\.c_str\(\)\)/);
+  assert.match(source, /"ws:\/\/"/);
   assert.match(source, /result != 0[\s\S]+redirect[\s\S]+Security/);
   assert.match(source, /get_upgrade_request_status\(websocket_\) != 101/);
   assert.match(source, /validateConnectedSocket[\s\S]+esp_transport_get_socket/);

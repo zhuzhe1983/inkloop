@@ -8,6 +8,7 @@ namespace myai {
 class EspEndpointSecurity final : public IEndpointSecurity {
  public:
   Status validatePublicTlsEndpoint(const std::string& httpsUrl) override;
+  Status validatePublicEndpoint(const std::string& url) override;
   Status validateConnectedSocket(int socket) const;
 };
 

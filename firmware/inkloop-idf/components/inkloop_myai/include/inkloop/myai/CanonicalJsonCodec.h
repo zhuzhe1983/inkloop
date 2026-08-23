@@ -40,6 +40,8 @@ class CanonicalJsonCodec final : public IWireCodec {
   Status parseSessionSelect(const std::string& body,
                             SessionSelectResponse& output) const override;
   std::string gatewayStartBody(const GatewayLease& lease) const override;
+  Status parseGatewayStart(const std::string& body,
+                           std::string& providerProfileId) const override;
   std::string heartbeatBody(const GatewayLease& lease,
                             uint32_t activeSeconds) const override;
   std::string disconnectBody(const GatewayLease& lease,

@@ -89,7 +89,9 @@ struct Http final : IHttpTransport {
       response.status = 201;
       response.body = "{\"session\":{\"id\":\"session-1\"},\"probe_token\":\"probe\",\"gateways\":[{\"id\":\"slow\",\"base_url\":\"https://slow.example.com\",\"ping_url\":\"https://slow.example.com/ping\",\"status\":\"available\"},{\"id\":\"fast\",\"base_url\":\"https://fast.example.com\",\"ping_url\":\"https://fast.example.com/ping\",\"status\":\"available\"}]}";
     } else if (request.url.find("/gateway/sessions/start") != std::string::npos) {
-      response.body = "{\"session\":{\"status\":\"active\"}}";
+      assert(request.headers.at("Authorization") == "Bearer gateway-token");
+      assert(request.headers.at("X-Gateway-Session-Token") == "gateway-token");
+      response.body = "{\"session\":{\"status\":\"active\"},\"provider_profile_id\":\"profile\"}";
     } else {
       assert(false && "unexpected HTTP route");
     }
@@ -105,7 +107,7 @@ struct Probes final : IGatewayProbeSet {
                          std::vector<GatewayProbe>& results) override {
     ++calls;
     assert(candidates.size() == 2);
-    assert(headers.at("Authorization") == "Bearer device-token");
+    assert(headers.at("Authorization") == "Bearer probe");
     assert(deadline == GatewayProbeContract::kTotalDeadlineMs);
     results = {result("slow", true, 90), result("fast", true, 12)};
     return Status::success();
@@ -114,10 +116,12 @@ struct Probes final : IGatewayProbeSet {
 
 struct WebSocket final : IWebSocketTransport {
   std::string url;
+  std::map<std::string, std::string> headers;
   Status connect(const std::string& value,
-                 const std::map<std::string, std::string>&,
+                 const std::map<std::string, std::string>& valueHeaders,
                  IWebSocketListener& listener) override {
     url = value;
+    headers = valueHeaders;
     listener.onWebSocketOpen();
     return Status::success();
   }
@@ -235,6 +239,10 @@ int main() {
   assert(http.selected_body.find("\"gateway_id\":\"fast\"") !=
          std::string::npos);
   assert(websocket.url.rfind("wss://fast.example.com/", 0) == 0);
+  assert(websocket.url.find("session_id=session-1") != std::string::npos);
+  assert(websocket.url.find("gateway_id=fast") != std::string::npos);
+  assert(websocket.headers.at("Authorization") == "Bearer gateway-token");
+  assert(websocket.headers.at("X-Gateway-Session-Token") == "gateway-token");
   return 0;
 }
 `);
@@ -288,11 +296,8 @@ test("unchanged portable contracts and voice state machines match their audited 
   const pairs = [
     ["firmware/m5-papercolor/lib/InkloopMyAi/src/MyAiTypes.h",
      "firmware/inkloop-idf/components/inkloop_myai/include/inkloop/myai/MyAiTypes.h"],
-    ["firmware/m5-papercolor/lib/InkloopMyAi/src/CanonicalJsonCodec.h",
-     "firmware/inkloop-idf/components/inkloop_myai/include/inkloop/myai/CanonicalJsonCodec.h"],
-    // The native codec intentionally has a stricter JSON key scanner: the
-    // public pairing response may contain status="bound" before the `bound`
-    // boolean. Workstream 29 is client-only and must not edit Arduino sources.
+    // Native MyAI contracts intentionally diverge from the frozen Arduino
+    // client after the 2026-08-23 probe_token/gateway_token data-plane split.
     ["firmware/m5-papercolor/lib/InkloopVoice/src/VoiceTypes.h",
      "firmware/inkloop-idf/components/inkloop_voice/include/inkloop/voice/VoiceTypes.h"],
     ["firmware/m5-papercolor/lib/InkloopVoice/src/VoiceAdapters.h",

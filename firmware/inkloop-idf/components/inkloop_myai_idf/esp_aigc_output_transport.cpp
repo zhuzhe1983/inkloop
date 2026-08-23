@@ -10,6 +10,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "inkloop/myai/AigcStreamDecoder.h"
+#include "inkloop/myai/EndpointPolicy.h"
 
 #if !CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 #error "Inkloop MyAI AIGC requires the ESP-IDF trusted certificate bundle"
@@ -125,11 +126,19 @@ Status EspAigcOutputTransport::postAndDecodeBase64(
     size_t maxDecodedBytes, IImageSink& sink, AigcOutputMetadata& metadata) {
   metadata.contentType.clear();
   metadata.decodedBytes = 0;
+  HttpsEndpoint endpoint;
+  const Status parsed = EndpointPolicy::parsePublicUrl(
+      request.url, request.plaintextPublicGatewayAllowed, endpoint);
+  const bool transportPolicy = parsed.ok() &&
+      ((endpoint.tls && request.tlsPeerVerificationRequired &&
+        !request.plaintextPublicGatewayAllowed) ||
+       (!endpoint.tls && !request.tlsPeerVerificationRequired &&
+        request.plaintextPublicGatewayAllowed));
   if (request.method != "POST" || request.body.empty() ||
       request.body.size() > kMaximumRequestBodyBytes ||
       request.maxResponseBytes != 0 || request.timeoutMs == 0 ||
       request.timeoutMs > kMaximumTimeoutMs ||
-      !request.tlsPeerVerificationRequired ||
+      !transportPolicy ||
       !request.rejectPrivateResolvedAddresses || request.redirectsAllowed ||
       maxEncodedBytes == 0 || maxDecodedBytes == 0 ||
       maxEncodedBytes > 8U * 1024U * 1024U ||
@@ -139,7 +148,7 @@ Status EspAigcOutputTransport::postAndDecodeBase64(
   }
   Status valid = validateHeaders(request.headers);
   if (!valid.ok()) return aborting(sink, valid);
-  valid = endpoint_security_.validatePublicTlsEndpoint(request.url);
+  valid = endpoint_security_.validatePublicEndpoint(request.url);
   if (!valid.ok()) return aborting(sink, valid);
 
   std::string prompt_id;
@@ -162,7 +171,7 @@ Status EspAigcOutputTransport::postAndDecodeBase64(
   config.buffer_size = static_cast<int>(kReadBufferBytes);
   config.buffer_size_tx = 2048;
   config.skip_cert_common_name_check = false;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.crt_bundle_attach = endpoint.tls ? esp_crt_bundle_attach : nullptr;
   config.keep_alive_enable = false;
 
   ClientGuard client(esp_http_client_init(&config));

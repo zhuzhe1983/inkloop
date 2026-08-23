@@ -17,13 +17,17 @@ struct HttpRequest {
   uint32_t timeoutMs;
   size_t maxResponseBytes;
   bool tlsPeerVerificationRequired;
+  // Plain HTTP is allowed only for a Center-selected public service Gateway
+  // carrying a short-lived probe/gateway token. Durable device credentials
+  // must never be attached to such a request.
+  bool plaintextPublicGatewayAllowed;
   bool rejectPrivateResolvedAddresses;
   bool redirectsAllowed;
 
   HttpRequest()
       : timeoutMs(30000), maxResponseBytes(64U * 1024U),
-        tlsPeerVerificationRequired(true), rejectPrivateResolvedAddresses(true),
-        redirectsAllowed(false) {}
+        tlsPeerVerificationRequired(true), plaintextPublicGatewayAllowed(false),
+        rejectPrivateResolvedAddresses(true), redirectsAllowed(false) {}
 };
 
 struct HttpResponse {
@@ -64,6 +68,12 @@ class IEndpointSecurity {
  public:
   virtual ~IEndpointSecurity() {}
   virtual Status validatePublicTlsEndpoint(const std::string& httpsUrl) = 0;
+  // New direct-Gateway sessions may use a Center-selected public HTTP URL.
+  // Implementations still have to reject every private/reserved resolution
+  // and validate TLS whenever the supplied endpoint is HTTPS.
+  virtual Status validatePublicEndpoint(const std::string& url) {
+    return validatePublicTlsEndpoint(url);
+  }
 };
 
 class IClock {
@@ -121,6 +131,14 @@ class IWireCodec {
   virtual Status parseSessionSelect(const std::string& body,
                                     SessionSelectResponse& output) const = 0;
   virtual std::string gatewayStartBody(const GatewayLease& lease) const = 0;
+  // Gateway start may return the provider profile selected for this short
+  // lease. An omitted value is valid and leaves session.update unpinned.
+  virtual Status parseGatewayStart(const std::string& body,
+                                   std::string& providerProfileId) const {
+    (void)body;
+    providerProfileId.clear();
+    return Status::success();
+  }
   virtual std::string heartbeatBody(const GatewayLease& lease,
                                     uint32_t activeSeconds) const = 0;
   virtual std::string disconnectBody(const GatewayLease& lease,
@@ -172,8 +190,9 @@ class IWebSocketListener {
 class IWebSocketTransport {
  public:
   virtual ~IWebSocketTransport() {}
-  // Only WSS is allowed. Peer certificate and hostname validation are mandatory;
-  // redirects/downgrades are forbidden and endpoint DNS is preflighted separately.
+  // WSS validates peer certificate and hostname. Center-selected public WS is
+  // permitted only with a short-lived gateway token; both modes reject
+  // redirects and preflight/verify the connected public peer.
   virtual Status connect(const std::string& url,
                          const std::map<std::string, std::string>& headers,
                          IWebSocketListener& listener) = 0;

@@ -25,7 +25,13 @@ bool accepts(const std::string& url) {
 int main() {
   HttpsEndpoint endpoint;
   assert(EndpointPolicy::parseHttpsUrl("https://myai.mess.host/healthz", endpoint).ok());
-  assert(endpoint.host == "myai.mess.host" && endpoint.port == 443);
+  assert(endpoint.host == "myai.mess.host" && endpoint.port == 443 && endpoint.tls);
+  assert(EndpointPolicy::parsePublicUrl(
+      "http://183.128.44.67:18090/gateway/v1/gateway-ping", true, endpoint).ok());
+  assert(endpoint.host == "183.128.44.67" && endpoint.port == 18090 && !endpoint.tls);
+  assert(!EndpointPolicy::parsePublicUrl(
+      "http://183.128.44.67:18090/gateway/v1/gateway-ping", false, endpoint).ok());
+  assert(!EndpointPolicy::parsePublicUrl("http://192.168.1.8/ping", true, endpoint).ok());
   assert(EndpointPolicy::parseHttpsUrl("https://Gateway.Example.COM.:8443/ping?x=1", endpoint).ok());
   assert(endpoint.host == "gateway.example.com" && endpoint.port == 8443);
   assert(accepts("https://1.1.1.1/path"));
@@ -89,13 +95,14 @@ test("MyAI endpoint policy rejects SSRF and malformed HTTPS targets", () => {
   buildAndRun(true);
 });
 
-test("native MyAI HTTPS transport keeps TLS, peer and byte gates fail closed", () => {
+test("native MyAI transport isolates TLS Center and public short-token Gateway policy", () => {
   const source = readFileSync(join(
     repo,
     "firmware/inkloop-idf/components/inkloop_myai_idf/esp_http_adapters.cpp",
   ), "utf8");
   assert.match(source, /CONFIG_MBEDTLS_CERTIFICATE_BUNDLE/);
-  assert.match(source, /crt_bundle_attach = esp_crt_bundle_attach/);
+  assert.match(source, /crt_bundle_attach = endpoint\.tls \? esp_crt_bundle_attach : nullptr/);
+  assert.match(source, /plaintextPublicGatewayAllowed/);
   assert.match(source, /skip_cert_common_name_check = false/);
   assert.match(source, /disable_auto_redirect = true/);
   assert.match(source, /HTTP_EVENT_ON_CONNECTED[\s\S]+getpeername[\s\S]+publicSockaddr/);
@@ -109,6 +116,8 @@ test("native MyAI HTTPS transport keeps TLS, peer and byte gates fail closed", (
   assert.match(source, /boundedLatency\(startedMs, beforePass\) >= totalDeadlineMs/);
   assert.match(source, /results\.reserve\(candidates\.size\(\)\)/);
   assert.match(source, /results\.push_back\(slot\.result\)/);
+  assert.match(source, /headers\.size\(\) != 1U/);
+  assert.match(source, /"X-Gateway-ID"[\s\S]*candidates\[index\]\.id/);
   assert.doesNotMatch(source, /xTaskCreate|std::thread|HTTP_METHOD_GET[^\n]+ping/);
   assert.doesNotMatch(source, /ESP_LOG.|\bprintf\s*\(|\bputs\s*\(/);
   assert.doesNotMatch(source, /skip_cert_common_name_check\s*=\s*true|redirectsAllowed\s*=\s*true/);
@@ -408,6 +417,15 @@ int main() {
   for (const GatewayProbe& result : results) {
     assert(result.checkedAt == "2026-08-22T04:30:00Z");
   }
+
+  headers["X-Device-ID"] = "must-not-cross-control-plane";
+  assert(probes.probeConcurrent(candidates, headers, 100, results).code ==
+         ErrorCode::Security);
+  headers.erase("X-Device-ID");
+  headers["X-Gateway-ID"] = "caller-must-not-override-candidate";
+  assert(probes.probeConcurrent(candidates, headers, 100, results).code ==
+         ErrorCode::Security);
+  headers.erase("X-Gateway-ID");
 
   g_initialized_clients = 0;
   g_first_perform_saw_all = false;

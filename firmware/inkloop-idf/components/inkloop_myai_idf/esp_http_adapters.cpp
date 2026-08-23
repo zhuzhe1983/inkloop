@@ -108,10 +108,18 @@ bool supportedMethod(const std::string& method,
 
 Status validateRequest(const HttpRequest& request,
                        esp_http_client_method_t& method) {
-  if (!request.tlsPeerVerificationRequired ||
-      !request.rejectPrivateResolvedAddresses || request.redirectsAllowed) {
+  HttpsEndpoint endpoint;
+  const Status parsed = EndpointPolicy::parsePublicUrl(
+      request.url, request.plaintextPublicGatewayAllowed, endpoint);
+  const bool transportPolicy = parsed.ok() &&
+      ((endpoint.tls && request.tlsPeerVerificationRequired &&
+        !request.plaintextPublicGatewayAllowed) ||
+       (!endpoint.tls && !request.tlsPeerVerificationRequired &&
+        request.plaintextPublicGatewayAllowed));
+  if (!transportPolicy || !request.rejectPrivateResolvedAddresses ||
+      request.redirectsAllowed) {
     return Status(ErrorCode::Security, 0,
-                  "MyAI HTTPS policy flags were weakened");
+                  "MyAI HTTP transport policy was weakened");
   }
   if (!supportedMethod(request.method, method) ||
       request.body.size() > kMaximumRequestBodyBytes ||
@@ -165,6 +173,14 @@ Status EspEndpointSecurity::validatePublicTlsEndpoint(
     const std::string& httpsUrl) {
   HttpsEndpoint endpoint;
   Status parsed = EndpointPolicy::parseHttpsUrl(httpsUrl, endpoint);
+  if (!parsed.ok()) return parsed;
+
+  return validatePublicEndpoint(httpsUrl);
+}
+
+Status EspEndpointSecurity::validatePublicEndpoint(const std::string& url) {
+  HttpsEndpoint endpoint;
+  Status parsed = EndpointPolicy::parsePublicUrl(url, true, endpoint);
   if (!parsed.ok()) return parsed;
 
   char port[6] = {};
@@ -227,7 +243,11 @@ Status EspHttpTransport::perform(const HttpRequest& request,
   if (!valid.ok()) return valid;
   valid = validateHeaders(request.headers);
   if (!valid.ok()) return valid;
-  valid = endpointSecurity_.validatePublicTlsEndpoint(request.url);
+  HttpsEndpoint endpoint;
+  valid = EndpointPolicy::parsePublicUrl(
+      request.url, request.plaintextPublicGatewayAllowed, endpoint);
+  if (!valid.ok()) return valid;
+  valid = endpointSecurity_.validatePublicEndpoint(request.url);
   if (!valid.ok()) return valid;
 
   HttpEventContext context;
@@ -246,7 +266,7 @@ Status EspHttpTransport::perform(const HttpRequest& request,
   config.buffer_size = 2048;
   config.buffer_size_tx = 2048;
   config.skip_cert_common_name_check = false;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.crt_bundle_attach = endpoint.tls ? esp_crt_bundle_attach : nullptr;
   config.keep_alive_enable = false;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -317,6 +337,20 @@ Status EspGatewayProbeSet::probeConcurrent(
   if (!valid.ok()) return valid;
   valid = validateHeaders(headers);
   if (!valid.ok()) return valid;
+  const auto authorization = headers.find("Authorization");
+  // The caller supplies exactly the short-lived probe credential.  The
+  // adapter adds the candidate-specific X-Gateway-ID below so a durable
+  // Center credential (or an injected identity/header) cannot cross into the
+  // Gateway probe plane.
+  if (headers.size() != 1U || authorization == headers.end() ||
+      authorization->second.size() <= sizeof("Bearer ") - 1U ||
+      authorization->second.compare(0, sizeof("Bearer ") - 1U,
+                                    "Bearer ") != 0 ||
+      headers.find("X-Device-ID") != headers.end() ||
+      headers.find("X-Device-MAC") != headers.end()) {
+    return Status(ErrorCode::Security, 0,
+                  "invalid MyAI gateway probe credential boundary");
+  }
   if (totalDeadlineMs == 0 ||
       totalDeadlineMs > GatewayProbeContract::kTotalDeadlineMs) {
     return Status(ErrorCode::InvalidArgument, 0,
@@ -329,7 +363,9 @@ Status EspGatewayProbeSet::probeConcurrent(
   }
   for (const GatewayCandidate& candidate : candidates) {
     HttpsEndpoint endpoint;
-    if (!EndpointPolicy::parseHttpsUrl(candidate.pingUrl, endpoint).ok()) {
+    if (candidate.id.size() > kMaximumHeaderValueBytes ||
+        !lineSafe(candidate.id) ||
+        !EndpointPolicy::parsePublicUrl(candidate.pingUrl, true, endpoint).ok()) {
       return Status(ErrorCode::Security, 0,
                     "invalid public MyAI gateway probe endpoint");
     }
@@ -348,6 +384,15 @@ Status EspGatewayProbeSet::probeConcurrent(
     slot.result.error = "transport";
     slot.event.maximumResponseBytes = 0;
 
+    HttpsEndpoint endpoint;
+    const Status parsed = EndpointPolicy::parsePublicUrl(
+        candidates[index].pingUrl, true, endpoint);
+    if (!parsed.ok()) {
+      slot.done = true;
+      slot.result.error = "security";
+      continue;
+    }
+
     esp_http_client_config_t config{};
     config.url = candidates[index].pingUrl.c_str();
     config.method = HTTP_METHOD_HEAD;
@@ -361,7 +406,7 @@ Status EspGatewayProbeSet::probeConcurrent(
     config.buffer_size = 1024;
     config.buffer_size_tx = 2048;
     config.skip_cert_common_name_check = false;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.crt_bundle_attach = endpoint.tls ? esp_crt_bundle_attach : nullptr;
     config.keep_alive_enable = false;
     slot.client = esp_http_client_init(&config);
     if (!slot.client) {
@@ -375,6 +420,11 @@ Status EspGatewayProbeSet::probeConcurrent(
         setupOk = false;
         break;
       }
+    }
+    if (setupOk &&
+        esp_http_client_set_header(slot.client, "X-Gateway-ID",
+                                   candidates[index].id.c_str()) != ESP_OK) {
+      setupOk = false;
     }
     if (!setupOk) {
       esp_http_client_cleanup(slot.client);
@@ -422,7 +472,7 @@ Status EspGatewayProbeSet::probeConcurrent(
         slot.result.error = "unexpected_body";
       } else if (performed != ESP_OK) {
         slot.result.error = "transport";
-      } else if (status < 200 || status >= 300) {
+      } else if (status < 200 || status >= 400) {
         slot.result.error = "http_status";
       } else {
         slot.result.ok = true;

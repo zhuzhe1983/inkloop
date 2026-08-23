@@ -169,16 +169,34 @@ bool validDnsHostname(const std::string& host) {
 
 Status EndpointPolicy::parseHttpsUrl(const std::string& url,
                                      HttpsEndpoint& endpoint) {
+  return parsePublicUrl(url, false, endpoint);
+}
+
+Status EndpointPolicy::parsePublicUrl(const std::string& url,
+                                      bool allowPlaintextHttp,
+                                      HttpsEndpoint& endpoint) {
   endpoint = HttpsEndpoint();
-  if (url.empty() || url.size() > kMaximumUrlBytes || asciiControlOrSpace(url) ||
-      url.find('#') != std::string::npos || url.compare(0, 8, "https://") != 0) {
-    return Status(ErrorCode::Security, 0, "invalid public HTTPS endpoint");
+  size_t authorityOffset = 0;
+  if (url.compare(0, 8, "https://") == 0) {
+    endpoint.tls = true;
+    endpoint.port = 443;
+    authorityOffset = 8;
+  } else if (allowPlaintextHttp && url.compare(0, 7, "http://") == 0) {
+    endpoint.tls = false;
+    endpoint.port = 80;
+    authorityOffset = 7;
   }
-  const size_t authorityEnd = url.find_first_of("/?", 8);
+  if (url.empty() || url.size() > kMaximumUrlBytes || asciiControlOrSpace(url) ||
+      url.find('#') != std::string::npos || authorityOffset == 0) {
+    return Status(ErrorCode::Security, 0, "invalid public HTTP endpoint");
+  }
+  const size_t authorityEnd = url.find_first_of("/?", authorityOffset);
   const std::string authority = url.substr(
-      8, authorityEnd == std::string::npos ? std::string::npos : authorityEnd - 8);
+      authorityOffset, authorityEnd == std::string::npos
+                           ? std::string::npos
+                           : authorityEnd - authorityOffset);
   if (authority.empty() || authority.find('@') != std::string::npos) {
-    return Status(ErrorCode::Security, 0, "invalid public HTTPS authority");
+    return Status(ErrorCode::Security, 0, "invalid public HTTP authority");
   }
 
   std::string host;
@@ -186,12 +204,12 @@ Status EndpointPolicy::parseHttpsUrl(const std::string& url,
   if (authority[0] == '[') {
     const size_t closing = authority.find(']');
     if (closing == std::string::npos || closing == 1) {
-      return Status(ErrorCode::Security, 0, "invalid IPv6 HTTPS authority");
+      return Status(ErrorCode::Security, 0, "invalid IPv6 HTTP authority");
     }
     host = authority.substr(1, closing - 1);
     if (closing + 1 < authority.size()) {
       if (authority[closing + 1] != ':') {
-        return Status(ErrorCode::Security, 0, "invalid IPv6 HTTPS port");
+        return Status(ErrorCode::Security, 0, "invalid IPv6 HTTP port");
       }
       port = authority.substr(closing + 2);
     }
@@ -219,12 +237,12 @@ Status EndpointPolicy::parseHttpsUrl(const std::string& url,
         return Status(ErrorCode::Security, 0, "non-public IPv4 endpoint");
       }
     } else if (!validDnsHostname(host)) {
-      return Status(ErrorCode::Security, 0, "invalid public HTTPS hostname");
+      return Status(ErrorCode::Security, 0, "invalid public HTTP hostname");
     }
   }
 
   if (!port.empty() && !decimalPort(port, endpoint.port)) {
-    return Status(ErrorCode::Security, 0, "invalid public HTTPS port");
+    return Status(ErrorCode::Security, 0, "invalid public HTTP port");
   }
   endpoint.host = host;
   return Status::success();

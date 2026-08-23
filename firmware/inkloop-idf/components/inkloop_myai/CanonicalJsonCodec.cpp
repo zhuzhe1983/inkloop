@@ -413,6 +413,22 @@ std::string CanonicalJsonCodec::gatewayStartBody(const GatewayLease& lease) cons
          quote(lease.gatewayId) + "}";
 }
 
+Status CanonicalJsonCodec::parseGatewayStart(
+    const std::string& body, std::string& providerProfileId) const {
+  providerProfileId.clear();
+  if (body.empty()) return Status::success();
+  std::string parsed;
+  if (!stringField(body, "provider_profile_id", parsed)) {
+    return Status::success();
+  }
+  if (parsed.empty() || parsed.size() > 512U) {
+    return Status(ErrorCode::Protocol, 0,
+                  "invalid gateway provider profile id");
+  }
+  providerProfileId = parsed;
+  return Status::success();
+}
+
 std::string CanonicalJsonCodec::heartbeatBody(const GatewayLease& lease,
                                                uint32_t activeSeconds) const {
   std::ostringstream body;
