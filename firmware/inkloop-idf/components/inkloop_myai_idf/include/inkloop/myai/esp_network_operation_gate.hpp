@@ -13,8 +13,8 @@ namespace myai {
 // synchronous TLS handshake yields while waiting for the socket, which used
 // to let another service start a second handshake. The two ready tasks then
 // kept CPU0 continuously busy and starved IDLE0. This bounded process-wide
-// lease serializes only connection setup/control-plane operations; audio and
-// button work remain on their existing responsive paths.
+// lease serializes native TLS/lwIP client lifetimes; audio and button work
+// remain on their existing responsive paths and never take this lease.
 class EspNetworkOperationLease final {
  public:
   explicit EspNetworkOperationLease(uint32_t timeout_ms) {

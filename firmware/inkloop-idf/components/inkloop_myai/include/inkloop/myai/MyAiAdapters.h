@@ -47,9 +47,11 @@ class IHttpTransport {
   virtual Status perform(const HttpRequest& request, HttpResponse& response) = 0;
 };
 
-// Native implementations launch all candidate HEAD requests concurrently and
-// enforce one total deadline. Each target must receive DNS public-address and
-// TLS hostname/chain validation. Sequential N x timeout probing is forbidden.
+// Implementations test every candidate within one shared total deadline. Each
+// target must receive DNS public-address and TLS hostname/chain validation.
+// Resource-constrained native clients may keep only one TLS connection alive
+// at a time, but must divide the remaining deadline fairly so a failed target
+// cannot consume N x timeout or starve the remaining candidates.
 class IGatewayProbeSet {
  public:
   virtual ~IGatewayProbeSet() {}

@@ -112,15 +112,15 @@ test("native MyAI transport isolates TLS Center and public short-token Gateway p
   assert.match(source, /esp_http_client_is_complete_data_received/);
   assert.match(source, /EspNetworkOperationLease network_lease\(request\.timeoutMs\)/);
   assert.match(source, /EspNetworkOperationLease network_lease\(totalDeadlineMs\)/);
-  assert.match(source, /config\.is_async = true/);
-  assert.match(source, /while \(pending > 0\)/);
-  assert.match(source, /ESP_ERR_HTTP_EAGAIN/);
-  assert.match(source, /boundedLatency\(startedMs, beforePass\) >= totalDeadlineMs/);
+  assert.match(source, /config\.is_async = false/);
+  assert.match(source, /remainingCandidates/);
+  assert.match(source, /perCandidateDeadlineMs/);
+  assert.match(source, /remainingMs \/ static_cast<uint32_t>\(remainingCandidates\)/);
   assert.match(source, /results\.reserve\(candidates\.size\(\)\)/);
-  assert.match(source, /results\.push_back\(slot\.result\)/);
+  assert.match(source, /results\.push_back\(result\)/);
   assert.match(source, /headers\.size\(\) != 1U/);
   assert.match(source, /"X-Gateway-ID"[\s\S]*candidates\[index\]\.id/);
-  assert.doesNotMatch(source, /xTaskCreate|std::thread|HTTP_METHOD_GET[^\n]+ping/);
+  assert.doesNotMatch(source, /xTaskCreate|std::thread|config\.is_async = true|ESP_ERR_HTTP_EAGAIN|HTTP_METHOD_GET[^\n]+ping/);
   assert.doesNotMatch(source, /ESP_LOG.|\bprintf\s*\(|\bputs\s*\(/);
   assert.doesNotMatch(source, /skip_cert_common_name_check\s*=\s*true|redirectsAllowed\s*=\s*true/);
 });
@@ -199,9 +199,8 @@ struct FakeEspHttpClient {
   int headers = 0;
 };
 
-static int g_expected_clients = 0;
 static int g_initialized_clients = 0;
-static bool g_first_perform_saw_all = false;
+static uint64_t g_clock_advance = 1;
 static bool g_dns_private = false;
 static bool g_dns_mixed = false;
 static bool g_peer_private = false;
@@ -261,14 +260,15 @@ extern "C" void vTaskDelay(unsigned int) {}
 
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t* config) {
   assert(config && config->url);
-  if (config->is_async) assert(config->method == HTTP_METHOD_HEAD);
-  else assert(config->method == HTTP_METHOD_GET || config->method == HTTP_METHOD_POST);
+  assert(!config->is_async);
+  assert(config->method == HTTP_METHOD_GET || config->method == HTTP_METHOD_POST ||
+         config->method == HTTP_METHOD_HEAD);
   assert(config->disable_auto_redirect && !config->skip_cert_common_name_check);
   assert(config->crt_bundle_attach == esp_crt_bundle_attach);
   auto* client = new FakeEspHttpClient();
   client->url = config->url;
   client->config = *config;
-  if (config->is_async) ++g_initialized_clients;
+  ++g_initialized_clients;
   return client;
 }
 
@@ -287,7 +287,7 @@ esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t, int timeout) 
 }
 esp_err_t esp_http_client_perform(esp_http_client_handle_t client) {
   assert(client);
-  if (!client->config.is_async) {
+  if (client->config.method != HTTP_METHOD_HEAD) {
     g_socket_shutdown = false;
     esp_http_client_event_t connected{};
     connected.event_id = HTTP_EVENT_ON_CONNECTED;
@@ -309,25 +309,27 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t client) {
     client->status = g_response_status;
     return g_perform_result;
   }
-  if (!g_first_perform_saw_all) {
-    assert(g_initialized_clients == g_expected_clients);
-    g_first_perform_saw_all = true;
-  }
   ++client->calls;
-  if (client->url.find("timeout") != std::string::npos) return ESP_ERR_HTTP_EAGAIN;
-  if (client->url.find("fast") != std::string::npos && client->calls >= 2) {
+  if (client->url.find("timeout") != std::string::npos) {
+    g_clock_advance = 100;
+    return ESP_FAIL;
+  }
+  if (client->url.find("fast") != std::string::npos) {
+    g_clock_advance = 2;
     client->status = 204;
     return ESP_OK;
   }
-  if (client->url.find("slow") != std::string::npos && client->calls >= 4) {
+  if (client->url.find("slow") != std::string::npos) {
+    g_clock_advance = 8;
     client->status = 200;
     return ESP_OK;
   }
-  if (client->url.find("offline") != std::string::npos && client->calls >= 3) {
+  if (client->url.find("offline") != std::string::npos) {
+    g_clock_advance = 3;
     client->status = 503;
     return ESP_FAIL;
   }
-  return ESP_ERR_HTTP_EAGAIN;
+  return ESP_FAIL;
 }
 int esp_http_client_get_status_code(esp_http_client_handle_t client) {
   return client ? client->status : 0;
@@ -344,7 +346,11 @@ esp_err_t esp_http_client_cleanup(esp_http_client_handle_t client) {
 struct Clock final : IClock {
   mutable uint64_t now = 0;
   bool ready = true;
-  uint64_t monotonicMs() const override { return ++now; }
+  uint64_t monotonicMs() const override {
+    now += g_clock_advance;
+    g_clock_advance = 1;
+    return now;
+  }
   std::string utcIso8601() const override {
     return ready ? "2026-08-22T04:30:00Z" : std::string();
   }
@@ -416,16 +422,14 @@ int main() {
   assert(http.perform(request, response).code == ErrorCode::Security);
 
   g_initialized_clients = 0;
-  g_first_perform_saw_all = false;
   Clock clock;
   EspGatewayProbeSet probes(clock);
   std::map<std::string, std::string> headers{{"Authorization", "Bearer opaque"}};
   std::vector<GatewayCandidate> candidates{
       gateway("slow"), gateway("fast"), gateway("offline")};
   std::vector<GatewayProbe> results;
-  g_expected_clients = 3;
   assert(probes.probeConcurrent(candidates, headers, 100, results).ok());
-  assert(g_first_perform_saw_all && results.size() == candidates.size());
+  assert(g_initialized_clients == 3 && results.size() == candidates.size());
   assert(results[0].gatewayId == "slow" && results[0].ok);
   assert(results[1].gatewayId == "fast" && results[1].ok);
   assert(results[1].latencyMs < results[0].latencyMs);
@@ -445,8 +449,6 @@ int main() {
   headers.erase("X-Gateway-ID");
 
   g_initialized_clients = 0;
-  g_first_perform_saw_all = false;
-  g_expected_clients = 2;
   candidates = {gateway("timeout-one"), gateway("timeout-two")};
   assert(probes.probeConcurrent(candidates, headers, 5, results).ok());
   assert(results.size() == 2);
@@ -512,7 +514,7 @@ function buildAndRunNativeHarness(sanitized) {
   }
 }
 
-test("native async gateway probe set is one bounded concurrent deadline", () => {
+test("native gateway probe set keeps one client alive within a fair total deadline", () => {
   buildAndRunNativeHarness(false);
   buildAndRunNativeHarness(true);
 });

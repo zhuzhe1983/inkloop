@@ -170,6 +170,8 @@ test("native AIGC transport streams HTTP into a sink with fail-closed policy", (
   assert.match(source, /esp_http_client_is_complete_data_received/);
   assert.match(source, /sink\.commit\(metadata\)/);
   assert.match(source, /sink\.abort\(\)/);
+  assert.match(source, /EspNetworkOperationLease network_lease\(request\.timeoutMs\)/);
+  assert.match(source, /AIGC network operation gate timed out/);
   assert.match(source, /crt_bundle_attach = endpoint\.tls \? esp_crt_bundle_attach : nullptr/);
   assert.match(source, /plaintextPublicGatewayAllowed/);
   assert.match(source, /skip_cert_common_name_check = false/);

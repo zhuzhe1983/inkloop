@@ -11,6 +11,7 @@ idf_component_register(
     inkloop_storage
   PRIV_REQUIRES
     esp_http_client
+    esp_timer
     esp-tls
     esp_hw_support
     inkloop_myai_idf

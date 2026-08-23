@@ -11,6 +11,7 @@
 #include "esp_http_client.h"
 #include "inkloop/myai/AigcStreamDecoder.h"
 #include "inkloop/myai/EndpointPolicy.h"
+#include "inkloop/myai/esp_network_operation_gate.hpp"
 
 #if !CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 #error "Inkloop MyAI AIGC requires the ESP-IDF trusted certificate bundle"
@@ -160,6 +161,12 @@ Status EspAigcOutputTransport::postAndDecodeBase64(
   }
   metadata.promptId = prompt_id;
   metadata.filename = filename;
+
+  EspNetworkOperationLease network_lease(request.timeoutMs);
+  if (!network_lease.acquired()) {
+    return aborting(sink, failure(ErrorCode::Transport,
+                                  "AIGC network operation gate timed out"));
+  }
 
   esp_http_client_config_t config{};
   config.url = request.url.c_str();

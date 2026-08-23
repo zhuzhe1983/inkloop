@@ -8,6 +8,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "inkloop/myai/esp_http_adapters.hpp"
+#include "inkloop/myai/esp_network_operation_gate.hpp"
 
 #if !CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 #error "Inkloop frame HTTPS requires the ESP-IDF trusted certificate bundle"
@@ -130,6 +131,12 @@ InkloopCloudStatus EspInkloopFrameDownloader::download(
       endpoint_security_.validatePublicTlsEndpoint(request.url);
   if (!secured.ok())
     return aborting(sink, converted(secured, "frame_endpoint_rejected"));
+
+  myai::EspNetworkOperationLease network_lease(request.timeout_ms);
+  if (!network_lease.acquired()) {
+    return aborting(sink, failure(InkloopCloudCode::Transport,
+                                  "frame network operation gate timed out"));
+  }
 
   esp_http_client_config_t config{};
   config.url = request.url.c_str();

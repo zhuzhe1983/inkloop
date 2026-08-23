@@ -311,6 +311,8 @@ test("native frame downloader pins TLS, public peer and bounded streaming", () =
   assert.match(header, /public IInkloopFrameDownloader/);
   assert.match(source, /validatePublicTlsEndpoint/);
   assert.match(source, /validateConnectedSocket/);
+  assert.match(source, /EspNetworkOperationLease network_lease\(request\.timeout_ms\)/);
+  assert.match(source, /frame network operation gate timed out/);
   assert.match(source, /crt_bundle_attach = esp_crt_bundle_attach/);
   assert.match(source, /skip_cert_common_name_check = false/);
   assert.match(source, /disable_auto_redirect = true/);

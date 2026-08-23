@@ -161,13 +161,6 @@ uint32_t boundedLatency(uint64_t startedMs, uint64_t nowMs) {
       elapsed, std::numeric_limits<uint32_t>::max()));
 }
 
-struct ProbeSlot {
-  esp_http_client_handle_t client = nullptr;
-  HttpEventContext event{};
-  GatewayProbe result{};
-  bool done = false;
-};
-
 }  // namespace
 
 Status EspEndpointSecurity::validatePublicTlsEndpoint(
@@ -392,134 +385,110 @@ Status EspGatewayProbeSet::probeConcurrent(
     }
   }
 
-  std::array<ProbeSlot, GatewayProbeContract::kMaximumCandidates> slots{};
   const uint64_t startedMs = clock_.monotonicMs();
-  size_t pending = 0;
+  results.reserve(candidates.size());
+  bool peerRejected = false;
+  bool unexpectedBody = false;
 
-  // Every async client is configured before the first perform call. The first
-  // pass therefore starts all TLS connections instead of waiting N×timeout.
+  // ESP-IDF's async HTTP client keeps one live TLS/lwIP state machine per
+  // candidate.  Keeping several of them alive on the S3 slow-service core was
+  // observed to corrupt lwIP timeout ownership under the concurrent Inkloop,
+  // Voice and AIGC workload. Probe one candidate at a time instead. Each
+  // candidate receives a fair share of the one bounded global deadline, so a
+  // failed endpoint cannot starve the remaining Center candidates.
   for (size_t index = 0; index < candidates.size(); ++index) {
-    ProbeSlot& slot = slots[index];
-    slot.result.gatewayId = candidates[index].id;
-    slot.result.checkedAt = checkedAt;
-    slot.result.error = "transport";
-    slot.event.maximumResponseBytes = 0;
+    GatewayProbe result;
+    result.gatewayId = candidates[index].id;
+    result.checkedAt = checkedAt;
+    result.error = "transport";
+
+    const uint64_t beforeProbeMs = clock_.monotonicMs();
+    const uint32_t elapsed = boundedLatency(startedMs, beforeProbeMs);
+    if (elapsed >= totalDeadlineMs) {
+      result.error = "timeout";
+      result.latencyMs = totalDeadlineMs;
+      results.push_back(result);
+      continue;
+    }
+    const uint32_t remainingMs = totalDeadlineMs - elapsed;
+    const size_t remainingCandidates = candidates.size() - index;
+    const uint32_t perCandidateDeadlineMs = std::max<uint32_t>(
+        1U, remainingMs / static_cast<uint32_t>(remainingCandidates));
 
     HttpsEndpoint endpoint;
     const Status parsed = EndpointPolicy::parsePublicUrl(
         candidates[index].pingUrl, true, endpoint);
     if (!parsed.ok()) {
-      slot.done = true;
-      slot.result.error = "security";
+      result.error = "security";
+      results.push_back(result);
       continue;
     }
 
+    HttpEventContext event{};
+    event.maximumResponseBytes = 0;
     esp_http_client_config_t config{};
     config.url = candidates[index].pingUrl.c_str();
     config.method = HTTP_METHOD_HEAD;
-    config.timeout_ms = static_cast<int>(totalDeadlineMs);
+    config.timeout_ms = static_cast<int>(perCandidateDeadlineMs);
     config.disable_auto_redirect = true;
     config.max_redirection_count = 0;
     config.max_authorization_retries = -1;
     config.event_handler = httpEvent;
-    config.user_data = &slot.event;
-    config.is_async = true;
+    config.user_data = &event;
+    config.is_async = false;
     config.buffer_size = 1024;
     config.buffer_size_tx = 2048;
     config.skip_cert_common_name_check = false;
     config.crt_bundle_attach = endpoint.tls ? esp_crt_bundle_attach : nullptr;
     config.keep_alive_enable = false;
-    slot.client = esp_http_client_init(&config);
-    if (!slot.client) {
-      slot.done = true;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+      results.push_back(result);
       continue;
     }
     bool setupOk = true;
     for (const auto& header : headers) {
-      if (esp_http_client_set_header(slot.client, header.first.c_str(),
+      if (esp_http_client_set_header(client, header.first.c_str(),
                                      header.second.c_str()) != ESP_OK) {
         setupOk = false;
         break;
       }
     }
     if (setupOk &&
-        esp_http_client_set_header(slot.client, "X-Gateway-ID",
+        esp_http_client_set_header(client, "X-Gateway-ID",
                                    candidates[index].id.c_str()) != ESP_OK) {
       setupOk = false;
     }
+    const uint64_t probeStartedMs = clock_.monotonicMs();
+    const esp_err_t performed =
+        setupOk ? esp_http_client_perform(client) : ESP_FAIL;
+    const uint64_t probeFinishedMs = clock_.monotonicMs();
+    result.latencyMs = std::min<uint32_t>(
+        boundedLatency(probeStartedMs, probeFinishedMs),
+        perCandidateDeadlineMs);
+    const int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
     if (!setupOk) {
-      esp_http_client_cleanup(slot.client);
-      slot.client = nullptr;
-      slot.done = true;
-      slot.result.error = "setup";
-      continue;
+      result.error = "setup";
+    } else if (boundedLatency(probeStartedMs, probeFinishedMs) >=
+               perCandidateDeadlineMs) {
+      result.error = "timeout";
+    } else if (event.peerRejected) {
+      result.error = "peer_rejected";
+    } else if (event.responseTooLarge) {
+      result.error = "unexpected_body";
+    } else if (performed != ESP_OK) {
+      result.error = "transport";
+    } else if (status < 200 || status >= 400) {
+      result.error = "http_status";
+    } else {
+      result.ok = true;
+      result.error.clear();
     }
-    ++pending;
-  }
-
-  while (pending > 0) {
-    const uint64_t beforePass = clock_.monotonicMs();
-    if (boundedLatency(startedMs, beforePass) >= totalDeadlineMs) break;
-    bool deadlineReached = false;
-    for (size_t index = 0; index < candidates.size(); ++index) {
-      ProbeSlot& slot = slots[index];
-      if (slot.done || !slot.client) continue;
-      const uint32_t elapsed =
-          boundedLatency(startedMs, clock_.monotonicMs());
-      if (elapsed >= totalDeadlineMs) {
-        deadlineReached = true;
-        break;
-      }
-      const int remaining = static_cast<int>(totalDeadlineMs - elapsed);
-      if (esp_http_client_set_timeout_ms(slot.client, remaining) != ESP_OK) {
-        slot.done = true;
-        --pending;
-        slot.result.error = "setup";
-        continue;
-      }
-      const esp_err_t performed = esp_http_client_perform(slot.client);
-      if (performed == ESP_ERR_HTTP_EAGAIN) continue;
-      slot.done = true;
-      --pending;
-      const uint64_t finishedMs = clock_.monotonicMs();
-      slot.result.latencyMs = boundedLatency(startedMs, finishedMs);
-      const int status = esp_http_client_get_status_code(slot.client);
-      if (slot.result.latencyMs >= totalDeadlineMs) {
-        slot.result.ok = false;
-        slot.result.error = "timeout";
-      } else if (slot.event.peerRejected) {
-        slot.result.error = "peer_rejected";
-      } else if (slot.event.responseTooLarge) {
-        slot.result.error = "unexpected_body";
-      } else if (performed != ESP_OK) {
-        slot.result.error = "transport";
-      } else if (status < 200 || status >= 400) {
-        slot.result.error = "http_status";
-      } else {
-        slot.result.ok = true;
-        slot.result.error.clear();
-      }
-    }
-    if (deadlineReached) break;
-    if (pending > 0) vTaskDelay(1);
-  }
-
-  bool peerRejected = false;
-  bool unexpectedBody = false;
-  const uint64_t finishedMs = clock_.monotonicMs();
-  results.reserve(candidates.size());
-  for (size_t index = 0; index < candidates.size(); ++index) {
-    ProbeSlot& slot = slots[index];
-    if (!slot.done) {
-      slot.result.ok = false;
-      slot.result.error = "timeout";
-      slot.result.latencyMs = std::min<uint32_t>(
-          boundedLatency(startedMs, finishedMs), totalDeadlineMs);
-    }
-    peerRejected = peerRejected || slot.event.peerRejected;
-    unexpectedBody = unexpectedBody || slot.event.responseTooLarge;
-    if (slot.client) esp_http_client_cleanup(slot.client);
-    results.push_back(slot.result);
+    peerRejected = peerRejected || event.peerRejected;
+    unexpectedBody = unexpectedBody || event.responseTooLarge;
+    results.push_back(result);
   }
   if (peerRejected) {
     results.clear();
