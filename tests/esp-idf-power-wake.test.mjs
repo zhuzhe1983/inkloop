@@ -468,6 +468,10 @@ test("native wake composition is capability-injected and preserves the panel", (
     /acceptAigcPrompt\(std::string prompt,[\s\S]{0,900}aigc_admission_ticket_ == queued_ticket[\s\S]{0,500}aigc_admission_pending_ = false[\s\S]{0,160}aigc_phase_ = AigcPhase::PendingHandoff/,
   );
   assert.match(
+    nativeVoice,
+    /handleControlResult[\s\S]{0,2200}NetworkQueueAigc[\s\S]{0,500}disposition != WorkDisposition::Complete[\s\S]{0,180}text_pool_\.release\(envelope\.request_id\)[\s\S]{0,160}cancelQueuedAigcAdmission\(envelope\.request_id\)/,
+  );
+  assert.match(
     nativePower,
     /PowerBlocker::AigcGeneration,[\s\S]{0,100}aigc_busy \|\| image == ImageLedMode::Generating/,
   );

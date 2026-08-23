@@ -1306,10 +1306,19 @@ bool NativeVoiceService::handleControlResult(
       envelope.opcode ==
           productOpcode(ProductOpcode::NetworkStartMyAiPairing) ||
       envelope.opcode ==
-          productOpcode(ProductOpcode::NetworkRebindMyAi) ||
-      envelope.opcode ==
-          productOpcode(ProductOpcode::NetworkQueueAigc))
+          productOpcode(ProductOpcode::NetworkRebindMyAi))
     return true;
+  if (envelope.opcode ==
+      productOpcode(ProductOpcode::NetworkQueueAigc)) {
+    // Runtime admission can expire or cancel a queued command before its
+    // Network handler runs. Release the ticket-bound latch on that result so
+    // failed work neither leaks text-pool storage nor blocks sleep forever.
+    if (envelope.disposition != WorkDisposition::Complete) {
+      text_pool_.release(envelope.request_id);
+      cancelQueuedAigcAdmission(envelope.request_id);
+    }
+    return true;
+  }
   return false;
 }
 
