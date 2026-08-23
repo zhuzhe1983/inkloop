@@ -19,6 +19,7 @@ namespace {
 
 constexpr size_t kHeaderScratchBytes = 257U;
 constexpr size_t kMaximumUriBytes = 128U;
+constexpr size_t kRecoveryHttpTaskStackBytes = 16U * 1024U;
 
 const char* statusText(int status) {
   switch (status) {
@@ -201,6 +202,11 @@ struct EspRecoveryServer::Impl {
     stopping = false;
     httpd_config_t native = HTTPD_DEFAULT_CONFIG();
     native.server_port = config.port;
+    // Recovery action inspection verifies up to four transactional snapshots
+    // (including bounded SHA-256 state) in one authenticated request. The IDF
+    // 4 KiB default overflows before it can return the read-only inventory.
+    // Match the normal Portal task while keeping the owner caller-driven.
+    native.stack_size = kRecoveryHttpTaskStackBytes;
     native.max_open_sockets = config.maximum_open_sockets;
     native.uri_match_fn = httpd_uri_match_wildcard;
     native.max_uri_handlers =
