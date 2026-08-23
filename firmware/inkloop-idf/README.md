@@ -7,11 +7,13 @@ Arduino `String`.
 Status: the native Product graph now composes the C151 board, bounded dual-core
 runtime, Wi-Fi/Portal, storage, display, Inkloop, MyAI voice/AIGC, settings,
 power, Recovery and signed-OTA owners without an Arduino compatibility layer.
-Host fault matrices and an official ESP-IDF v6.0.2 C151 link prove the digital
-composition; they do **not** prove the unrun C151 or public-service behavior.
+Host fault matrices and official ESP-IDF v6.0.2 C151/mock links prove the
+digital composition. Native beta10 additionally has retained device evidence
+for boot, saved Wi-Fi, Portal health, deep sleep and timer panel-preserving
+wake; it does **not** prove the remaining physical or public-service behavior.
 
-Do not treat this tree as release/flash-ready until the current all-tree gate,
-fresh independent acceptance and the authorized attached-C151 run in
+Do not treat this tree as release-ready until the exact candidate's all-tree
+gate, fresh independent acceptance and the authorized attached-C151 run in
 [the physical acceptance checklist](docs/C151_PHYSICAL_ACCEPTANCE.md) pass.
 The per-capability split between implemented digital behavior and pending
 physical/live evidence is [the migration matrix](docs/MIGRATION_MATRIX.md).
@@ -65,3 +67,20 @@ idf.py -DINKLOOP_BOARD=my_new_board reconfigure
 
 No task may synchronously call into another task owner. Commands and results
 cross bounded queues; timeouts, cancellation and generation IDs are explicit.
+
+## Physical acceptance tools
+
+The repository-root scripts are intentionally separate from the firmware
+runtime:
+
+- `scripts/papercolor_portal_physical_acceptance.py` exercises the authenticated
+  local Portal using an interactive, non-argv password and restores temporary
+  settings/assets/current-image changes.
+- `scripts/papercolor_myai_physical_acceptance.py` uses only the bounded
+  secondary-USB commands `status`, `album-status`, `voice-tap` and `aigc-test`.
+  It applies only after this diagnostic branch is merged, assigned a version
+  strictly above beta11, rebuilt, signed and freshly accepted.
+
+Neither tool prints credentials, pairing codes, transcripts or raw responses.
+Their machine verdicts do not replace the checklist's human audio/RGB/panel
+observations.
