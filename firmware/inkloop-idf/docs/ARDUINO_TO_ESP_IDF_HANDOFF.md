@@ -1,6 +1,6 @@
 # Arduino → ESP-IDF migration handoff
 
-Date: 2026-08-22
+Date: 2026-08-23
 
 Target: M5 PaperColor C151 first, reusable for later Inkloop hardware
 
@@ -34,24 +34,33 @@ than solve these ownership and scheduling failures.
 
 ## 2. Current device safety state
 
-The device was rebooted after the intrusive voice test. No voice turn was left
-active. The existing Arduino image remains installed and its NVS/LittleFS/SD
-partitions were not erased. Do not use it as an acceptance baseline until the
-ambiguous display transaction is resolved through an explicit recovery choice.
+The authorized C151 now runs the native ESP-IDF `0.4.0-beta.10` image from
+commit `1bd42f9`. It was flashed through the standard four-image boundaries and
+each written range was read back and verified. NVS, LittleFS and TF were not
+written, erased or formatted. Physical evidence already covers native boot,
+saved Wi-Fi, Portal health, LittleFS compatibility, roughly two-minute deep
+sleep and a timer wake that preserves the panel before sleeping again. This is
+an engineering test image, not a release, and it does not prove the remaining
+button/audio/LED/display/Portal/MyAI/OTA rows.
 
-The new `firmware/inkloop-idf` tree has **not** been flashed as an IDF migration
-acceptance image. Its native Product graph now composes the C151 board,
-dual-core runtime, storage, display, Inkloop, MyAI voice/AIGC, Portal/settings,
-power, Recovery and signed-OTA owners. The latest recorded stable C151 link is
-the WS43 ESP-IDF v6.0.2 clean/full-link image (`0x2433a0`, SHA-256
-`23ba86f402c4dbcbb640b315950256b0607de8913760ada9ac87aa9f60950544`).
-The current shared-tree host suite is 261/261 PASS; WS46 also passed a real
-repository-external clean release build and its OTA/scaffold 50/50 gate. Every
-C151 physical/live gate remains pending. The
-tree is therefore a digitally implemented development image, not a release.
-The currently attached, user-authorized C151 may be the first IDF device after
-the final digital gate, but only after verified whole-flash, NVS, LittleFS and
-TF backups and a compatible non-erasing/non-formatting flash plan.
+The current main source is commit `57ec42b` and version `0.4.0-beta.11`. It
+updates the MyAI Center/Gateway credential and routing contract. Its clean C151
+application SHA-256 is
+`67d71ebf3d7e1982d413e671c9939c96ed1f86fdb9b68c1ffd3e201ac411b89b`;
+the signed manifest SHA-256 is
+`ff02c70072cca92d382bb7dcf59e3d8f64b26507cb94d4b408ec34355285e188`.
+The independent digital candidate gate passed. A fail-closed watcher is waiting
+for 100 successful beta10 sleep/wake health cycles, then must create and verify
+two fresh 16 MiB whole-flash backups with matching NVS/LittleFS digests before
+it may write and read back only bootloader, partition table, OTA data and app.
+Do not manually flash around that chain.
+
+The isolated `codex/esp-idf-serial-diagnostics` branch adds bounded, secret-free
+physical acceptance commands and an authenticated Portal acceptance harness.
+Its complete ESP-IDF host suite is 270/270 PASS and both C151 and mock SKU link,
+but it intentionally retains the beta11 version. It must not be flashed until
+beta11 physical smoke passes, the branch is merged, the version is bumped to a
+strictly newer beta12, and a fresh build/sign/acceptance gate succeeds.
 
 ## 3. Target ownership model
 
@@ -109,7 +118,15 @@ types or concrete transports should be copied. Preserve:
 - `device_token` authentication (never pairing token);
 - immediate stop of pairing polling after a device token is accepted;
 - bounded status/error bodies and original 401/402 diagnostics;
-- gateway lease/session selection and public TLS validation.
+- `device_token` only on authenticated Center requests;
+- short-lived `probe_token` only on concurrent candidate `HEAD` probes, with
+  the candidate-specific `X-Gateway-ID`;
+- selected `gateway_token` on Gateway start, business HTTP, Voice WebSocket and
+  AIGC, using `Authorization`, `X-Gateway-Session-Token`,
+  `X-Gateway-Session-ID` and `X-Gateway-ID` together;
+- heartbeat and disconnect remain Center calls authenticated by `device_token`;
+- gateway lease/session selection, public DNS/connected-peer validation,
+  certificate validation for TLS endpoints and redirect rejection.
 
 Replace adapters with native implementations:
 
@@ -234,14 +251,16 @@ the existing unit.
 | Portal/settings/local tools | **Digitally implemented.** native authenticated Portal, upload/preview, settings, volume preview, local tools and confirmed TF maintenance are Product-owned. | Run a real browser against IP/mDNS and all storage/confirmation flows. |
 | Render/display/stable-screen behavior | **Digitally implemented.** official/classic/reflectance/solid strategies, journaled display, one-second page settle and panel-preserving wake are composed. | Compare physical quality/timing and power-cut behavior. |
 | Recovery and OTA | **Digitally verified through WS46.** signed HTTPS/Ed25519 staging, boot health, truthful accepted/offline Portal UX plus bounded post-reboot outcome, two-phase quiesce, Recovery teardown fault handling and immutable per-SKU promotion exist. WS43 targeted 19/19 and C151 clean/full link PASS; WS44 promoter 6/6 and OTA regression 36/36 PASS; WS46 real clean release build and OTA/scaffold 50/50 PASS. | Configure/deploy the reviewed public-key channel and execute live signed update/rollback. |
-| Authorized attached C151 | **Not started.** No host test or link substitutes for this stage. | After the final digital gate, verify whole-flash/NVS/LittleFS/TF backups, flash the currently authorized Download-mode C151 without erase/format, then execute `C151_PHYSICAL_ACCEPTANCE.md`. A failed backup blocks the flash. |
+| Authorized attached C151 | **Physical tranche started.** beta10 standard-boundary flash/readback, preserved NVS/LittleFS/TF, boot, saved Wi-Fi, Portal health, deep sleep and timer panel-preserving wake have retained evidence. The 100-cycle observer and gated beta11 flash/first-cycle evaluator are still running. | Finish beta11 smoke, then authenticated Portal, three-key/LED/audio/display/TF, MyAI Voice/AIGC, signed OTA/rollback/power-cut and the remaining `C151_PHYSICAL_ACCEPTANCE.md` rows. A failed backup or evaluator blocks every later flash. |
 
-## 12. Acceptance gates before first real flash
+## 12. Acceptance gates before the next candidate and release
 
 The executable procedure and required evidence bundle are in
-[C151_PHYSICAL_ACCEPTANCE.md](C151_PHYSICAL_ACCEPTANCE.md). Every item below is
-currently **PENDING physical/live**; this list is a release gate, not a report
-of results.
+[C151_PHYSICAL_ACCEPTANCE.md](C151_PHYSICAL_ACCEPTANCE.md). Some boot, Wi-Fi,
+Portal-health, deep-sleep and timer-wake evidence exists for beta10; every item
+below remains **PENDING physical/live** unless its retained evidence bundle
+explicitly records a passing result for the exact candidate. This list is a
+release gate, not an inference from host tests.
 
 - button event p99 ≤ 20 ms during TLS, SD write, preview and full refresh;
 - voice start acknowledgement ≤ 100 ms when no higher safety blocker exists;
