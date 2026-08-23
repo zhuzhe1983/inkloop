@@ -51,6 +51,12 @@ class IPortalFirmwareUpdateOwner {
       uint64_t request_id) = 0;
 };
 
+struct NativePortalAlbumDiagnosticSnapshot {
+  size_t total_items = 0U;
+  size_t current_one_based = 0U;
+  bool ready = false;
+};
+
 // Product owner for the low-priority local WebUI. HTTP callbacks only copy
 // bounded snapshots/commands/chunks. Album and settings mutations are drained
 // by the existing Portal lane through tick().
@@ -96,6 +102,12 @@ class NativePortalOwner final : public portal::IPortalReadCache,
   bool storageMaintenanceActive() const;
   uint32_t lastAccessMs() const;
   bool running() const;
+  // Serial diagnostics consume the same owner-maintained caches without
+  // pretending that a browser accessed the WebUI. These snapshots contain no
+  // session, CSRF, access-code, device-code or MyAI credential material.
+  portal::PortalResult readSerialDiagnosticState(
+      portal::PortalStateSnapshot& output) const;
+  NativePortalAlbumDiagnosticSnapshot serialDiagnosticAlbum() const;
 
   portal::PortalResult readState(
       portal::PortalStateSnapshot& output) const override;

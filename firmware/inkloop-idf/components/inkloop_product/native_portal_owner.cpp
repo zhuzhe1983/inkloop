@@ -521,11 +521,34 @@ bool NativePortalOwner::accept(const NativeLocalChatSnapshot& snapshot) {
 portal::PortalResult NativePortalOwner::readState(
     portal::PortalStateSnapshot& output) const {
   noteAccess();
+  return readSerialDiagnosticState(output);
+}
+
+portal::PortalResult NativePortalOwner::readSerialDiagnosticState(
+    portal::PortalStateSnapshot& output) const {
   if (!takeMutex(cache_mutex_)) return portal::PortalResult::Busy;
   const bool ready = state_cache_ready_;
   if (ready) output = state_cache_;
   giveMutex(cache_mutex_);
   return ready ? portal::PortalResult::Ok : portal::PortalResult::Unavailable;
+}
+
+NativePortalAlbumDiagnosticSnapshot
+NativePortalOwner::serialDiagnosticAlbum() const {
+  NativePortalAlbumDiagnosticSnapshot output;
+  if (!takeMutex(cache_mutex_)) return output;
+  output.ready = album_cache_ready_;
+  if (output.ready) {
+    output.total_items = album_cache_.assets.size();
+    for (size_t index = 0; index < album_cache_.assets.size(); ++index) {
+      if (album_cache_.assets[index].id == album_cache_.current) {
+        output.current_one_based = index + 1U;
+        break;
+      }
+    }
+  }
+  giveMutex(cache_mutex_);
+  return output;
 }
 
 portal::PortalResult NativePortalOwner::readAlbumPage(

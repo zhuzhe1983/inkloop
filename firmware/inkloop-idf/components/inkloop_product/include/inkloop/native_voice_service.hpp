@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -9,6 +10,7 @@
 #include "freertos/semphr.h"
 #include "inkloop/board.hpp"
 #include "inkloop/bounded_text_pool.hpp"
+#include "inkloop/diagnostics/serial_diagnostic_events.hpp"
 #include "inkloop/esp_cross_core_audio_bridge.hpp"
 #include "inkloop/local_tools/local_tools.hpp"
 #include "inkloop/local_prompt_player.hpp"
@@ -89,6 +91,13 @@ struct NativeMyAiOnboardingSnapshot {
   bool authorization_verified = false;
 };
 
+struct NativeVoiceSerialDiagnosticSnapshot {
+  myai::ActivationState activation_state =
+      myai::ActivationState::Unconfigured;
+  myai::VoiceState voice_state = myai::VoiceState::Idle;
+  bool authorization_verified = false;
+};
+
 // Cross-core MyAI voice composition. All HTTP/WSS/client methods run on the
 // slow Network owner; only I2S capture/playback touches the high-priority Voice
 // owner. Audio travels through bounded PSRAM rings and is never persisted.
@@ -97,7 +106,9 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
  public:
   NativeVoiceService(IBoardAdapter& board, RuntimeSupervisor& supervisor,
                      const char* storage_root,
-                     storage::IAlbumStagingStore* album_store);
+                     storage::IAlbumStagingStore* album_store,
+                     diagnostics::ISerialDiagnosticEventSink*
+                         serial_diagnostics = nullptr);
 
   esp_err_t initialize();
   // Supervisor must be stopped first. Closes WSS, aborts I2S and any album
@@ -120,6 +131,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   AdmissionResult enqueueStartMyAiPairing();
   AdmissionResult enqueueRebindMyAi();
   AdmissionResult enqueueImageGeneration(const std::string& prompt);
+  AdmissionResult enqueueDiagnosticImageGeneration(
+      const std::string& prompt);
   AdmissionResult enqueueClearLocalChat();
   // Portal settings are loaded after the Voice owner is constructed but
   // before the supervisor starts. This seed does no I/O and never exposes a
@@ -155,6 +168,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool storageMaintenanceActive() const;
   NativeVoiceDiagnostics diagnostics() const;
   NativeMyAiOnboardingSnapshot onboardingSnapshot() const;
+  NativeVoiceSerialDiagnosticSnapshot serialDiagnosticSnapshot() const;
 
   myai::LocalTranscriptDecision inspect(
       const std::string& transcript) override;
@@ -210,7 +224,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   void startPairingIfNeeded(uint32_t now_ms);
   myai::Status startPairingNow(uint32_t now_ms);
   void serviceRequestedPairingActions(uint32_t now_ms);
-  bool acceptAigcPrompt(std::string prompt);
+  bool acceptAigcPrompt(std::string prompt,
+                        bool serial_diagnostic = false);
   void restoreVolumeAfterPreview();
   bool beginTrackedStorageWork();
   void finishTrackedStorageWork();
@@ -222,6 +237,12 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   static uint32_t nowMs();
   static bool due(uint32_t now_ms, uint32_t deadline_ms);
   myai::ClientConfig makeConfig() const;
+  AdmissionResult enqueueImageGenerationImpl(const std::string& prompt,
+                                              bool serial_diagnostic);
+  void emitSerialDiagnostic(
+      const diagnostics::SerialDiagnosticEvent& event) const;
+  void emitSerialAigcPhase(
+      diagnostics::SerialDiagnosticAigcPhase phase) const;
 
   class EspConfirmationTokens final
       : public local_tools::IConfirmationTokenSource {
@@ -241,6 +262,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   RuntimeSupervisor& supervisor_;
   const char* storage_root_;
   storage::IAlbumStagingStore* album_store_;
+  diagnostics::ISerialDiagnosticEventSink* serial_diagnostics_ = nullptr;
   myai::EspEndpointSecurity endpoint_security_{};
   myai::EspHttpTransport http_{endpoint_security_};
   myai::EspClock clock_{};
@@ -311,6 +333,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool reconnect_cleanup_pending_ = false;
   bool heartbeat_audio_deferred_ = false;
   bool aigc_exclusive_ = false;
+  bool aigc_serial_diagnostic_ = false;
   bool wifi_was_online_ = false;
   bool local_confirmation_pending_ = false;
   bool local_confirmation_format_pending_ = false;
@@ -331,6 +354,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool chat_snapshot_request_pending_ = false;
   bool chat_snapshot_ready_ = false;
   bool initialized_ = false;
+  std::atomic<uint8_t> serial_voice_state_{
+      static_cast<uint8_t>(myai::VoiceState::Idle)};
 };
 
 }  // namespace inkloop

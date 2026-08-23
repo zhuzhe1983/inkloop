@@ -20,6 +20,8 @@ idf_component_register(
     inkloop_board
     inkloop_audio_idf
     inkloop_connectivity
+    inkloop_diagnostics
+    inkloop_diagnostics_idf
     inkloop_cloud
     inkloop_cloud_idf
     inkloop_local_tools

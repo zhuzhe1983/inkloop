@@ -5,6 +5,7 @@
 
 #include "inkloop/board.hpp"
 #include "inkloop/button_input.hpp"
+#include "inkloop/diagnostics/esp_serial_diagnostics.hpp"
 #include "inkloop/esp_wifi_station.hpp"
 #include "inkloop/native_display_service.hpp"
 #include "inkloop/native_inkloop_service.hpp"
@@ -22,6 +23,7 @@ enum class ProductRuntimeBeginStage : uint8_t {
   SupervisorInitialize,
   ButtonsConfigure,
   LedsConfigure,
+  SerialDiagnosticsConfigure,
   DisplayConfigure,
   VoiceInitialize,
   InkloopInitialize,
@@ -106,11 +108,15 @@ class EspProductRuntime final : public IStorageMaintenanceCoordinator {
                                        void* context);
   static void networkTick(void* context);
   static void portalTick(void* context);
+  static void serialDiagnosticCommand(
+      diagnostics::SerialCommand command, void* context);
   WorkDisposition handleControl(const WorkEnvelope& envelope);
   WorkDisposition handleNetwork(const WorkEnvelope& envelope);
   WorkDisposition handlePortal(const WorkEnvelope& envelope);
   void serviceNetwork();
   void servicePortal();
+  void handleSerialDiagnosticCommand(
+      diagnostics::SerialCommand command);
   void serviceStableDisplayPages(
       const EspWifiStationSnapshot& wifi,
       const NativeMyAiOnboardingSnapshot& onboarding);
@@ -125,6 +131,7 @@ class EspProductRuntime final : public IStorageMaintenanceCoordinator {
   RuntimeSupervisor supervisor_{};
   EspButtonInputOwner buttons_;
   EspStatusLedOwner leds_;
+  diagnostics::EspSerialDiagnosticsOwner serial_diagnostics_{};
   EspWifiStationOwner wifi_{};
   NativeDisplayService display_;
   NativeVoiceService voice_;

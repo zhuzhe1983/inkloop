@@ -12,6 +12,31 @@ namespace {
 
 constexpr char kTag[] = "ink-product";
 constexpr uint32_t kStorageFinalizationDeadlineMs = 10000U;
+constexpr char kSerialAigcPrompt[] =
+    "红色灯塔与深蓝色大海，鲜艳六色墨水屏配色，强对比，大色块，"
+    "简洁竖向构图，无文字";
+
+diagnostics::SerialDiagnosticVoiceState serialVoiceState(
+    myai::VoiceState state) {
+  using diagnostics::SerialDiagnosticVoiceState;
+  switch (state) {
+    case myai::VoiceState::Idle:
+      return SerialDiagnosticVoiceState::Idle;
+    case myai::VoiceState::Connecting:
+      return SerialDiagnosticVoiceState::Connecting;
+    case myai::VoiceState::Ready:
+      return SerialDiagnosticVoiceState::Ready;
+    case myai::VoiceState::Listening:
+      return SerialDiagnosticVoiceState::Listening;
+    case myai::VoiceState::Thinking:
+      return SerialDiagnosticVoiceState::Thinking;
+    case myai::VoiceState::Speaking:
+      return SerialDiagnosticVoiceState::Speaking;
+    case myai::VoiceState::Error:
+      return SerialDiagnosticVoiceState::Error;
+  }
+  return SerialDiagnosticVoiceState::Error;
+}
 
 uint64_t displayFingerprint(const char* first, const char* second,
                             const char* third = nullptr,
@@ -42,10 +67,11 @@ EspProductRuntime::EspProductRuntime(IBoardAdapter& board,
       selected_album_is_sd_(selected_album_store_ &&
                             selected_album_store_ == sd_album_store_),
       buttons_(board, supervisor_), leds_(board, supervisor_),
-      display_(board, supervisor_, selected_album_store_),
+      display_(board, supervisor_, selected_album_store_,
+               &serial_diagnostics_),
       voice_(board, supervisor_, storage.selectedAssetRoot(
                  asset_preference),
-             selected_album_store_),
+             selected_album_store_, &serial_diagnostics_),
       inkloop_(supervisor_, storage.taskRoot(),
                selected_album_store_,
                display_),
@@ -225,6 +251,10 @@ esp_err_t EspProductRuntime::begin() {
           [&] { return buttons_.configure(); });
   acquire(ProductRuntimeBeginStage::LedsConfigure,
           [&] { return leds_.configure(); });
+  acquire(ProductRuntimeBeginStage::SerialDiagnosticsConfigure, [&] {
+    return serial_diagnostics_.configure(
+        &EspProductRuntime::serialDiagnosticCommand, this);
+  });
   acquire(ProductRuntimeBeginStage::DisplayConfigure,
           [&] { return display_.configure(); });
   acquire(ProductRuntimeBeginStage::VoiceInitialize,
@@ -302,6 +332,7 @@ esp_err_t EspProductRuntime::shutdownForOtaAcquisition() {
   };
   record(portal_.shutdown());
   voice_.shutdown();
+  serial_diagnostics_.shutdown();
   power_.shutdown();
   inkloop_.shutdown();
   display_.shutdown();
@@ -346,6 +377,7 @@ esp_err_t EspProductRuntime::shutdownForRecovery() {
 
   record(portal_.shutdown());
   voice_.shutdown();
+  serial_diagnostics_.shutdown();
   record(wifi_.shutdown());
   power_.shutdown();
   inkloop_.shutdown();
@@ -407,6 +439,74 @@ void EspProductRuntime::networkTick(void* context) {
 
 void EspProductRuntime::portalTick(void* context) {
   if (context) static_cast<EspProductRuntime*>(context)->servicePortal();
+}
+
+void EspProductRuntime::serialDiagnosticCommand(
+    diagnostics::SerialCommand command, void* context) {
+  if (context) {
+    static_cast<EspProductRuntime*>(context)->handleSerialDiagnosticCommand(
+        command);
+  }
+}
+
+void EspProductRuntime::handleSerialDiagnosticCommand(
+    diagnostics::SerialCommand command) {
+  diagnostics::SerialDiagnosticEvent event;
+  switch (command) {
+    case diagnostics::SerialCommand::Status: {
+      portal::PortalStateSnapshot state;
+      const bool state_ready = portal_.readSerialDiagnosticState(state) ==
+          portal::PortalResult::Ok;
+      const NativeVoiceSerialDiagnosticSnapshot voice =
+          voice_.serialDiagnosticSnapshot();
+      event.kind = diagnostics::SerialDiagnosticEventKind::Status;
+      if (started_) event.flags |= diagnostics::StatusRuntimeStarted;
+      if (wifi_.online()) event.flags |= diagnostics::StatusWifiOnline;
+      if (state_ready && state.storage_ready)
+        event.flags |= diagnostics::StatusStorageReady;
+      if (display_.busy()) event.flags |= diagnostics::StatusDisplayBusy;
+      if (voice.authorization_verified)
+        event.flags |= diagnostics::StatusMyAiAuthorized;
+      event.first = static_cast<uint8_t>(voice.activation_state);
+      event.second = static_cast<uint8_t>(serialVoiceState(voice.voice_state));
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      return;
+    }
+    case diagnostics::SerialCommand::AlbumStatus: {
+      const NativePortalAlbumDiagnosticSnapshot album =
+          portal_.serialDiagnosticAlbum();
+      event.kind = diagnostics::SerialDiagnosticEventKind::Album;
+      event.flags = album.ready ? 1U : 0U;
+      event.first = static_cast<uint32_t>(album.total_items);
+      event.second = static_cast<uint32_t>(album.current_one_based);
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      return;
+    }
+    case diagnostics::SerialCommand::VoiceTap: {
+      const AdmissionResult admitted = voice_.enqueueTopButton();
+      if (admitted != AdmissionResult::Admitted) {
+        event.kind = diagnostics::SerialDiagnosticEventKind::VoiceError;
+        event.code = static_cast<uint8_t>(admitted);
+        (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      }
+      return;
+    }
+    case diagnostics::SerialCommand::AigcTest: {
+      const AdmissionResult admitted =
+          voice_.enqueueDiagnosticImageGeneration(kSerialAigcPrompt);
+      event.kind = diagnostics::SerialDiagnosticEventKind::AigcDiagnostic;
+      event.flags = admitted == AdmissionResult::Admitted ? 1U : 0U;
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      if (admitted != AdmissionResult::Admitted) {
+        event.kind = diagnostics::SerialDiagnosticEventKind::AigcError;
+        event.code = static_cast<uint8_t>(admitted);
+        (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      }
+      return;
+    }
+    case diagnostics::SerialCommand::None:
+      return;
+  }
 }
 
 WorkDisposition EspProductRuntime::handleControl(
@@ -529,6 +629,7 @@ void EspProductRuntime::serviceStableDisplayPages(
 }
 
 void EspProductRuntime::servicePortal() {
+  serial_diagnostics_.service();
   const uint32_t now = nowMs();
   serviceStorageMaintenanceFinalization(now);
   if (storage_maintenance_phase_ != StorageMaintenancePhase::Idle) {

@@ -135,14 +135,38 @@ std::string composeImagePrompt(const BoardDescriptor& board,
   return prompt_template + " " + subject;
 }
 
+diagnostics::SerialDiagnosticVoiceState serialVoiceState(
+    myai::VoiceState state) {
+  using diagnostics::SerialDiagnosticVoiceState;
+  switch (state) {
+    case myai::VoiceState::Idle:
+      return SerialDiagnosticVoiceState::Idle;
+    case myai::VoiceState::Connecting:
+      return SerialDiagnosticVoiceState::Connecting;
+    case myai::VoiceState::Ready:
+      return SerialDiagnosticVoiceState::Ready;
+    case myai::VoiceState::Listening:
+      return SerialDiagnosticVoiceState::Listening;
+    case myai::VoiceState::Thinking:
+      return SerialDiagnosticVoiceState::Thinking;
+    case myai::VoiceState::Speaking:
+      return SerialDiagnosticVoiceState::Speaking;
+    case myai::VoiceState::Error:
+      return SerialDiagnosticVoiceState::Error;
+  }
+  return SerialDiagnosticVoiceState::Error;
+}
+
 }  // namespace
 
 NativeVoiceService::NativeVoiceService(IBoardAdapter& board,
                                        RuntimeSupervisor& supervisor,
                                        const char* storage_root,
-                                       storage::IAlbumStagingStore* album_store)
+                                       storage::IAlbumStagingStore* album_store,
+                                       diagnostics::ISerialDiagnosticEventSink*
+                                           serial_diagnostics)
     : board_(board), supervisor_(supervisor), storage_root_(storage_root),
-      album_store_(album_store),
+      album_store_(album_store), serial_diagnostics_(serial_diagnostics),
       wire_codec_(board.descriptor().id ? board.descriptor().id
                                         : "inkloop-device") {}
 
@@ -188,6 +212,20 @@ uint32_t NativeVoiceService::nowMs() {
 
 bool NativeVoiceService::due(uint32_t now_ms, uint32_t deadline_ms) {
   return static_cast<int32_t>(now_ms - deadline_ms) >= 0;
+}
+
+void NativeVoiceService::emitSerialDiagnostic(
+    const diagnostics::SerialDiagnosticEvent& event) const {
+  if (serial_diagnostics_)
+    (void)serial_diagnostics_->postSerialDiagnosticEvent(event);
+}
+
+void NativeVoiceService::emitSerialAigcPhase(
+    diagnostics::SerialDiagnosticAigcPhase phase) const {
+  diagnostics::SerialDiagnosticEvent event;
+  event.kind = diagnostics::SerialDiagnosticEventKind::AigcPhase;
+  event.code = static_cast<uint8_t>(phase);
+  emitSerialDiagnostic(event);
 }
 
 uint64_t NativeVoiceService::nextRequestId() {
@@ -497,6 +535,7 @@ void NativeVoiceService::shutdown() {
   aigc_generated_ = myai::AigcGenerateResponse{};
   aigc_status_ = myai::AigcStatusResponse{};
   aigc_exclusive_ = false;
+  aigc_serial_diagnostic_ = false;
   portEXIT_CRITICAL(&aigc_mux_);
   portENTER_CRITICAL(&onboarding_mux_);
   onboarding_ = NativeMyAiOnboardingSnapshot{};
@@ -530,6 +569,8 @@ void NativeVoiceService::shutdown() {
   activation_state_ = myai::ActivationState::Unconfigured;
   network_voice_state_ = myai::VoiceState::Idle;
   voice_task_state_ = myai::VoiceState::Idle;
+  serial_voice_state_.store(static_cast<uint8_t>(myai::VoiceState::Idle),
+                            std::memory_order_release);
   client_initialized_ = false;
   authorization_verified_ = false;
   voice_begin_pending_ = false;
@@ -668,6 +709,16 @@ AdmissionResult NativeVoiceService::enqueueRebindMyAi() {
 
 AdmissionResult NativeVoiceService::enqueueImageGeneration(
     const std::string& prompt) {
+  return enqueueImageGenerationImpl(prompt, false);
+}
+
+AdmissionResult NativeVoiceService::enqueueDiagnosticImageGeneration(
+    const std::string& prompt) {
+  return enqueueImageGenerationImpl(prompt, true);
+}
+
+AdmissionResult NativeVoiceService::enqueueImageGenerationImpl(
+    const std::string& prompt, bool serial_diagnostic) {
   if (!initialized_ || prompt.empty() ||
       prompt.size() > kAigcPromptMaximum) {
     return AdmissionResult::InvalidEnvelope;
@@ -683,6 +734,7 @@ AdmissionResult NativeVoiceService::enqueueImageGeneration(
   envelope.work_class = WorkClass::MyAiNetwork;
   envelope.kind = EnvelopeKind::Command;
   envelope.disposition = WorkDisposition::Accepted;
+  envelope.flags = serial_diagnostic ? 1U : 0U;
   const AdmissionResult admitted = supervisor_.post(envelope);
   if (admitted != AdmissionResult::Admitted) text_pool_.release(ticket);
   return admitted;
@@ -1129,6 +1181,10 @@ void NativeVoiceService::failVoiceHardware() {
   noteLocalAudioActive(false);
   restoreVolumeAfterPreview();
   voice_task_state_ = myai::VoiceState::Error;
+  diagnostics::SerialDiagnosticEvent event;
+  event.kind = diagnostics::SerialDiagnosticEventKind::VoiceError;
+  event.code = 1U;
+  emitSerialDiagnostic(event);
   postVoiceLed(VoiceLedMode::Error);
   post(WorkClass::MyAiNetwork, ProductOpcode::NetworkVoiceCancel, 0,
        kNetworkDeadlineMs);
@@ -1247,12 +1303,20 @@ WorkDisposition NativeVoiceService::handleNetworkCommand(
       productOpcode(ProductOpcode::NetworkQueueAigc)) {
     ProductTextKind kind = ProductTextKind::ToolState;
     std::string prompt;
-    if (!text_pool_.take(envelope.request_id, kind, prompt) ||
+    const bool serial_diagnostic = envelope.flags == 1U;
+    if (envelope.flags > 1U ||
+        !text_pool_.take(envelope.request_id, kind, prompt) ||
         kind != ProductTextKind::AigcState ||
-        !acceptAigcPrompt(std::move(prompt))) {
+        !acceptAigcPrompt(std::move(prompt), serial_diagnostic)) {
       queueChat(ProductTextKind::AigcState,
                 "aigc.rejected_busy_or_invalid source=portal");
       postImageLed(ImageLedMode::Error);
+      if (serial_diagnostic) {
+        diagnostics::SerialDiagnosticEvent event;
+        event.kind = diagnostics::SerialDiagnosticEventKind::AigcError;
+        event.code = 1U;
+        emitSerialDiagnostic(event);
+      }
       return WorkDisposition::Failed;
     }
     postImageLed(ImageLedMode::Generating);
@@ -1304,7 +1368,8 @@ WorkDisposition NativeVoiceService::handleNetworkCommand(
   return WorkDisposition::Complete;
 }
 
-bool NativeVoiceService::acceptAigcPrompt(std::string prompt) {
+bool NativeVoiceService::acceptAigcPrompt(std::string prompt,
+                                          bool serial_diagnostic) {
   if (prompt.empty() || prompt.size() > kAigcPromptMaximum) return false;
   bool accepted = false;
   portENTER_CRITICAL(&maintenance_mux_);
@@ -1318,6 +1383,7 @@ bool NativeVoiceService::acceptAigcPrompt(std::string prompt) {
     // protected phase becomes visible only after its prompt is complete.
     aigc_prompt_.swap(prompt);
     aigc_phase_ = AigcPhase::PendingHandoff;
+    aigc_serial_diagnostic_ = serial_diagnostic;
     accepted = true;
   }
   portEXIT_CRITICAL(&aigc_mux_);
@@ -1689,6 +1755,7 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
   portENTER_CRITICAL(&aigc_mux_);
   const AigcPhase phase = aigc_phase_;
   const bool exclusive = aigc_exclusive_;
+  const bool serial_diagnostic = aigc_serial_diagnostic_;
   portEXIT_CRITICAL(&aigc_mux_);
   if (!exclusive || phase == AigcPhase::Idle ||
       phase == AigcPhase::PendingHandoff || !client_ || !album_store_) {
@@ -1697,6 +1764,10 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
 
   myai::Status status;
   if (phase == AigcPhase::Start) {
+    if (serial_diagnostic) {
+      emitSerialAigcPhase(
+          diagnostics::SerialDiagnosticAigcPhase::Starting);
+    }
     aigc_request_ = myai::ImageRequest();
     std::string configured_template;
     std::string configured_negative;
@@ -1760,6 +1831,10 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
       aigc_phase_ = AigcPhase::Poll;
       next_aigc_poll_ms_ = nowMs() + kAigcPollMs;
       portEXIT_CRITICAL(&aigc_mux_);
+      if (serial_diagnostic) {
+        emitSerialAigcPhase(
+            diagnostics::SerialDiagnosticAigcPhase::Submitted);
+      }
       queueChat(ProductTextKind::AigcState, "aigc.submitted poll=5s");
       return;
     }
@@ -1771,6 +1846,10 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
       portENTER_CRITICAL(&aigc_mux_);
       aigc_phase_ = AigcPhase::Download;
       portEXIT_CRITICAL(&aigc_mux_);
+      if (serial_diagnostic) {
+        emitSerialAigcPhase(
+            diagnostics::SerialDiagnosticAigcPhase::GenerationComplete);
+      }
       queueChat(ProductTextKind::AigcState, "aigc.generated downloading");
       return;
     }
@@ -1792,8 +1871,15 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
       queueChat(ProductTextKind::AigcState,
                 std::string("aigc.cached asset=") + committed.asset_id +
                     " ordinal=" + std::to_string(committed.ordinal + 1U));
+      if (serial_diagnostic) {
+        emitSerialAigcPhase(
+            diagnostics::SerialDiagnosticAigcPhase::Cached);
+      }
       if (committed.ordinal <= 255U &&
-          post(WorkClass::Display, ProductOpcode::DisplayAlbumOrdinal,
+          post(WorkClass::Display,
+               serial_diagnostic
+                   ? ProductOpcode::DisplayDiagnosticAigcOrdinal
+                   : ProductOpcode::DisplayAlbumOrdinal,
                static_cast<uint8_t>(committed.ordinal), 0) ==
               AdmissionResult::Admitted) {
         finishAigc(true, "aigc.cached display_queued");
@@ -1815,6 +1901,9 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
 }
 
 void NativeVoiceService::finishAigc(bool success, const char* state) {
+  portENTER_CRITICAL(&aigc_mux_);
+  const bool serial_diagnostic = aigc_serial_diagnostic_;
+  portEXIT_CRITICAL(&aigc_mux_);
   if (client_) client_->disconnectImage(success ? "complete" : "failed");
   queueChat(ProductTextKind::AigcState, state ? state : "aigc.failed");
   if (!success) postImageLed(ImageLedMode::Error);
@@ -1825,7 +1914,14 @@ void NativeVoiceService::finishAigc(bool success, const char* state) {
   portENTER_CRITICAL(&aigc_mux_);
   aigc_phase_ = AigcPhase::Idle;
   aigc_exclusive_ = false;
+  aigc_serial_diagnostic_ = false;
   portEXIT_CRITICAL(&aigc_mux_);
+  if (!success && serial_diagnostic) {
+    diagnostics::SerialDiagnosticEvent event;
+    event.kind = diagnostics::SerialDiagnosticEventKind::AigcError;
+    event.code = 2U;
+    emitSerialDiagnostic(event);
+  }
   next_voice_reconnect_ms_ = nowMs() + kMinimumReconnectMs;
 }
 
@@ -2136,6 +2232,13 @@ void NativeVoiceService::publishLocalToolOutcome(
       outcome.command == local_tools::CommandKind::FormatTfCard;
   portEXIT_CRITICAL(&local_tools_mux_);
   queueChat(ProductTextKind::ToolState, describeLocalToolOutcome(outcome));
+  if (outcome.command == local_tools::CommandKind::QueryStorage) {
+    diagnostics::SerialDiagnosticEvent event;
+    event.kind = diagnostics::SerialDiagnosticEventKind::VoiceToolStorage;
+    event.flags = outcome.code == local_tools::ExecutionCode::Executed ? 1U
+                                                                       : 0U;
+    emitSerialDiagnostic(event);
+  }
   if (outcome.code != local_tools::ExecutionCode::Executed) return;
 
   AdmissionResult applied = AdmissionResult::Admitted;
@@ -2221,7 +2324,20 @@ myai::LocalTranscriptDecision NativeVoiceService::inspect(
                   ? "local.ignore_blank_audio"
                   : "local.ignore_empty");
   }
-  if (!parsed.matched()) return myai::LocalTranscriptDecision(false);
+  diagnostics::SerialDiagnosticEvent asr_event;
+  asr_event.kind = diagnostics::SerialDiagnosticEventKind::VoiceAsrFinal;
+  asr_event.first = static_cast<uint32_t>(
+      std::min<size_t>(transcript.size(),
+                       std::numeric_limits<uint32_t>::max()));
+  if (!parsed.matched()) {
+    asr_event.code = static_cast<uint8_t>(
+        diagnostics::SerialDiagnosticAsrRoute::Remote);
+    emitSerialDiagnostic(asr_event);
+    return myai::LocalTranscriptDecision(false);
+  }
+  asr_event.code = static_cast<uint8_t>(
+      diagnostics::SerialDiagnosticAsrRoute::Local);
+  emitSerialDiagnostic(asr_event);
   portENTER_CRITICAL(&local_tools_mux_);
   const bool attached = local_tools_adapter_ != nullptr;
   portEXIT_CRITICAL(&local_tools_mux_);
@@ -2266,6 +2382,12 @@ void NativeVoiceService::onPairingReady(const myai::PairingView& pairing) {
 
 void NativeVoiceService::onVoiceState(myai::VoiceState state) {
   network_voice_state_ = state;
+  serial_voice_state_.store(static_cast<uint8_t>(state),
+                            std::memory_order_release);
+  diagnostics::SerialDiagnosticEvent serial_event;
+  serial_event.kind = diagnostics::SerialDiagnosticEventKind::VoiceState;
+  serial_event.code = static_cast<uint8_t>(serialVoiceState(state));
+  emitSerialDiagnostic(serial_event);
   // Connecting is used both for a real button-initiated turn and for the
   // client's idle gateway preconnection/retry loop. Preserve the existing
   // turn authority through Connecting: handleTopButton() has already raised
@@ -2355,6 +2477,10 @@ void NativeVoiceService::onAigcState(myai::AigcState state,
 }
 
 void NativeVoiceService::onError(const myai::Status& status) {
+  diagnostics::SerialDiagnosticEvent event;
+  event.kind = diagnostics::SerialDiagnosticEventKind::MyAiError;
+  event.code = static_cast<uint8_t>(status.code);
+  emitSerialDiagnostic(event);
   ESP_LOGW(kTag, "MyAI error code=%u http=%d retry_ms=%lu",
            static_cast<unsigned>(status.code), status.httpStatus,
            static_cast<unsigned long>(status.retryAfterMs));
@@ -2372,6 +2498,19 @@ NativeMyAiOnboardingSnapshot NativeVoiceService::onboardingSnapshot() const {
   const NativeMyAiOnboardingSnapshot value = onboarding_;
   portEXIT_CRITICAL(&onboarding_mux_);
   return value;
+}
+
+NativeVoiceSerialDiagnosticSnapshot
+NativeVoiceService::serialDiagnosticSnapshot() const {
+  const NativeMyAiOnboardingSnapshot onboarding = onboardingSnapshot();
+  NativeVoiceSerialDiagnosticSnapshot output;
+  output.activation_state = onboarding.activation_state;
+  output.authorization_verified = onboarding.authorization_verified;
+  const uint8_t state = serial_voice_state_.load(std::memory_order_acquire);
+  output.voice_state = state <= static_cast<uint8_t>(myai::VoiceState::Error)
+      ? static_cast<myai::VoiceState>(state)
+      : myai::VoiceState::Error;
+  return output;
 }
 
 }  // namespace inkloop

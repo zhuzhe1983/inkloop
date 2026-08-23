@@ -40,6 +40,9 @@ enum class ProductOpcode : uint16_t {
   PortalConfirmLocalTool = 402,
   DisplayAlbumOrdinal = 500,
   AlbumRefreshStarting = 501,
+  // Identical display path with a credential-free completion event for the
+  // physical serial acceptance harness.
+  DisplayDiagnosticAigcOrdinal = 502,
 };
 
 inline constexpr uint16_t productOpcode(ProductOpcode value) {

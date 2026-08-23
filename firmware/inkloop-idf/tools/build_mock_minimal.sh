@@ -9,7 +9,7 @@ build_dir="$proof_root/build-esp32s3"
 cache="$build_dir/CMakeCache.txt"
 
 mkdir -p "$project_dir"
-for entry in CMakeLists.txt boards components main partitions.csv sdkconfig.defaults; do
+for entry in CMakeLists.txt boards components main partitions.csv sdkconfig.defaults version.txt; do
   target="$project_dir/$entry"
   if [[ -e "$target" && ! -L "$target" ]]; then
     echo "refusing non-symlink proof input: $target" >&2

@@ -22,6 +22,7 @@ const stages = [
   "SupervisorInitialize",
   "ButtonsConfigure",
   "LedsConfigure",
+  "SerialDiagnosticsConfigure",
   "DisplayConfigure",
   "VoiceInitialize",
   "InkloopInitialize",

@@ -276,6 +276,7 @@ test("generic board contract contains no fixed PaperColor hardware facts", () =>
 test("mock board remains an isolated selectable ESP-IDF component", () => {
   const cmake = readFileSync(join(mock, "CMakeLists.txt"), "utf8");
   const source = readFileSync(join(mock, "board.cpp"), "utf8");
+  const sdkconfig = readFileSync(join(mock, "sdkconfig.defaults"), "utf8");
   assert.match(cmake, /idf_component_register\(/);
   assert.match(cmake, /REQUIRES inkloop_audio_idf inkloop_board/);
   assert.match(source, /"mock-minimal"/);
@@ -283,6 +284,11 @@ test("mock board remains an isolated selectable ESP-IDF component", () => {
   assert.match(source, /static_assert\(kRenderStrategyCatalog\.valid\(\),/);
   assert.doesNotMatch(source, /reflectance-photo/);
   assert.doesNotMatch(source, /m5|papercolor|c151|ed2208|pm1|SPI2_HOST/i);
+  assert.match(sdkconfig, /CONFIG_ESP_CONSOLE_SECONDARY_NONE=y/);
+  assert.match(
+    sdkconfig,
+    /# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set/,
+  );
 });
 
 test("product boot gates every SD probe on the selected board capability", () => {
@@ -304,6 +310,10 @@ test("mock full-product build tool uses an isolated board-specific cache", () =>
   assert.match(source, /build_dir="\$proof_root\/build-esp32s3"/);
   assert.match(source, /ln -sfn "\$project_root\/\$entry" "\$target"/);
   assert.match(source, /refusing non-symlink proof input/);
+  assert.match(
+    source,
+    /CMakeLists\.txt boards components main partitions\.csv sdkconfig\.defaults version\.txt/,
+  );
   assert.match(source, /INKLOOP_BOARD=mock_minimal/);
   assert.match(source, /IDF_TARGET=esp32s3/);
   assert.match(source, /IDF_TARGET:STRING=esp32s3/);

@@ -688,20 +688,56 @@ AdmissionResult NativeDisplayService::postRefreshStarting(size_t ordinal) {
   return supervisor_.post(command);
 }
 
+void NativeDisplayService::emitSerialAigcPhase(
+    diagnostics::SerialDiagnosticAigcPhase phase) const {
+  if (!serial_diagnostics_) return;
+  diagnostics::SerialDiagnosticEvent event;
+  event.kind = diagnostics::SerialDiagnosticEventKind::AigcPhase;
+  event.code = static_cast<uint8_t>(phase);
+  (void)serial_diagnostics_->postSerialDiagnosticEvent(event);
+}
+
+void NativeDisplayService::emitSerialAigcError() const {
+  if (!serial_diagnostics_) return;
+  diagnostics::SerialDiagnosticEvent event;
+  event.kind = diagnostics::SerialDiagnosticEventKind::AigcError;
+  event.code = 3U;
+  (void)serial_diagnostics_->postSerialDiagnosticEvent(event);
+}
+
 WorkDisposition NativeDisplayService::handle(
     const WorkEnvelope& envelope) {
   if (envelope.kind != EnvelopeKind::Command ||
       envelope.work_class != WorkClass::Display ||
-      envelope.opcode != productOpcode(ProductOpcode::DisplayAlbumOrdinal)) {
+      (envelope.opcode != productOpcode(ProductOpcode::DisplayAlbumOrdinal) &&
+       envelope.opcode !=
+           productOpcode(ProductOpcode::DisplayDiagnosticAigcOrdinal))) {
     return WorkDisposition::Failed;
   }
+  const bool serial_diagnostic = envelope.opcode ==
+      productOpcode(ProductOpcode::DisplayDiagnosticAigcOrdinal);
   portENTER_CRITICAL(&mux_);
   const bool blocked = storage_maintenance_ || catalog_refreshing_ ||
       album_rendering_;
   portEXIT_CRITICAL(&mux_);
-  if (blocked) return WorkDisposition::Busy;
-  return renderOrdinal(envelope.flags) ? WorkDisposition::Complete
-                                       : WorkDisposition::Failed;
+  if (blocked) {
+    if (serial_diagnostic) emitSerialAigcError();
+    return WorkDisposition::Busy;
+  }
+  if (serial_diagnostic) {
+    emitSerialAigcPhase(
+        diagnostics::SerialDiagnosticAigcPhase::DisplayStart);
+  }
+  const bool rendered = renderOrdinal(envelope.flags);
+  if (serial_diagnostic) {
+    if (rendered) {
+      emitSerialAigcPhase(
+          diagnostics::SerialDiagnosticAigcPhase::DisplayComplete);
+    } else {
+      emitSerialAigcError();
+    }
+  }
+  return rendered ? WorkDisposition::Complete : WorkDisposition::Failed;
 }
 
 bool NativeDisplayService::renderOrdinal(size_t ordinal) {

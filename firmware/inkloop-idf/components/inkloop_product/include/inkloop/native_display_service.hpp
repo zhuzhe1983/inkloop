@@ -6,6 +6,7 @@
 
 #include "inkloop/album_navigation_core.hpp"
 #include "inkloop/board.hpp"
+#include "inkloop/diagnostics/serial_diagnostic_events.hpp"
 #include "inkloop/runtime_supervisor.hpp"
 #include "inkloop/storage/posix_atomic_album_store.hpp"
 
@@ -59,8 +60,11 @@ enum class NativeDisplayPageRequestResult : uint8_t {
 class NativeDisplayService final {
  public:
   NativeDisplayService(IBoardAdapter& board, RuntimeSupervisor& supervisor,
-                       storage::PosixAtomicAlbumStore* album_store)
-      : board_(board), supervisor_(supervisor), album_store_(album_store) {}
+                       storage::PosixAtomicAlbumStore* album_store,
+                       diagnostics::ISerialDiagnosticEventSink*
+                           serial_diagnostics = nullptr)
+      : board_(board), supervisor_(supervisor), album_store_(album_store),
+        serial_diagnostics_(serial_diagnostics) {}
 
   esp_err_t configure();
   // Supervisor must be stopped first. This removes every pending writer and
@@ -110,6 +114,9 @@ class NativeDisplayService final {
   bool writePanelFrame(const uint8_t* frame, size_t frame_bytes);
   AdmissionResult postRefreshStarting(size_t ordinal);
   AdmissionResult postImageLed(uint8_t mode);
+  void emitSerialAigcPhase(
+      diagnostics::SerialDiagnosticAigcPhase phase) const;
+  void emitSerialAigcError() const;
   uint64_t nextRequestId();
   static uint32_t nowMs();
 
@@ -148,6 +155,7 @@ class NativeDisplayService final {
   IBoardAdapter& board_;
   RuntimeSupervisor& supervisor_;
   storage::PosixAtomicAlbumStore* album_store_;
+  diagnostics::ISerialDiagnosticEventSink* serial_diagnostics_ = nullptr;
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   NativeDisplayDiagnostics diagnostics_{};
   AlbumNavigationCore navigation_{};
