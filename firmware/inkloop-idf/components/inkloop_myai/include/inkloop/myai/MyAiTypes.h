@@ -212,12 +212,16 @@ struct VoiceEvent {
   std::string actionId;
   std::string kind;
   std::string prompt;
+  std::string originalRequest;
+  std::vector<std::string> prompts;
   std::string rawPayload;
   uint32_t sampleRateHz;
   uint8_t channels;
+  uint8_t requestedImageCount;
   int lastSeq;
 
-  VoiceEvent() : sampleRateHz(0), channels(0), lastSeq(-1) {}
+  VoiceEvent()
+      : sampleRateHz(0), channels(0), requestedImageCount(1), lastSeq(-1) {}
 };
 
 struct LocalTranscriptDecision {

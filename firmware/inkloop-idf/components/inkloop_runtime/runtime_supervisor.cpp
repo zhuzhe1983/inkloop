@@ -210,6 +210,9 @@ esp_err_t RuntimeSupervisor::start() {
 
   portENTER_CRITICAL(&mux_);
   lifecycle_ = Lifecycle::Running;
+  sleep_admission_frozen_ = false;
+  sleep_button_event_pending_ = false;
+  callback_active_.fill(false);
   for (TaskSlot& slot : slots_) xTaskNotifyGive(slot.task);
   portEXIT_CRITICAL(&mux_);
   return ESP_OK;
@@ -221,6 +224,65 @@ bool RuntimeSupervisor::calledFromManagedTaskLocked() const {
     if (slot.task == current) return true;
   }
   return false;
+}
+
+bool RuntimeSupervisor::currentTaskIsLaneLocked(TaskLane lane) const {
+  const size_t index = taskLaneIndex(lane);
+  return index < slots_.size() && slots_[index].task != nullptr &&
+         slots_[index].task == xTaskGetCurrentTaskHandle();
+}
+
+bool RuntimeSupervisor::allAdmissionIdleLocked() const {
+  const AdmissionSnapshot snapshot = admission_.snapshot();
+  for (const size_t used : snapshot.used) {
+    if (used != 0U) return false;
+  }
+  return true;
+}
+
+bool RuntimeSupervisor::allOtherCallbacksIdleLocked(TaskLane caller) const {
+  const size_t caller_index = taskLaneIndex(caller);
+  if (caller_index >= callback_active_.size()) return false;
+  for (size_t index = 0; index < callback_active_.size(); ++index) {
+    if (index != caller_index && callback_active_[index]) return false;
+  }
+  return callback_active_[caller_index];
+}
+
+bool RuntimeSupervisor::freezeAdmissionForSleep() {
+  constexpr TaskLane caller = TaskLane::Portal;
+  portENTER_CRITICAL(&mux_);
+  const bool eligible = lifecycle_ == Lifecycle::Running &&
+                        !sleep_admission_frozen_ &&
+                        currentTaskIsLaneLocked(caller) &&
+                        allAdmissionIdleLocked() &&
+                        allOtherCallbacksIdleLocked(caller);
+  if (eligible) {
+    sleep_button_event_pending_ = false;
+    sleep_admission_frozen_ = true;
+  }
+  portEXIT_CRITICAL(&mux_);
+  return eligible;
+}
+
+bool RuntimeSupervisor::sleepAdmissionStillSafe() const {
+  constexpr TaskLane caller = TaskLane::Portal;
+  portENTER_CRITICAL(&mux_);
+  const bool safe = lifecycle_ == Lifecycle::Running &&
+                    sleep_admission_frozen_ &&
+                    !sleep_button_event_pending_ &&
+                    currentTaskIsLaneLocked(caller) &&
+                    allAdmissionIdleLocked() &&
+                    allOtherCallbacksIdleLocked(caller);
+  portEXIT_CRITICAL(&mux_);
+  return safe;
+}
+
+void RuntimeSupervisor::thawAdmissionAfterSleepAbort() {
+  portENTER_CRITICAL(&mux_);
+  sleep_admission_frozen_ = false;
+  sleep_button_event_pending_ = false;
+  portEXIT_CRITICAL(&mux_);
 }
 
 esp_err_t RuntimeSupervisor::stop() {
@@ -255,6 +317,9 @@ esp_err_t RuntimeSupervisor::stop() {
   }
   const AdmissionSnapshot previous = admission_.snapshot();
   admission_ = RuntimeAdmission();
+  callback_active_.fill(false);
+  sleep_admission_frozen_ = false;
+  sleep_button_event_pending_ = false;
   for (size_t index = 0; index < previous.generation_floor.size(); ++index) {
     const uint64_t floor = previous.generation_floor[index];
     if (floor != 0) {
@@ -303,6 +368,9 @@ esp_err_t RuntimeSupervisor::shutdown() {
 
   portENTER_CRITICAL(&mux_);
   admission_ = RuntimeAdmission();
+  callback_active_.fill(false);
+  sleep_admission_frozen_ = false;
+  sleep_button_event_pending_ = false;
   lifecycle_ = Lifecycle::Uninitialized;
   portEXIT_CRITICAL(&mux_);
   return ESP_OK;
@@ -346,6 +414,11 @@ AdmissionResult RuntimeSupervisor::post(const WorkEnvelope& envelope) {
     portEXIT_CRITICAL(&mux_);
     return AdmissionResult::NotReady;
   }
+  if (sleep_admission_frozen_) {
+    recordAdmissionLocked(lane, AdmissionResult::NotReady);
+    portEXIT_CRITICAL(&mux_);
+    return AdmissionResult::NotReady;
+  }
   const AdmissionResult admission = admission_.admit(lane, envelope, nowMs());
   recordAdmissionLocked(lane, admission);
   if (admission != AdmissionResult::Admitted) {
@@ -377,6 +450,12 @@ AdmissionResult RuntimeSupervisor::postButtonFromIsr(
 
   portENTER_CRITICAL_ISR(&mux_);
   if (lifecycle_ != Lifecycle::Running) {
+    ++diagnostics_.not_ready[index];
+    portEXIT_CRITICAL_ISR(&mux_);
+    return AdmissionResult::NotReady;
+  }
+  if (sleep_admission_frozen_) {
+    sleep_button_event_pending_ = true;
     ++diagnostics_.not_ready[index];
     portEXIT_CRITICAL_ISR(&mux_);
     return AdmissionResult::NotReady;
@@ -460,17 +539,28 @@ void RuntimeSupervisor::run(TaskLane lane) {
     }
     portENTER_CRITICAL(&mux_);
     const bool stop_before_tick = lifecycle_ == Lifecycle::Stopping;
+    const bool ticks_frozen = sleep_admission_frozen_;
     portEXIT_CRITICAL(&mux_);
     if (stop_before_tick) break;
-    if (slot.tick_handler) {
+    if (slot.tick_handler && !ticks_frozen) {
       const TickType_t now = xTaskGetTickCount();
       const TickType_t elapsed = static_cast<TickType_t>(now - last_tick);
       if (elapsed >= slot.tick_interval) {
         last_tick = now;
+        portENTER_CRITICAL(&mux_);
+        const bool can_run_tick = lifecycle_ == Lifecycle::Running &&
+                                  !sleep_admission_frozen_ &&
+                                  !callback_active_[index];
+        if (can_run_tick) callback_active_[index] = true;
+        portEXIT_CRITICAL(&mux_);
+        if (!can_run_tick) continue;
         const int64_t started_us = esp_timer_get_time();
         slot.tick_handler(slot.tick_context);
         recordTickTiming(lane, elapsedUs(started_us), elapsed,
                          slot.tick_interval);
+        portENTER_CRITICAL(&mux_);
+        callback_active_[index] = false;
+        portEXIT_CRITICAL(&mux_);
       }
     }
     const TickType_t resource_now = xTaskGetTickCount();
@@ -495,6 +585,7 @@ void RuntimeSupervisor::markTaskQuiescent(TaskLane lane) {
 
 void RuntimeSupervisor::handleDequeued(TaskLane lane,
                                        const WorkEnvelope& envelope) {
+  const size_t index = taskLaneIndex(lane);
   portENTER_CRITICAL(&mux_);
   const AdmissionResult released = admission_.release(lane);
   telemetry_.recordQueueDepth(lane, admission_.used(lane));
@@ -505,6 +596,10 @@ void RuntimeSupervisor::handleDequeued(TaskLane lane,
   recordAdmissionLocked(lane, execution);
   WorkHandler handler = slots_[taskLaneIndex(lane)].handler;
   void* context = slots_[taskLaneIndex(lane)].handler_context;
+  if (execution == AdmissionResult::Admitted &&
+      index < callback_active_.size()) {
+    callback_active_[index] = true;
+  }
   portEXIT_CRITICAL(&mux_);
 
   if (execution != AdmissionResult::Admitted) {
@@ -530,6 +625,9 @@ void RuntimeSupervisor::handleDequeued(TaskLane lane,
       post(makeResult(envelope, disposition)) != AdmissionResult::Admitted) {
     recordResultFailure();
   }
+  portENTER_CRITICAL(&mux_);
+  if (index < callback_active_.size()) callback_active_[index] = false;
+  portEXIT_CRITICAL(&mux_);
 }
 
 void RuntimeSupervisor::recordHandlerFailure(TaskLane lane) {

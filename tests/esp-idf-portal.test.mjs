@@ -8,6 +8,8 @@ import test from "node:test";
 const repo = new URL("../", import.meta.url).pathname;
 const core = join(repo, "firmware/inkloop-idf/components/inkloop_portal");
 const idf = join(repo, "firmware/inkloop-idf/components/inkloop_portal_idf");
+const diagnostics = join(
+  repo, "firmware/inkloop-idf/components/inkloop_diagnostics");
 const portalSource = readFileSync(join(core, "portal_core.cpp"), "utf8");
 const portalHeader = readFileSync(
   join(core, "include/inkloop/portal/portal_core.hpp"),
@@ -103,6 +105,7 @@ struct Cache final : IPortalReadCache {
   mutable bool bad_runtime_core = false;
   mutable bool bad_display_dimensions = false;
   mutable bool bad_myai_error = false;
+  mutable bool bad_myai_detail = false;
   mutable bool minimal_capabilities = false;
   mutable PortalFirmwareUpdateSnapshot firmware_update{};
 
@@ -115,6 +118,7 @@ struct Cache final : IPortalReadCache {
     value.display_height = 600;
     if (bad_display_dimensions) value.display_width = 0;
     value.wifi_online = true;
+    value.mdns_ready = true;
     value.storage_ready = true;
     value.display_busy = false;
     value.display_completed_refreshes = 3;
@@ -148,6 +152,8 @@ struct Cache final : IPortalReadCache {
     value.myai_error.retry_after_ms = 5000;
     value.myai_error.sequence = 7;
     value.myai_error.observed_at_ms = 12345;
+    value.myai_error.detail = bad_myai_detail
+        ? "Bearer must-not-cross-portal" : "authorization rejected by MyAI";
     value.tutorial.step = TutorialPortalStep::GalleryPaging;
     value.tutorial.persistence_pending = true;
     value.pairing_code = "950940";
@@ -381,9 +387,10 @@ int main() {
   assert(state_response.status == 200);
   assert(state_response.body.find("\"tabs\":[\"device\",\"album\",\"myai\",\"settings\"]") != std::string::npos);
   assert(state_response.body.find("\"firmwareUpdate\":{\"configured\":false,\"acceptedOffline\":false,\"currentVersion\":\"idf-0.3\",\"status\":\"unavailable\",\"code\":\"none\"}") != std::string::npos);
+  assert(state_response.body.find("\"mdnsReady\":true") != std::string::npos);
   assert(state_response.body.find("950940") != std::string::npos);
   assert(state_response.body.find("\"state\":\"pairing\"") != std::string::npos);
-  assert(state_response.body.find("\"lastError\":{\"available\":true,\"source\":\"authorization\",\"code\":\"unauthorized\",\"httpStatus\":401,\"retryAfterMs\":5000,\"sequence\":7,\"observedAtMs\":12345}") != std::string::npos);
+  assert(state_response.body.find("\"lastError\":{\"available\":true,\"source\":\"authorization\",\"code\":\"unauthorized\",\"httpStatus\":401,\"retryAfterMs\":5000,\"sequence\":7,\"observedAtMs\":12345,\"detail\":\"authorization rejected by MyAI\"}") != std::string::npos);
   assert(state_response.body.find("\"tutorial\":{\"step\":\"gallery_paging\",\"inFlight\":false,\"persistencePending\":true,\"persistenceError\":false}") != std::string::npos);
   assert(state_response.body.find("device_token") == std::string::npos);
   assert(state_response.body.find("pairing_token") == std::string::npos);
@@ -429,6 +436,9 @@ int main() {
   cache.bad_myai_error = true;
   assert(portal.handle(state).status == 422);
   cache.bad_myai_error = false;
+  cache.bad_myai_detail = true;
+  assert(portal.handle(state).status == 422);
+  cache.bad_myai_detail = false;
 
   PortalRequest expired = state;
   expired.now_seconds = 1000;
@@ -782,8 +792,11 @@ function buildAndRun(sanitized) {
       "-pedantic",
       "-I",
       join(core, "include"),
+      "-I",
+      join(diagnostics, "include"),
       source,
       join(core, "portal_core.cpp"),
+      join(diagnostics, "diagnostic_detail.cpp"),
       "-o",
       binary,
     ];

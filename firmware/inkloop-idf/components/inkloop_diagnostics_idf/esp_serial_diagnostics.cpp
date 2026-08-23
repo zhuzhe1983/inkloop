@@ -119,6 +119,7 @@ void EspSerialDiagnosticsOwner::drainEvents() {
     std::array<char, kMaximumFrameBytes> frame{};
     const size_t bytes = formatSerialDiagnosticEvent(
         event, frame.data(), frame.size());
+    (void)bytes;
     bool written = false;
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
     CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG

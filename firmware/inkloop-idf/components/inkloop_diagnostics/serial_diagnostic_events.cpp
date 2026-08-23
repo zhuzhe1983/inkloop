@@ -1,6 +1,7 @@
 #include "inkloop/diagnostics/serial_diagnostic_events.hpp"
 
 #include <cstdio>
+#include <string>
 
 namespace inkloop::diagnostics {
 namespace {
@@ -93,6 +94,18 @@ const char* myAiErrorCodeName(uint8_t value) {
 size_t finishFormat(int written, size_t capacity) {
   if (written <= 0 || static_cast<size_t>(written) >= capacity) return 0U;
   return static_cast<size_t>(written);
+}
+
+bool serialDetail(const SerialDiagnosticEvent& event, std::string& output) {
+  output.clear();
+  size_t length = 0U;
+  while (length < event.detail.size() && event.detail[length] != '\0')
+    ++length;
+  if (length == 0U) return true;
+  if (length == event.detail.size()) return false;
+  output.assign(event.detail.data(), length);
+  return isCanonicalDiagnosticDetail(
+      output, kMaximumSerialDiagnosticDetailBytes);
 }
 
 }  // namespace
@@ -200,11 +213,21 @@ size_t formatSerialDiagnosticEvent(const SerialDiagnosticEvent& event,
               (event.first < 100U || event.first > 599U)) {
             return 0U;
           }
-          written = std::snprintf(
-              output, capacity,
-              "INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,retry_ms=%lu\n",
-              source, code, static_cast<unsigned long>(event.first),
-              static_cast<unsigned long>(event.second));
+          std::string detail;
+          if (!serialDetail(event, detail)) return 0U;
+          written = detail.empty()
+              ? std::snprintf(
+                    output, capacity,
+                    "INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,"
+                    "retry_ms=%lu\n",
+                    source, code, static_cast<unsigned long>(event.first),
+                    static_cast<unsigned long>(event.second))
+              : std::snprintf(
+                    output, capacity,
+                    "INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,"
+                    "retry_ms=%lu,detail=%s\n",
+                    source, code, static_cast<unsigned long>(event.first),
+                    static_cast<unsigned long>(event.second), detail.c_str());
         }
       }
       break;

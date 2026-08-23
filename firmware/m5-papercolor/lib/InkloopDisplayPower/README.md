@@ -12,8 +12,10 @@ They contain no panel, M5, Wi-Fi, storage, RTC, MyAI/AaaS, or server calls.
   and "already quantized" booleans are not part of the runtime API.
 - Accepted decoded target is exact scanline RGB at 400×600.
 - Geometry planning supports centered cover/crop and contain/letterbox.
-- `papercolor-m5gfx-quality-v1` passes exact target RGB through for the official
-  M5GFX quality path.
+- `papercolor-m5gfx-quality-v1` reproduces M5GFX 0.2.27 ED2208
+  `epd_quality` RGB-pair dithering as a bounded scanline stream before the
+  native panel sink. M5GFX/LovyanGFX and its FreeBSD licence remain attributed
+  in `ImageProcessing.cpp`.
 - `papercolor-sixcolor-prequant-v1` is experimental deterministic
   Floyd-Steinberg preprocessing restricted to black, white, yellow, red, blue,
   and green values verified for PaperColor.
@@ -67,10 +69,12 @@ They contain no panel, M5, Wi-Fi, storage, RTC, MyAI/AaaS, or server calls.
 
 ## ESP32/M5 adapter boundary
 
-`src/DisplayPowerAdapters.*` is the narrow hardware layer. The official path
-delegates to `DisplayController` in `epd_quality`; the experimental sealed
-palette path selects the pinned ED2208 `epd_fastest` row converter, whose pinned
-implementation uses `_dither_row_none`, and then restores `epd_quality`.
+`src/DisplayPowerAdapters.*` is the narrow hardware layer. The legacy Arduino
+official path delegates to `DisplayController` in `epd_quality`; the portable
+renderer also exposes the matching bounded RGB-pair quantizer for native
+ESP-IDF. The experimental sealed palette path selects the pinned ED2208
+`epd_fastest` row converter, whose pinned implementation uses
+`_dither_row_none`, and then restores `epd_quality`.
 Image-role status delegates to `LedStatusController`, and stale input suppression
 to `ButtonRouter`. The ESP32-S3 implementation uses timer wake plus EXT1 ANY_LOW
 for GPIO1/9/10, matching the pinned M5Unified board definition. Wake recovery

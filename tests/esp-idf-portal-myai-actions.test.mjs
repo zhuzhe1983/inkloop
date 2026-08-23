@@ -67,6 +67,35 @@ test("native Portal state copies the selected board's bounded capabilities", () 
   assert.match(admission, /boardSupportsRenderStrategy/);
 });
 
+test("native Portal publishes mDNS readiness and never claims a failed hostname", () => {
+  const refresh = body(
+    portal,
+    "void NativePortalOwner::refreshState",
+    "void NativePortalOwner::refreshAlbum",
+  );
+  assert.match(refresh, /next\.mdns_ready = mdns_started_/);
+  const start = body(
+    portal,
+    "esp_err_t NativePortalOwner::startServer",
+    "esp_err_t NativePortalOwner::stopServer",
+  );
+  assert.match(start, /state_cache_\.mdns_ready = mdns_started_/);
+  assert.match(start, /if \(mdns_started_\)[\s\S]*http:\/\/inkloop\.local/);
+  assert.match(start, /else \{[\s\S]*mDNS unavailable:[\s\S]*http:\/\/%s\//);
+  assert.match(start, /acquirePortalMdnsServiceLease\(this\)/);
+  assert.match(start, /initialized == ESP_OK \|\| initialized == ESP_ERR_INVALID_STATE/);
+  assert.match(portalHeader, /bool mdns_service_lease_held_ = false/);
+  assert.match(portal, /g_portal_mdns_service_owner\.compare_exchange_strong/);
+  assert.doesNotMatch(portal, /mdns_free\s*\(/);
+  const stop = body(
+    portal,
+    "esp_err_t NativePortalOwner::stopServer",
+    "void NativePortalOwner::tick",
+  );
+  assert.match(stop, /mdns_service_remove[\s\S]*releasePortalMdnsServiceLease\(this\)/);
+  assert.match(stop, /state_cache_\.mdns_ready = false/);
+});
+
 test("volume preview is explicit Voice-lane audio and restores persisted volume", () => {
   assert.match(opcodes, /VoicePreviewVolume = 14/);
   const preview = body(voice, "WorkDisposition NativeVoiceService::handleVolumePreview", "void NativeVoiceService::restoreVolumeAfterPreview");
@@ -122,8 +151,11 @@ test("Portal distinguishes a token from live MyAI authorization and reports real
   assert.match(error, /network_diagnostic_operation_/);
   assert.match(error, /myai_error_\.source = source/);
   assert.match(error, /myai_error_\.http_status = http_status/);
+  assert.match(error, /sanitizeDiagnosticDetail\(status\.detail\)/);
+  assert.match(error, /myai_error_\.detail\.fill/);
   assert.match(error, /queueChat\(ProductTextKind::ToolState, message\)/);
-  assert.doesNotMatch(error, /status\.detail/);
+  assert.doesNotMatch(error, /status\.detail\.c_str\(\)/);
+  assert.match(portal, /next\.myai_error\.detail = myai_error\.detail\.data\(\)/);
   assert.match(portal, /esp_app_get_description\(\)/);
   assert.doesNotMatch(portal, /idf-native/);
 });

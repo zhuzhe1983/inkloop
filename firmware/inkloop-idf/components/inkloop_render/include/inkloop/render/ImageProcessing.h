@@ -142,7 +142,7 @@ bool isPaperColorPalettePixel(const RgbPixel& pixel);
 RgbPixel nearestPaperColorColor(const RgbPixel& pixel);
 
 // The source must already be normalized to exact 400x600 scanline RGB. The
-// official policy passes pixels unchanged to the M5GFX integration. The
+// official policy reproduces M5GFX ED2208 epd_quality RGB-pair dithering. The
 // classic policy performs deterministic RGB Floyd-Steinberg error diffusion;
 // reflectance-photo uses measured PaperColor Lab anchors and Yule-Nielsen
 // pseudo-reflectance Stucki diffusion; solid-clean disables diffusion for

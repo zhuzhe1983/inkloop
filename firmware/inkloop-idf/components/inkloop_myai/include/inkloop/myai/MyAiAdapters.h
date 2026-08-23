@@ -48,10 +48,13 @@ class IHttpTransport {
 };
 
 // Implementations test every candidate within one shared total deadline. Each
-// target must receive DNS public-address and TLS hostname/chain validation.
-// Resource-constrained native clients may keep only one TLS connection alive
-// at a time, but must divide the remaining deadline fairly so a failed target
-// cannot consume N x timeout or starve the remaining candidates.
+// target receives the short-lived probe credential plus bounded device ID/MAC
+// identity headers and candidate-specific X-Gateway-ID; a durable device token
+// or Gateway lease header must never enter this plane. Resource-constrained
+// native clients may keep only one TLS connection alive at a time, but must
+// divide the remaining deadline fairly so a failed target cannot consume N x
+// timeout or starve the remaining candidates. The legacy method name does not
+// require simultaneous ESP-IDF sockets.
 class IGatewayProbeSet {
  public:
   virtual ~IGatewayProbeSet() {}

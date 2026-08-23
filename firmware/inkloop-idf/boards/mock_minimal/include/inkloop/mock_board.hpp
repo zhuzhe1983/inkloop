@@ -17,6 +17,8 @@ struct MockBoardObservations {
   uint32_t button_gpio_reads = 0;
   uint32_t button_state_reads = 0;
   uint32_t rgb_writes = 0;
+  uint32_t deep_sleep_preparations = 0;
+  uint32_t deep_sleep_restores = 0;
   uint32_t sd_preparations = 0;
 };
 

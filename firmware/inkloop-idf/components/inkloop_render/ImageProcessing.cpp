@@ -49,6 +49,118 @@ struct ErrorPixel {
   ErrorPixel() : red(0), green(0), blue(0) {}
 };
 
+struct WideRgb {
+  int32_t red;
+  int32_t green;
+  int32_t blue;
+};
+
+// This is the bounded streaming equivalent of M5GFX 0.2.27's
+// Panel_ED2208::_dither_row_rgb_pair at epd_quality/dither=140. M5GFX is
+// distributed under the FreeBSD licence; the original project and licence are
+// documented in this component's README. Keeping the two-pixel joint metric is
+// important: independent nearest-colour mapping loses the hue-preserving pair
+// choices made by the official PaperColor path.
+WideRgb officialQualityBias(
+    const RgbPixel& source, int32_t& biasBase, uint8_t dither) {
+  static const int32_t kXStep = 127 * 29;
+  static const int32_t kStepValue = 129 * 127;
+  static const int32_t kStepDifference = kStepValue / 3;
+  biasBase -= kXStep;
+  if (biasBase < 0) biasBase += kStepValue;
+  int32_t redBias = biasBase;
+  int32_t greenBias = redBias - kStepDifference;
+  if (greenBias < 0) greenBias += kStepValue;
+  int32_t blueBias = greenBias - kStepDifference;
+  if (blueBias < 0) blueBias += kStepValue;
+  redBias = redBias * 2 - (kStepValue - 1);
+  greenBias = greenBias * 2 - (kStepValue - 1);
+  blueBias = blueBias * 2 - (kStepValue - 1);
+  const int32_t commonBias =
+      (redBias + greenBias + blueBias) * dither >> 16;
+  redBias = redBias * dither >> 16;
+  greenBias = greenBias * dither >> 16;
+  blueBias = blueBias * dither >> 16;
+  return WideRgb{
+      static_cast<int32_t>(source.red) + commonBias + redBias,
+      static_cast<int32_t>(source.green) + commonBias + greenBias,
+      static_cast<int32_t>(source.blue) + commonBias + blueBias};
+}
+
+void nearestOfficialQualityPair(
+    const WideRgb& first, const WideRgb& second,
+    size_t& firstIndex, size_t& secondIndex) {
+  const std::vector<RgbPixel>& palette = paperColorPalette();
+  uint64_t best = std::numeric_limits<uint64_t>::max();
+  firstIndex = 0U;
+  secondIndex = 0U;
+  for (size_t left = 0U; left < palette.size(); ++left) {
+    const int64_t firstRed = first.red - palette[left].red;
+    const int64_t firstGreen = first.green - palette[left].green;
+    const int64_t firstBlue = first.blue - palette[left].blue;
+    const uint64_t individualFirst = static_cast<uint64_t>(
+        firstRed * firstRed + firstGreen * firstGreen + firstBlue * firstBlue);
+    for (size_t right = 0U; right < palette.size(); ++right) {
+      const int64_t secondRed = second.red - palette[right].red;
+      const int64_t secondGreen = second.green - palette[right].green;
+      const int64_t secondBlue = second.blue - palette[right].blue;
+      const int64_t blockRed = firstRed + secondRed;
+      const int64_t blockGreen = firstGreen + secondGreen;
+      const int64_t blockBlue = firstBlue + secondBlue;
+      const uint64_t distance = individualFirst + static_cast<uint64_t>(
+          secondRed * secondRed + secondGreen * secondGreen +
+          secondBlue * secondBlue + blockRed * blockRed +
+          blockGreen * blockGreen + blockBlue * blockBlue);
+      if (distance < best) {
+        best = distance;
+        firstIndex = left;
+        secondIndex = right;
+      }
+    }
+  }
+}
+
+bool renderOfficialQuality(
+    IPixelSource& source,
+    IPixelSink& sink,
+    std::string* error,
+    IRenderProgress* progress) {
+  static const int32_t kYStep = 129 * 48;
+  static const int32_t kStepValue = 129 * 127;
+  static const uint8_t kQualityDither = 140U;
+  const std::vector<RgbPixel>& palette = paperColorPalette();
+  const size_t pixelCount =
+      static_cast<size_t>(kPaperColorWidth) * kPaperColorHeight;
+  for (uint16_t y = 0U; y < kPaperColorHeight; ++y) {
+    int32_t biasBase = static_cast<int32_t>(y) * kYStep % kStepValue;
+    for (uint16_t x = 0U; x < kPaperColorWidth; x += 2U) {
+      RgbPixel firstSource;
+      RgbPixel secondSource;
+      if (!source.read(&firstSource) || !source.read(&secondSource)) {
+        if (error) *error = "pixel_source_ended_early";
+        return false;
+      }
+      const WideRgb first =
+          officialQualityBias(firstSource, biasBase, kQualityDither);
+      const WideRgb second =
+          officialQualityBias(secondSource, biasBase, kQualityDither);
+      size_t firstIndex = 0U;
+      size_t secondIndex = 0U;
+      nearestOfficialQualityPair(first, second, firstIndex, secondIndex);
+      if (!sink.write(palette[firstIndex]) ||
+          !sink.write(palette[secondIndex])) {
+        if (error) *error = "pixel_sink_rejected_data";
+        return false;
+      }
+    }
+    if (progress) {
+      progress->onRenderProgress(
+          static_cast<size_t>(y + 1U) * kPaperColorWidth, pixelCount);
+    }
+  }
+  return true;
+}
+
 struct FloatColor {
   float first;
   float second;
@@ -419,7 +531,7 @@ RenderPolicyDescriptor renderPolicy(RenderStrategy strategy) {
   }
   if (strategy == RenderStrategy::OfficialQuality) {
     return RenderPolicyDescriptor{
-        true, "papercolor-m5gfx-quality-v1", false, false, true, false};
+        true, "papercolor-m5gfx-quality-v1", false, true, true, false};
   }
   return RenderPolicyDescriptor{
       false, "invalid-render-strategy", false, false, false, false};
@@ -529,20 +641,7 @@ bool streamRenderPixels(
   }
   const size_t pixelCount = static_cast<size_t>(kPaperColorWidth) * kPaperColorHeight;
   if (strategy == RenderStrategy::OfficialQuality) {
-    for (size_t index = 0; index < pixelCount; ++index) {
-      RgbPixel pixel;
-      if (!source.read(&pixel)) {
-        if (error) *error = "pixel_source_ended_early";
-        return false;
-      }
-      if (!sink.write(pixel)) {
-        if (error) *error = "pixel_sink_rejected_data";
-        return false;
-      }
-      if (progress && ((index + 1U) % kPaperColorWidth == 0U)) {
-        progress->onRenderProgress(index + 1U, pixelCount);
-      }
-    }
+    if (!renderOfficialQuality(source, sink, error, progress)) return false;
   } else if (strategy == RenderStrategy::ExperimentalSixColor) {
     std::vector<ErrorPixel> current(kPaperColorWidth + 2U);
     std::vector<ErrorPixel> next(kPaperColorWidth + 2U);

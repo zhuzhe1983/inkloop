@@ -1,17 +1,20 @@
 # M5 PaperColor C151 physical acceptance
 
-Status: **PARTIAL PHYSICAL EVIDENCE — RELEASE STILL PENDING.** The native
-ESP-IDF beta10 image has retained evidence for standard-boundary flash/readback,
-preserved NVS/LittleFS/TF, boot, saved Wi-Fi, Portal health, deep sleep and one
-timer panel-preserving wake. Those observations do not pass any unchecked row
-below and do not transfer to beta11/beta12 without exact-candidate evidence.
+Status: **PARTIAL PHYSICAL EVIDENCE — RELEASE STILL PENDING.** beta27 has a
+retained inactive-app1 readback/boot and Recovery-path pass with app0 beta25
+preserved. It does not have a Product pass: three valid divergent TF album
+indexes remain behind an explicit operator choice. `0.4.0-beta.28` is the
+current digital candidate (403/403 tests, lint zero errors, clean C151/mock
+links, C151 SHA-256
+`cd9498e006693b7b3ea61c143dbd230f61873f9f1a0d41a5dff020327f14091a`)
+and has not been flashed. No older physical observation transfers to beta28.
 
 This is the release-blocking procedure for the currently attached,
 user-authorized C151. The device normally deep-sleeps and is not assumed to be
 in Download mode. Run a candidate only after its exact shared-tree tests, clean
 build and fresh independent acceptance pass. Do not interfere with the active
 beta10 endurance/gated-beta11 watcher, modify MyAI/AaaS, deploy a server,
-publish a release, erase a chip or format media merely because this document
+publish a release, erase a chip, resolve a TF candidate or format media merely because this document
 exists.
 
 ## 1. Verdict and evidence contract
@@ -61,13 +64,11 @@ For each section retain:
 
 ## 2. Preconditions and safe candidate flash
 
-Current digital evidence: main `57ec42b` passed the ESP-IDF host suite
-**265/265**, C151/mock clean builds and independent signed beta11 acceptance.
-The isolated next-candidate branch passed **270/270** plus C151/mock links, but
-it still identifies as beta11 and is therefore not flashable. It must be merged
-only after beta11 smoke, versioned strictly above beta11, rebuilt, signed and
-freshly accepted. The operator must bind every result to the exact source and
-binary selected for flashing.
+Current digital evidence: beta28 passes the complete repository suite 403/403,
+lint with zero errors, and clean official ESP-IDF v6.0.2 C151/mock builds. The
+operator must still bind every result to the exact committed source, binary,
+fresh independent gate and physical run selected for flashing. A beta27
+Recovery pass is not beta28 Product evidence.
 
 - [ ] the candidate's exact source commit, version, C151 binary hash, signed
   manifest hash and fresh-acceptance report all match; no unversioned branch

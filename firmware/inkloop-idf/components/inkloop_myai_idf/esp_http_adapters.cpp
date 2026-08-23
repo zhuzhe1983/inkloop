@@ -41,6 +41,20 @@ bool lineSafe(const std::string& value) {
   return true;
 }
 
+bool canonicalMacAddress(const std::string& value) {
+  if (value.size() != 17U) return false;
+  for (size_t index = 0U; index < value.size(); ++index) {
+    if (index % 3U == 2U) {
+      if (value[index] != ':') return false;
+      continue;
+    }
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F')))
+      return false;
+  }
+  return true;
+}
+
 bool publicSockaddr(const sockaddr* address, socklen_t length) {
   if (!address) return false;
   if (address->sa_family == AF_INET && length >= sizeof(sockaddr_in)) {
@@ -352,16 +366,22 @@ Status EspGatewayProbeSet::probeConcurrent(
   valid = validateHeaders(headers);
   if (!valid.ok()) return valid;
   const auto authorization = headers.find("Authorization");
-  // The caller supplies exactly the short-lived probe credential.  The
-  // adapter adds the candidate-specific X-Gateway-ID below so a durable
-  // Center credential (or an injected identity/header) cannot cross into the
-  // Gateway probe plane.
-  if (headers.size() != 1U || authorization == headers.end() ||
+  const auto device_id = headers.find("X-Device-ID");
+  const auto device_mac = headers.find("X-Device-MAC");
+  // The portable client supplies exactly the short-lived probe credential and
+  // the two public device identity headers required by the current Gateway
+  // probe contract. The adapter adds candidate-specific X-Gateway-ID itself;
+  // no caller-controlled Gateway lease header can cross this whitelist.
+  if (headers.size() != 3U || authorization == headers.end() ||
+      device_id == headers.end() || device_mac == headers.end() ||
       authorization->second.size() <= sizeof("Bearer ") - 1U ||
       authorization->second.compare(0, sizeof("Bearer ") - 1U,
                                     "Bearer ") != 0 ||
-      headers.find("X-Device-ID") != headers.end() ||
-      headers.find("X-Device-MAC") != headers.end()) {
+      !isSixDigitCode(device_id->second) ||
+      !canonicalMacAddress(device_mac->second) ||
+      headers.find("X-Gateway-ID") != headers.end() ||
+      headers.find("X-Gateway-Session-ID") != headers.end() ||
+      headers.find("X-Gateway-Session-Token") != headers.end()) {
     return Status(ErrorCode::Security, 0,
                   "invalid MyAI gateway probe credential boundary");
   }

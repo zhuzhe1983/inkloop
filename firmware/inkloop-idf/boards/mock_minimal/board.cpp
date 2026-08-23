@@ -13,6 +13,7 @@ constexpr BoardDescriptor kDescriptor{
     128,
     296,
     2,
+    0x0003U,
     false,
     false,
     false,
@@ -46,8 +47,8 @@ class MockDisplay final : public IBoardDisplay {
     for (size_t at = 0; at < frame.length; ++at) {
       const uint8_t high = static_cast<uint8_t>(frame.bytes[at] >> 4U);
       const uint8_t low = static_cast<uint8_t>(frame.bytes[at] & 0x0fU);
-      if (high >= kDescriptor.palette_colors ||
-          low >= kDescriptor.palette_colors) {
+      if (!kDescriptor.supportsNativePaletteIndex(high) ||
+          !kDescriptor.supportsNativePaletteIndex(low)) {
         return ESP_ERR_INVALID_ARG;
       }
     }
@@ -56,6 +57,11 @@ class MockDisplay final : public IBoardDisplay {
 
   esp_err_t sleep() override {
     sleeping_ = true;
+    return ESP_OK;
+  }
+
+  esp_err_t wake() override {
+    sleeping_ = false;
     return ESP_OK;
   }
 
@@ -137,6 +143,7 @@ class MockBoardAdapter final : public IBoardAdapter {
     if (initialized_) return ESP_OK;
     ++observations_.initializations;
     initialized_ = true;
+    sleep_prepared_ = false;
     display_.reset();
     return ESP_OK;
   }
@@ -144,6 +151,7 @@ class MockBoardAdapter final : public IBoardAdapter {
   void shutdown() override {
     ++observations_.shutdowns;
     initialized_ = false;
+    sleep_prepared_ = false;
   }
 
   IBoardDisplay* display() override {
@@ -185,6 +193,23 @@ class MockBoardAdapter final : public IBoardAdapter {
     return ESP_ERR_NOT_SUPPORTED;
   }
 
+  esp_err_t prepareForDeepSleep() override {
+    ++observations_.deep_sleep_preparations;
+    if (!initialized_ || sleep_prepared_) return ESP_ERR_INVALID_STATE;
+    const esp_err_t status = display_.sleep();
+    if (status == ESP_OK) sleep_prepared_ = true;
+    return status;
+  }
+
+  esp_err_t restoreAfterFailedDeepSleep() override {
+    ++observations_.deep_sleep_restores;
+    if (!initialized_) return ESP_ERR_INVALID_STATE;
+    const esp_err_t status = display_.wake();
+    if (status != ESP_OK) return status;
+    sleep_prepared_ = false;
+    return ESP_OK;
+  }
+
   esp_err_t prepareSdCard() override {
     ++observations_.sd_preparations;
     return ESP_ERR_NOT_SUPPORTED;
@@ -196,6 +221,7 @@ class MockBoardAdapter final : public IBoardAdapter {
 
   void reset() {
     initialized_ = false;
+    sleep_prepared_ = false;
     next_pressed_ = false;
     observations_ = {};
     display_.reset();
@@ -208,6 +234,7 @@ class MockBoardAdapter final : public IBoardAdapter {
   MockDisplay display_;
   MockRenderer renderer_;
   bool initialized_ = false;
+  bool sleep_prepared_ = false;
   bool next_pressed_ = false;
 };
 

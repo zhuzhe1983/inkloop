@@ -100,26 +100,43 @@ void exercisePortableBoardConsumer(IBoardAdapter& board) {
 
 int main() {
   constexpr BoardDescriptor empty_id{
-      "", 128, 296, 2, false, false, false, false, 0, 0};
+      "", 128, 296, 2, 0x0003U, false, false, false, false, 0, 0};
   constexpr BoardDescriptor uppercase_id{
-      "Mock-Minimal", 128, 296, 2, false, false, false, false, 0, 0};
+      "Mock-Minimal", 128, 296, 2, 0x0003U,
+      false, false, false, false, 0, 0};
   constexpr BoardDescriptor bad_separator{
-      "mock--minimal", 128, 296, 2, false, false, false, false, 0, 0};
+      "mock--minimal", 128, 296, 2, 0x0003U,
+      false, false, false, false, 0, 0};
   constexpr BoardDescriptor zero_width{
-      "mock-minimal", 0, 296, 2, false, false, false, false, 0, 0};
+      "mock-minimal", 0, 296, 2, 0x0003U,
+      false, false, false, false, 0, 0};
   constexpr BoardDescriptor excess_palette{
-      "mock-minimal", 128, 296, 17, false, false, false, false, 0, 0};
+      "mock-minimal", 128, 296, 17, 0xffffU,
+      false, false, false, false, 0, 0};
+  constexpr BoardDescriptor mismatched_palette_mask{
+      "mock-minimal", 128, 296, 2, 0x0007U,
+      false, false, false, false, 0, 0};
   constexpr BoardDescriptor excess_rgb{
-      "mock-minimal", 128, 296, 2, false, false, false, false, 9, 0};
+      "mock-minimal", 128, 296, 2, 0x0003U,
+      false, false, false, false, 9, 0};
   constexpr BoardDescriptor unknown_button{
-      "mock-minimal", 128, 296, 2, false, false, false, false, 0, 0x80};
+      "mock-minimal", 128, 296, 2, 0x0003U,
+      false, false, false, false, 0, 0x80};
+  constexpr BoardDescriptor sparse_palette{
+      "sparse-panel", 128, 296, 2, 0x0041U,
+      false, false, false, false, 0, 0};
   static_assert(!empty_id.valid());
   static_assert(!uppercase_id.valid());
   static_assert(!bad_separator.valid());
   static_assert(!zero_width.valid());
   static_assert(!excess_palette.valid());
+  static_assert(!mismatched_palette_mask.valid());
   static_assert(!excess_rgb.valid());
   static_assert(!unknown_button.valid());
+  static_assert(sparse_palette.valid());
+  static_assert(sparse_palette.supportsNativePaletteIndex(0U));
+  static_assert(sparse_palette.supportsNativePaletteIndex(6U));
+  static_assert(!sparse_palette.supportsNativePaletteIndex(1U));
 
   mock_board_reset();
   IBoardAdapter& board = board_adapter();
@@ -129,6 +146,11 @@ int main() {
   assert(capabilities.width == 128U);
   assert(capabilities.height == 296U);
   assert(capabilities.palette_colors == 2U);
+  assert(capabilities.native_palette_index_mask == 0x0003U);
+  assert(capabilities.nativePaletteIndexCount() == 2U);
+  assert(capabilities.supportsNativePaletteIndex(0U));
+  assert(capabilities.supportsNativePaletteIndex(1U));
+  assert(!capabilities.supportsNativePaletteIndex(2U));
   assert(!capabilities.has_psram);
   assert(!capabilities.has_sd);
   assert(!capabilities.has_microphone);
@@ -181,6 +203,17 @@ int main() {
       frame.data(), frame.size(), capabilities.width, capabilities.height,
       BoardFrameFormat::Palette4Bpp};
   assert(display->writeFullFrame(invalid_palette) == ESP_ERR_INVALID_ARG);
+  frame[0] = 0x10U;
+  const BoardFrameView valid_frame{
+      frame.data(), frame.size(), capabilities.width, capabilities.height,
+      BoardFrameFormat::Palette4Bpp};
+  assert(board.prepareForDeepSleep() == ESP_OK);
+  assert(display->writeFullFrame(valid_frame) == ESP_ERR_INVALID_STATE);
+  assert(board.restoreAfterFailedDeepSleep() == ESP_OK);
+  assert(display->writeFullFrame(valid_frame) == ESP_OK);
+  observations = mock_board_observations();
+  assert(observations.deep_sleep_preparations == 1U);
+  assert(observations.deep_sleep_restores == 1U);
   assert(board.setRgb(nullptr, 0U) == ESP_ERR_NOT_SUPPORTED);
   assert(board.prepareSdCard() == ESP_ERR_NOT_SUPPORTED);
   assert(board.audioCodec() == nullptr);
@@ -285,6 +318,8 @@ test("generic board contract contains no fixed PaperColor hardware facts", () =>
   assert.match(contract, /button_mask/);
   assert.match(contract, /supportsButton\(BoardButton button\)/);
   assert.match(contract, /packed4BppFrameBytes\(\)/);
+  assert.match(contract, /native_palette_index_mask/);
+  assert.match(contract, /supportsNativePaletteIndex\(uint8_t index\)/);
   assert.match(contract, /kMaximumBoardRenderStrategies = 4U/);
   assert.match(contract, /BoardRenderStrategyCatalog/);
   assert.match(contract, /renderStrategyCatalog\(\)/);

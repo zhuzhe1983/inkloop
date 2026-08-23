@@ -194,6 +194,9 @@ test("native supervisor preserves ISR, queue and startup contracts", async () =>
   assert.match(source, /xQueueSendFromISR/);
   assert.match(source, /ulTaskNotifyTake\(pdTRUE, portMAX_DELAY\)/);
   assert.match(header, /registerTickHandler/);
+  assert.match(header, /freezeAdmissionForSleep/);
+  assert.match(header, /sleepAdmissionStillSafe/);
+  assert.match(header, /thawAdmissionAfterSleepAbort/);
   assert.match(source, /slot\.tick_handler\(slot\.tick_context\)/);
   assert.match(source, /now - last_tick/);
   assert.match(source, /xQueueSend\([^;]+, 0\)/s);
@@ -205,6 +208,22 @@ test("native supervisor preserves ISR, queue and startup contracts", async () =>
   assert.match(source, /lifecycle_ = Lifecycle::Starting/);
   assert.match(source, /lifecycle_ = Lifecycle::Stopping/);
   assert.match(source, /lifecycle_ != Lifecycle::Running[\s\S]+AdmissionResult::NotReady/);
+  assert.match(
+    source,
+    /freezeAdmissionForSleep\(\)[\s\S]{0,900}allAdmissionIdleLocked\(\)[\s\S]{0,200}allOtherCallbacksIdleLocked\(caller\)/,
+  );
+  assert.match(
+    source,
+    /sleepAdmissionStillSafe\(\) const[\s\S]{0,700}!sleep_button_event_pending_/,
+  );
+  assert.match(
+    source,
+    /postButtonFromIsr[\s\S]{0,900}sleep_admission_frozen_[\s\S]{0,120}sleep_button_event_pending_ = true/,
+  );
+  assert.match(
+    source,
+    /slot\.tick_handler && !ticks_frozen[\s\S]{0,500}!sleep_admission_frozen_[\s\S]{0,160}callback_active_\[index\] = true/,
+  );
   assert.match(source, /portENTER_CRITICAL\(&mux_\);[\s\S]+xQueueSend\([^;]+, 0\)[\s\S]+portEXIT_CRITICAL\(&mux_\);/);
   assert.match(source, /portENTER_CRITICAL_ISR\(&mux_\);[\s\S]+xQueueSendFromISR[\s\S]+portEXIT_CRITICAL_ISR\(&mux_\);/);
   assert.match(topology, /"ink-input", 1, 22/);

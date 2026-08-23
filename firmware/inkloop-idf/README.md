@@ -8,9 +8,13 @@ Status: the native Product graph now composes the C151 board, bounded dual-core
 runtime, Wi-Fi/Portal, storage, display, Inkloop, MyAI voice/AIGC, settings,
 power, Recovery and signed-OTA owners without an Arduino compatibility layer.
 Host fault matrices and official ESP-IDF v6.0.2 C151/mock links prove the
-digital composition. Native beta10 additionally has retained device evidence
-for boot, saved Wi-Fi, Portal health, deep sleep and timer panel-preserving
-wake; it does **not** prove the remaining physical or public-service behavior.
+digital composition. The current source candidate is `0.4.0-beta.28`: the
+repository suite passes 403/403, lint has zero errors, and clean C151/mock
+builds pass. Its C151 application SHA-256 is
+`cd9498e006693b7b3ea61c143dbd230f61873f9f1a0d41a5dff020327f14091a`.
+It has not been flashed or promoted. The attached device currently has only a
+beta27 Recovery-path physical pass; Product Voice/AIGC/album/display evidence
+is still blocked by an unresolved, operator-gated TF transaction conflict.
 
 Do not treat this tree as release-ready until the exact candidate's all-tree
 gate, fresh independent acceptance and the authorized attached-C151 run in

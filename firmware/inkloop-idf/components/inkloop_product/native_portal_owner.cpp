@@ -32,6 +32,32 @@ static_assert(kMaximumBoardRenderStrategies ==
                   portal::kMaximumPortalRenderStrategies,
               "board and Portal strategy bounds must match");
 
+// ESP mDNS is a process-wide responder and mdns_init() does not return an
+// ownership token. In particular, ESP_OK is not authority to later free a
+// responder that another component may rely on. Native Portal therefore owns
+// only one service lease at a time and never invokes the global free API; the
+// responder itself remains process/composition-owned until reboot.
+std::atomic<NativePortalOwner*> g_portal_mdns_service_owner{nullptr};
+
+bool acquirePortalMdnsServiceLease(NativePortalOwner* owner) {
+  if (!owner) return false;
+  NativePortalOwner* expected = nullptr;
+  if (g_portal_mdns_service_owner.compare_exchange_strong(
+          expected, owner, std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+    return true;
+  }
+  return expected == owner;
+}
+
+void releasePortalMdnsServiceLease(NativePortalOwner* owner) {
+  if (!owner) return;
+  NativePortalOwner* expected = owner;
+  (void)g_portal_mdns_service_owner.compare_exchange_strong(
+      expected, nullptr, std::memory_order_acq_rel,
+      std::memory_order_acquire);
+}
+
 bool due(uint32_t now, uint32_t deadline) {
   return static_cast<int32_t>(now - deadline) >= 0;
 }
@@ -1260,6 +1286,7 @@ void NativePortalOwner::refreshState() {
     target.stack_sampled = source.stack_sampled;
   }
   next.wifi_online = wifi_.online();
+  next.mdns_ready = mdns_started_;
   next.firmware_update = portal::PortalFirmwareUpdateSnapshot{};
   if (firmware_update_owner_) {
     portal::PortalFirmwareUpdateSnapshot update;
@@ -1304,6 +1331,7 @@ void NativePortalOwner::refreshState() {
     next.myai_error.retry_after_ms = myai_error.retry_after_ms;
     next.myai_error.sequence = myai_error.sequence;
     next.myai_error.observed_at_ms = myai_error.observed_at_ms;
+    next.myai_error.detail = myai_error.detail.data();
   }
   const NativeTutorialSnapshot tutorial = voice_.tutorialSnapshot();
   next.tutorial.step = portalTutorialStep(tutorial.step);
@@ -1419,18 +1447,47 @@ esp_err_t NativePortalOwner::startServer() {
     core_.reset();
     return started;
   }
+  esp_err_t mdns_status = ESP_OK;
   if (!mdns_started_) {
-    const esp_err_t mdns = mdns_init();
-    if ((mdns == ESP_OK || mdns == ESP_ERR_INVALID_STATE) &&
-        mdns_hostname_set("inkloop") == ESP_OK &&
-        mdns_instance_name_set(mdns_instance_name_.data()) == ESP_OK &&
-        mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0) ==
-            ESP_OK) {
-      mdns_started_ = true;
+    if (!mdns_service_lease_held_) {
+      mdns_service_lease_held_ = acquirePortalMdnsServiceLease(this);
+    }
+    if (!mdns_service_lease_held_) {
+      mdns_status = ESP_ERR_INVALID_STATE;
+    } else {
+      const esp_err_t initialized = mdns_init();
+      mdns_status =
+          (initialized == ESP_OK || initialized == ESP_ERR_INVALID_STATE)
+              ? ESP_OK
+              : initialized;
+      if (mdns_status == ESP_OK) mdns_status = mdns_hostname_set("inkloop");
+      if (mdns_status == ESP_OK) {
+        mdns_status = mdns_instance_name_set(mdns_instance_name_.data());
+      }
+      if (mdns_status == ESP_OK) {
+        mdns_status =
+            mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
+      }
+      if (mdns_status == ESP_OK) {
+        mdns_started_ = true;
+      } else {
+        releasePortalMdnsServiceLease(this);
+        mdns_service_lease_held_ = false;
+      }
     }
   }
-  ESP_LOGI(kTag, "local portal ready at http://inkloop.local/ and http://%s/",
-           ip.c_str());
+  if (takeMutex(cache_mutex_)) {
+    state_cache_.mdns_ready = mdns_started_;
+    giveMutex(cache_mutex_);
+  }
+  if (mdns_started_) {
+    ESP_LOGI(kTag,
+             "local portal ready at http://inkloop.local/ and http://%s/",
+             ip.c_str());
+  } else {
+    ESP_LOGW(kTag, "mDNS unavailable: %s", esp_err_to_name(mdns_status));
+    ESP_LOGI(kTag, "local portal ready at http://%s/", ip.c_str());
+  }
   return ESP_OK;
 }
 
@@ -1443,8 +1500,15 @@ esp_err_t NativePortalOwner::stopServer() {
   core_.reset();
   if (mdns_started_) {
     mdns_service_remove("_http", "_tcp");
-    mdns_free();
     mdns_started_ = false;
+  }
+  if (mdns_service_lease_held_) {
+    releasePortalMdnsServiceLease(this);
+    mdns_service_lease_held_ = false;
+  }
+  if (takeMutex(cache_mutex_)) {
+    state_cache_.mdns_ready = false;
+    giveMutex(cache_mutex_);
   }
   return ESP_OK;
 }

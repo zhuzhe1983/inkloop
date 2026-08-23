@@ -17,6 +17,9 @@ class PaperColorAudioCodec final : public IAudioCodecControl {
 
   esp_err_t initialize(i2c_master_bus_handle_t internal_bus);
   void shutdown();
+  // Keeps the borrowed I2C device handles alive for an aborted sleep while
+  // proving both half-duplex paths idle and removing codec/speaker power.
+  esp_err_t prepareForDeepSleep();
 
   esp_err_t activateCapture() override;
   esp_err_t deactivateCapture() override;

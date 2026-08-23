@@ -279,6 +279,7 @@ class NativePortalOwner final : public portal::IPortalReadCache,
   bool settings_ready_ = false;
   bool initialized_ = false;
   bool mdns_started_ = false;
+  bool mdns_service_lease_held_ = false;
   // DNS-SD instance text must remain valid for the lifetime of the service.
   // 63 visible bytes is the mDNS label limit; the final byte is the NUL.
   std::array<char, 64> mdns_instance_name_{};

@@ -50,7 +50,12 @@ Set every field to the physical truth:
   after devices ship without an identity migration.
 - `width`/`height`: native stable display orientation. Portal previews, AIGC
   requested size, PNG validation and album display all derive from it.
-- `palette_colors`: 1–16 indices accepted by the board-native 4-bpp frame.
+- `palette_colors`: logical physical color count (1–16), not an upper bound on
+  native nibble values.
+- `native_palette_index_mask`: exact accepted board-native 4-bpp codes, one bit
+  per nibble value. Dense two-color panels use `0x0003`; sparse controllers are
+  represented directly. For example, ED2208's six colors use codes
+  `{0,1,2,3,5,6}` and therefore mask `0x006f`.
 - `has_psram`: controls large frame allocation policy; it must agree with the
   actual boot-time memory configuration.
 - `has_sd`: true only when `prepareSdCard`, card detect and the selected IDF
@@ -101,11 +106,13 @@ The shared display pipeline supplies full-frame RGB scanlines to
   unknown strategy fails rather than silently selecting another algorithm.
 - RGB input is `width × height × 3`, row-major, with an explicit row stride.
 - Native output is exactly `(width × height + 1) / 2` bytes, high nibble first.
-  Every nibble is less than `palette_colors`.
+  Every nibble must be present in `native_palette_index_mask`; never validate a
+  sparse native code by comparing it numerically with `palette_colors`.
 - `writeFullFrame()` rejects the wrong geometry, length, format or palette and
   returns only after the controller has accepted the complete transaction.
 - `busy()` reflects a real physical write; `sleep()` puts the panel/controller
-  into its stable low-power state.
+  into its stable low-power state. `wake()` reinitializes a sleeping controller
+  without a visible refresh, so a rejected deep-sleep entry can resume writes.
 - Provisioning/pairing frames are optional. If unsupported, return
   `ESP_ERR_NOT_SUPPORTED`; Product must not fabricate a board layout.
 
@@ -126,7 +133,11 @@ mount, format or select a filesystem; shared Storage owns those actions.
 
 New wake pins/capabilities must be expressed through the shared power adapter
 and tested for first-key consumption, panel preservation and timer wake. Do not
-add a second sleep policy to the board.
+add a second sleep policy to the board. `prepareForDeepSleep()` must fail fast:
+if panel sleep fails it cannot change rails, and partial success must be
+reversible through `restoreAfterFailedDeepSleep()`. Never remove power from a
+mounted removable filesystem; keep that rail on until Storage provides an
+explicit, verified unmount/remount transaction.
 
 Secondary serial diagnostics are optional. If enabled, use a separate USB
 Serial/JTAG data interface and the existing bounded diagnostics component. A

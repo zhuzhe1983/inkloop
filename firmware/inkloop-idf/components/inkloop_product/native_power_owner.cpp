@@ -69,6 +69,9 @@ esp_err_t NativePowerOwner::afterSupervisorStarted(uint32_t now_ms) {
 }
 
 void NativePowerOwner::shutdown() {
+  if (work_admission_frozen_) {
+    supervisor_.thawAdmissionAfterSleepAbort();
+  }
   portENTER_CRITICAL(&mux_);
   activity_ = PowerActivityState();
   request_sequence_ = 0U;
@@ -77,6 +80,8 @@ void NativePowerOwner::shutdown() {
   preserve_panel_until_ms_ = 0U;
   recovery_active_ = false;
   network_quiesced_ = false;
+  work_admission_frozen_ = false;
+  board_restore_needed_ = false;
   initialized_ = false;
   portEXIT_CRITICAL(&mux_);
   attempts_ = SleepAttemptRuntime();
@@ -246,11 +251,68 @@ bool NativePowerOwner::quiesceNetwork() {
   return network_quiesced_;
 }
 
+bool NativePowerOwner::freezeWorkAdmission() {
+  if (work_admission_frozen_) return false;
+  work_admission_frozen_ = supervisor_.freezeAdmissionForSleep();
+  return work_admission_frozen_;
+}
+
+bool NativePowerOwner::quiesceBoardHardware() {
+  if (board_restore_needed_) return false;
+  // Set before the call: a board preparation failure may have happened after
+  // one or more rails changed and therefore still requires rollback.
+  board_restore_needed_ = true;
+  const esp_err_t status = board_.prepareForDeepSleep();
+  if (status != ESP_OK) {
+    ESP_LOGE(kTag, "board sleep preparation failed: %s",
+             esp_err_to_name(status));
+    return false;
+  }
+  return true;
+}
+
+bool NativePowerOwner::sleepAdmissionStillSafe() {
+  const bool safe = work_admission_frozen_ &&
+                    supervisor_.sleepAdmissionStillSafe() &&
+                    deep_sleep_.wakeButtonsReleased() &&
+                    settleTasksAndSync() && quiesceDisplay() &&
+                    quiesceVoiceAndAudio();
+  if (!safe) {
+    portENTER_CRITICAL(&mux_);
+    activity_.noteMeaningfulActivity(capture_now_ms_);
+    portEXIT_CRITICAL(&mux_);
+  }
+  return safe;
+}
+
 bool NativePowerOwner::restoreAwakeServices() {
-  if (!network_quiesced_) return true;
-  const esp_err_t restored = wifi_.restoreAfterSleep(capture_now_ms_);
-  if (restored == ESP_OK) network_quiesced_ = false;
-  return restored == ESP_OK;
+  bool restored = true;
+  if (board_restore_needed_) {
+    const esp_err_t status = board_.restoreAfterFailedDeepSleep();
+    if (status == ESP_OK) {
+      board_restore_needed_ = false;
+    } else {
+      ESP_LOGE(kTag, "board sleep rollback failed: %s",
+               esp_err_to_name(status));
+      restored = false;
+    }
+  }
+  if (network_quiesced_) {
+    const esp_err_t status = wifi_.restoreAfterSleep(capture_now_ms_);
+    if (status == ESP_OK) {
+      network_quiesced_ = false;
+    } else {
+      restored = false;
+    }
+  }
+  // Always reopen the supervisor last. Even when a hardware/network rollback
+  // reported an error, Portal must remain able to retry recovery instead of
+  // becoming permanently frozen in the same boot.
+  if (work_admission_frozen_) {
+    supervisor_.thawAdmissionAfterSleepAbort();
+    work_admission_frozen_ = false;
+  }
+  return restored;
 }
 
 uint64_t NativePowerOwner::nextRequestId() {

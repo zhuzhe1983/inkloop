@@ -10,6 +10,9 @@ constexpr uint16_t kPaperColorEd2208Height = 600;
 constexpr size_t kPaperColorEd2208FrameBytes =
     static_cast<size_t>(kPaperColorEd2208Width) *
     kPaperColorEd2208Height / 2U;
+// ED2208 native codes are sparse: black, white, yellow, red, blue and green
+// use 0, 1, 2, 3, 5 and 6. Codes 4 and 7..15 are not panel colors.
+inline constexpr uint16_t kPaperColorEd2208NativePaletteMask = 0x006FU;
 
 struct Ed2208CommandView {
   uint8_t command = 0;

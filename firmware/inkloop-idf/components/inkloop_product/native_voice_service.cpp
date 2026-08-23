@@ -4,7 +4,6 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <initializer_list>
 #include <limits>
 #include <new>
 #include <utility>
@@ -16,10 +15,12 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "inkloop/board_prompt_policy.hpp"
+#include "inkloop/diagnostics/diagnostic_detail.hpp"
 #include "inkloop/myai_authorization_retry_policy.hpp"
 #include "inkloop/product_opcodes.hpp"
 #include "inkloop/storage/album_index.hpp"
 #include "inkloop/voice_aigc_handoff_policy.hpp"
+#include "inkloop/voice_aigc_intent_policy.hpp"
 
 namespace inkloop {
 namespace {
@@ -38,6 +39,7 @@ constexpr uint32_t kAigcPollMs = 5000;
 // every five seconds forever.
 constexpr uint32_t kAigcTimeoutMs = 3U * 60U * 1000U;
 constexpr uint32_t kAigcPromptMaximum = 1024;
+constexpr uint32_t kVoiceAigcConfirmationWindowMs = 90000U;
 constexpr uint32_t kLocalToolDeadlineMs = 5000;
 constexpr uint32_t kRepeatedMyAiErrorChatMs = 5U * 60U * 1000U;
 constexpr uint32_t kTutorialRetryMs = 30000U;
@@ -141,26 +143,9 @@ std::string safeAigcFailureState(const myai::Status& status) {
     output += " http=" + std::to_string(status.httpStatus);
   }
 
-  // MyAiClient normally emits fixed, credential-free diagnostics. A gateway
-  // status message is less trusted, however, so retain it only when it is
-  // bounded, printable and cannot carry an auth secret or provider-local URL.
-  if (status.detail.empty() || status.detail.size() > 192U) return output;
-  std::string lowercase_detail = status.detail;
-  std::transform(lowercase_detail.begin(), lowercase_detail.end(),
-                 lowercase_detail.begin(), [](unsigned char ch) {
-                   return static_cast<char>(
-                       ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
-                 });
-  static const char* const sensitive[] = {
-      "token", "authorization", "bearer", "http://", "https://", "ws://",
-      "wss://", "provider_url", "local_url"};
-  for (const char* marker : sensitive) {
-    if (lowercase_detail.find(marker) != std::string::npos) return output;
-  }
-  for (unsigned char ch : status.detail) {
-    if (ch < 0x20U || ch == 0x7fU) return output;
-  }
-  output += " detail=" + status.detail;
+  const std::string detail =
+      diagnostics::sanitizeDiagnosticDetail(status.detail);
+  if (!detail.empty()) output += " detail=" + detail;
   return output;
 }
 
@@ -169,58 +154,6 @@ bool sixDigits(const std::string& value) {
   for (char ch : value)
     if (ch < '0' || ch > '9') return false;
   return true;
-}
-
-bool containsAny(const std::string& text,
-                 std::initializer_list<const char*> values) {
-  for (const char* value : values) {
-    if (value && text.find(value) != std::string::npos) return true;
-  }
-  return false;
-}
-
-// MyAI owns prompt optimization, but the device retains the final authority
-// to execute a tool. Require an explicit image-making request from the latest
-// ASR utterance so a normal question, a stale action, or the firmware-authored
-// tutorial cannot accidentally enqueue an image job.
-bool explicitImageIntent(const std::string& text) {
-  if (text.empty() || text.size() > kAigcPromptMaximum) return false;
-  std::string normalized = text;
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                 [](unsigned char ch) {
-                   return static_cast<char>(
-                       ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
-                 });
-  if (containsAny(normalized,
-                  {"不要生成", "不要画", "不要绘制", "不生成图片",
-                   "do not generate", "don't generate", "dont generate",
-                   "not generate", "do not draw", "don't draw"})) {
-    return false;
-  }
-  if (containsAny(normalized,
-                  {"什么是", "为什么", "怎么", "如何", "解释", "介绍",
-                   "what is", "why ", "how to", "explain "})) {
-    return false;
-  }
-  if (containsAny(normalized,
-                  {"帮我生成", "请生成", "给我生成", "我要生成", "想生成",
-                   "画一", "画个", "画一个", "帮我画", "请画", "给我画",
-                   "来一张", "做一张", "换一张", "draw a ", "draw an ",
-                   "paint a ", "paint an "})) {
-    return true;
-  }
-  const bool chinese_action = containsAny(
-      normalized, {"生成", "绘制", "创作", "制作", "设计"});
-  const bool chinese_visual = containsAny(
-      normalized, {"图片", "图像", "一张图", "一幅图", "插画", "海报", "壁纸",
-                   "照片", "素材", "卡片", "屏保", "画面"});
-  if (chinese_action && chinese_visual) return true;
-  const bool english_action = containsAny(
-      normalized, {"generate", "draw", "create", "make", "design", "render"});
-  const bool english_visual = containsAny(
-      normalized, {"image", "picture", "illustration", "poster", "wallpaper",
-                   "photo", "artwork", "card", "screensaver"});
-  return english_action && english_visual;
 }
 
 size_t boundedUtf8Prefix(const std::string& text, size_t maximum) {
@@ -758,6 +691,8 @@ void NativeVoiceService::shutdown() {
   aigc_exclusive_ = false;
   aigc_serial_diagnostic_ = false;
   voice_aigc_action_armed_ = false;
+  voice_aigc_action_deadline_ms_ = 0U;
+  voice_aigc_request_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   portENTER_CRITICAL(&onboarding_mux_);
   onboarding_ = NativeMyAiOnboardingSnapshot{};
@@ -1863,6 +1798,8 @@ void NativeVoiceService::serviceTutorial(uint32_t now_ms) {
 
   portENTER_CRITICAL(&aigc_mux_);
   voice_aigc_action_armed_ = false;
+  voice_aigc_action_deadline_ms_ = 0U;
+  voice_aigc_request_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
 
   noteVoiceTurnActive(true);
@@ -3016,10 +2953,11 @@ void NativeVoiceService::onVoiceState(myai::VoiceState state) {
   serial_event.code = static_cast<uint8_t>(serialVoiceState(state));
   emitSerialDiagnostic(serial_event);
 
-  if (state == myai::VoiceState::Ready || state == myai::VoiceState::Idle ||
-      state == myai::VoiceState::Error) {
+  if (state == myai::VoiceState::Idle || state == myai::VoiceState::Error) {
     portENTER_CRITICAL(&aigc_mux_);
     voice_aigc_action_armed_ = false;
+    voice_aigc_action_deadline_ms_ = 0U;
+    voice_aigc_request_fingerprint_ = 0U;
     portEXIT_CRITICAL(&aigc_mux_);
   }
 
@@ -3083,11 +3021,28 @@ void NativeVoiceService::onTranscript(const std::string& text, bool final) {
   if (text.empty() || storage::LocalChatLog::isBlankAudioArtifact(text)) {
     portENTER_CRITICAL(&aigc_mux_);
     voice_aigc_action_armed_ = false;
+    voice_aigc_action_deadline_ms_ = 0U;
+    voice_aigc_request_fingerprint_ = 0U;
     portEXIT_CRITICAL(&aigc_mux_);
     return;
   }
+  const uint32_t now = nowMs();
   portENTER_CRITICAL(&aigc_mux_);
-  voice_aigc_action_armed_ = explicitImageIntent(text);
+  const bool currently_armed = voice_aigc_action_armed_;
+  const uint32_t current_deadline = voice_aigc_action_deadline_ms_;
+  portEXIT_CRITICAL(&aigc_mux_);
+  const bool window_open = currently_armed && current_deadline != 0U &&
+      !due(now, current_deadline);
+  const bool next_armed = nextVoiceAigcIntentArmed(
+      currently_armed, window_open, text);
+  const uint64_t request_fingerprint =
+      next_armed ? voiceAigcRequestFingerprint(text) : 0U;
+  portENTER_CRITICAL(&aigc_mux_);
+  voice_aigc_action_armed_ = next_armed && request_fingerprint != 0U;
+  voice_aigc_action_deadline_ms_ = voice_aigc_action_armed_
+      ? now + kVoiceAigcConfirmationWindowMs : 0U;
+  voice_aigc_request_fingerprint_ =
+      voice_aigc_action_armed_ ? request_fingerprint : 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   queueChat(ProductTextKind::AsrFinal, text);
   assistant_text_.clear();
@@ -3120,21 +3075,44 @@ void NativeVoiceService::onLocalCommand(const std::string& command_name,
   (void)command_name;
   portENTER_CRITICAL(&aigc_mux_);
   voice_aigc_action_armed_ = false;
+  voice_aigc_action_deadline_ms_ = 0U;
+  voice_aigc_request_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   // The slow Portal owner records the actual outcome. Logging recognition
   // here would create a misleading success row before any device action ran.
 }
 
 void NativeVoiceService::onVoiceAction(const myai::VoiceEvent& action) {
-  if (action.kind != "aigc.generate") return;
+  if (action.kind != "aigc.generate" &&
+      action.kind != "myai.aigc.generate") return;
+  const uint32_t now = nowMs();
   portENTER_CRITICAL(&aigc_mux_);
-  const bool armed = voice_aigc_action_armed_;
+  const bool armed = voice_aigc_action_armed_ &&
+      voice_aigc_action_deadline_ms_ != 0U &&
+      !due(now, voice_aigc_action_deadline_ms_);
+  const uint64_t expected_request_fingerprint =
+      voice_aigc_request_fingerprint_;
   voice_aigc_action_armed_ = false;
+  voice_aigc_action_deadline_ms_ = 0U;
+  voice_aigc_request_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   if (!armed) {
     queueChat(ProductTextKind::AigcState,
               "aigc.rejected_no_explicit_voice_intent");
     return;
+  }
+  const uint64_t action_request_fingerprint =
+      voiceAigcRequestFingerprint(action.originalRequest);
+  if (action_request_fingerprint == 0U ||
+      action_request_fingerprint != expected_request_fingerprint) {
+    queueChat(ProductTextKind::AigcState,
+              "aigc.rejected_mismatched_voice_request");
+    return;
+  }
+  if (action.requestedImageCount > 1U) {
+    queueChat(ProductTextKind::AigcState,
+              std::string("aigc.multi_image_clamped requested=") +
+                  std::to_string(action.requestedImageCount) + " accepted=1");
   }
   const bool accepted = acceptAigcPrompt(action.prompt);
   if (!accepted) {
@@ -3171,6 +3149,8 @@ void NativeVoiceService::onAigcState(myai::AigcState state,
 
 void NativeVoiceService::onError(const myai::Status& status) {
   if (status.ok()) return;
+  const std::string detail =
+      diagnostics::sanitizeDiagnosticDetail(status.detail);
   uint8_t raw_source =
       static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
   portENTER_CRITICAL(&network_diagnostic_mux_);
@@ -3198,6 +3178,10 @@ void NativeVoiceService::onError(const myai::Status& status) {
   myai_error_.http_status = http_status;
   myai_error_.retry_after_ms = status.retryAfterMs;
   myai_error_.observed_at_ms = now;
+  myai_error_.detail.fill('\0');
+  if (!detail.empty()) {
+    std::memcpy(myai_error_.detail.data(), detail.data(), detail.size());
+  }
   myai_error_.available = true;
   const bool changed =
       last_error_chat_source_ != static_cast<uint8_t>(source) ||
@@ -3218,6 +3202,12 @@ void NativeVoiceService::onError(const myai::Status& status) {
   event.flags = static_cast<uint8_t>(source);
   event.first = http_status;
   event.second = status.retryAfterMs;
+  const std::string serial_detail = diagnostics::sanitizeDiagnosticDetail(
+      detail, diagnostics::kMaximumSerialDiagnosticDetailBytes);
+  if (!serial_detail.empty()) {
+    std::memcpy(event.detail.data(), serial_detail.data(),
+                serial_detail.size());
+  }
   emitSerialDiagnostic(event);
   if (append_chat) {
     std::string message = "myai.error source=";
@@ -3232,11 +3222,18 @@ void NativeVoiceService::onError(const myai::Status& status) {
       message += " retry_ms=";
       message += std::to_string(status.retryAfterMs);
     }
+    if (!detail.empty()) message += " detail=" + detail;
     queueChat(ProductTextKind::ToolState, message);
   }
-  ESP_LOGW(kTag, "MyAI error code=%u http=%d retry_ms=%lu",
-           static_cast<unsigned>(status.code), status.httpStatus,
-           static_cast<unsigned long>(status.retryAfterMs));
+  if (detail.empty()) {
+    ESP_LOGW(kTag, "MyAI error code=%u http=%d retry_ms=%lu",
+             static_cast<unsigned>(status.code), status.httpStatus,
+             static_cast<unsigned long>(status.retryAfterMs));
+  } else {
+    ESP_LOGW(kTag, "MyAI error code=%u http=%d retry_ms=%lu detail=%s",
+             static_cast<unsigned>(status.code), status.httpStatus,
+             static_cast<unsigned long>(status.retryAfterMs), detail.c_str());
+  }
 }
 
 NativeVoiceDiagnostics NativeVoiceService::diagnostics() const {

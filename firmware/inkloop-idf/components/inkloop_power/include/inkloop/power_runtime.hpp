@@ -44,6 +44,15 @@ class ISleepPreparation {
   virtual bool quiesceDisplay() = 0;
   virtual bool quiesceVoiceAndAudio() = 0;
   virtual bool quiesceNetwork() = 0;
+  // Atomically reject new commands/ticks after the live final snapshot. A
+  // failed freeze must leave admission open so rollback can proceed normally.
+  virtual bool freezeWorkAdmission() = 0;
+  // Called only after the final live admission snapshot. This is the last
+  // reversible handoff before wake-source configuration and deep-sleep entry.
+  virtual bool quiesceBoardHardware() = 0;
+  // Runs after hardware quiescence and immediately before the sleep driver.
+  // It must observe any button ISR latched while admission was frozen.
+  virtual bool sleepAdmissionStillSafe() = 0;
   // Called whenever preparation has changed runtime state but sleep cannot be
   // entered. Implementations must make the device usable again.
   virtual bool restoreAwakeServices() = 0;
@@ -59,6 +68,9 @@ enum class SleepAttemptResult : uint8_t {
   NetworkQuiescenceFailed,
   FinalSnapshotFailed,
   RecheckNotEligible,
+  AdmissionFreezeFailed,
+  HardwareQuiescenceFailed,
+  FinalAdmissionFailed,
   DeepSleepRejected,
 };
 

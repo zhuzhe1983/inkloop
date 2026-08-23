@@ -21,6 +21,7 @@ int main() {
   static_assert(kPaperColorEd2208Width == 400);
   static_assert(kPaperColorEd2208Height == 600);
   static_assert(kPaperColorEd2208FrameBytes == 120000);
+  static_assert(kPaperColorEd2208NativePaletteMask == 0x006F);
 
   constexpr std::array<uint8_t, 12> commands{{
       0xAA, 0x01, 0x00, 0x05, 0x08, 0x06,
@@ -90,6 +91,7 @@ test("PaperColor adapter owns exact PM1, shared SPI2, buttons and RGB hardware",
   const source = readFileSync(join(board, "board.cpp"), "utf8");
   const display = readFileSync(join(board, "papercolor_ed2208.cpp"), "utf8");
   const renderer = readFileSync(join(board, "papercolor_renderer.cpp"), "utf8");
+  const audio = readFileSync(join(board, "papercolor_audio_codec.cpp"), "utf8");
   const displayHeader = readFileSync(join(
     board, "include/inkloop/papercolor_ed2208.hpp"), "utf8");
   const common = readFileSync(join(
@@ -112,11 +114,17 @@ test("PaperColor adapter owns exact PM1, shared SPI2, buttons and RGB hardware",
   assert.match(source, /LED_STRIP_COLOR_COMPONENT_FMT_GRB/);
   assert.match(source, /gpio_get_level\(pin\) == 0/);
   assert.match(source, /boardButtonMask\(BoardButton::Previous\)[\s\S]*boardButtonMask\(BoardButton::Next\)[\s\S]*boardButtonMask\(BoardButton::Voice\)/);
+  assert.match(source, /kPaperColorEd2208NativePaletteMask/);
   assert.match(source, /M5PM1_GPIO_NUM_3[\s\S]*M5PM1_GPIO_NUM_4[\s\S]*M5PM1_GPIO_NUM_1/);
+  assert.match(common, /virtual esp_err_t prepareForDeepSleep\(\)/);
+  assert.match(common, /virtual esp_err_t restoreAfterFailedDeepSleep\(\)/);
+  assert.match(common, /virtual esp_err_t wake\(\) = 0/);
   assert.match(common, /virtual IBoardDisplay\* display\(\)/);
   assert.match(common, /virtual IBoardRenderer\* renderer\(\)/);
   assert.match(common, /supportsRenderStrategy\(std::string_view strategy\)/);
   assert.match(common, /kMaximumBoardRenderStrategies = 4U/);
+  assert.match(common, /native_palette_index_mask/);
+  assert.match(common, /supportsNativePaletteIndex/);
   assert.match(common, /virtual BoardRenderStrategyCatalog renderStrategyCatalog\(\) const = 0/);
   assert.match(common, /virtual IAudioCodecControl\* audioCodec\(\)/);
   assert.match(renderer, /PaperColorRenderer::supportsRenderStrategy/);
@@ -134,6 +142,10 @@ test("PaperColor adapter owns exact PM1, shared SPI2, buttons and RGB hardware",
   assert.match(display, /GPIO_NUM_43/);
   assert.match(display, /GPIO_NUM_44/);
   assert.match(display, /kSpiClockHz = 4000000/);
+  assert.match(display, /kSharedSpiAcquireTimeoutMs = 2000U/);
+  assert.match(display, /spi_device_acquire_bus\(device_, acquire_timeout\)/);
+  assert.match(display, /status == ESP_ERR_TIMEOUT/);
+  assert.doesNotMatch(display, /spi_device_acquire_bus\(device_, portMAX_DELAY\)/);
   assert.match(display, /transmitByte\(false, 0x10\)/);
   assert.match(display, /transmitByte\(false, 0x04\)/);
   assert.match(display, /transmitByte\(false, 0x12\)/);
@@ -141,6 +153,46 @@ test("PaperColor adapter owns exact PM1, shared SPI2, buttons and RGB hardware",
   assert.match(displayHeader, /timeout_ms = 20000/);
   assert.match(display, /controller ready without visible refresh/);
   assert.doesNotMatch(source, /writeFullFrame\(/);
+
+  // The final sleep handoff preserves ESP wake sources, DCDC and the mounted
+  // TF rail. A failed entry restores and wakes the controller without a
+  // visible refresh, so another frame remains writable in the same boot.
+  const sleepPrepare = source.match(
+    /esp_err_t prepareForDeepSleep\(\) override \{[\s\S]*?\n  \}/,
+  )?.[0] ?? "";
+  const sleepRestore = source.match(
+    /esp_err_t restoreAfterFailedDeepSleep\(\) override \{[\s\S]*?\n  \}/,
+  )?.[0] ?? "";
+  assert.match(sleepPrepare, /display_\.sleep\(\)/);
+  assert.match(sleepPrepare, /BoardRgbPixel dark\[kRgbCount\]/);
+  assert.match(sleepPrepare, /audio_codec_\.prepareForDeepSleep\(\)/);
+  assert.match(sleepPrepare, /M5PM1_GPIO_NUM_0/);
+  assert.doesNotMatch(
+    sleepPrepare,
+    /gpioSet\(\s*M5PM1_GPIO_NUM_[34],\s*M5PM1_GPIO_MODE_OUTPUT,\s*0/,
+  );
+  assert.ok(
+    sleepPrepare.indexOf("if (status != ESP_OK) return status") >
+      sleepPrepare.indexOf("display_.sleep()"),
+    "display sleep must fail before any rail is changed",
+  );
+  assert.match(sleepPrepare, /setLdoEnable\(false\)/);
+  assert.doesNotMatch(sleepPrepare, /setDcdcEnable\(false\)/);
+  assert.doesNotMatch(sleepPrepare, /GPIO_NUM_(?:1|9|10)/);
+  assert.match(sleepRestore, /setLdoEnable\(true\)/);
+  assert.match(sleepRestore, /M5PM1_GPIO_NUM_0/);
+  assert.match(sleepRestore, /display_\.wake\(\)/);
+  assert.doesNotMatch(
+    sleepRestore,
+    /gpioSet\(\s*M5PM1_GPIO_NUM_[34]/,
+  );
+  assert.match(display, /PaperColorEd2208Display::wake\(\)/);
+  assert.match(display, /writeFullFrame[\s\S]*wake\(\)/);
+  assert.match(audio, /prepareForDeepSleep\(\)[\s\S]*capture_active_ \|\| playback_active_[\s\S]*setPower\(false, false\)/);
+
+  const shutdown = source.match(/void shutdown\(\) override \{[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert.match(shutdown, /audio_codec_\.shutdown\(\)/);
+  assert.match(shutdown, /pm1_\.~M5PM1\(\)[\s\S]*new \(&pm1_\) M5PM1\(\)[\s\S]*i2c_del_master_bus\(i2c_bus_\)/);
 
   assert.match(manifest, /m5stack\/m5pm1:[\s\S]*==1\.0\.7/);
   assert.match(manifest, /espressif\/led_strip:[\s\S]*==3\.0\.3/);

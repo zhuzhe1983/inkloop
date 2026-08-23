@@ -164,7 +164,7 @@ int main() {
   const RenderPolicyDescriptor solid = renderPolicy(RenderStrategy::SolidClean);
   assert(official.valid);
   assert(std::string(official.id) == "papercolor-m5gfx-quality-v1");
-  assert(!official.experimental && !official.preprocessesToSixColors);
+  assert(!official.experimental && official.preprocessesToSixColors);
   assert(official.fullScreenRefreshRequired && !official.partialRefreshSupported);
   assert(std::string(experimental.id) == "papercolor-sixcolor-rgb-fs-v1");
   assert(experimental.experimental && experimental.preprocessesToSixColors);
@@ -236,7 +236,16 @@ int main() {
       officialSource, officialSink, RenderStrategy::OfficialQuality, &error));
   assert(officialSink.finished);
   assert(officialSink.pixels.size() == sourcePixels.size());
-  assert(hashPixels(officialSink.pixels) == hashPixels(sourcePixels));
+  assert(hashPixels(officialSink.pixels) != hashPixels(sourcePixels));
+  assert(hashPixels(officialSink.pixels) == 11650483720347881026ULL);
+  for (size_t index = 0; index < officialSink.pixels.size(); ++index) {
+    assert(isPaperColorPalettePixel(officialSink.pixels[index]));
+  }
+  VectorSource secondOfficialSource(400, 600, sourcePixels);
+  VectorSink secondOfficialSink;
+  assert(streamRenderPixels(
+      secondOfficialSource, secondOfficialSink, RenderStrategy::OfficialQuality, &error));
+  assert(hashPixels(officialSink.pixels) == hashPixels(secondOfficialSink.pixels));
 
   VectorSource firstDitherSource(400, 600, sourcePixels);
   VectorSink firstDitherSink;

@@ -35,7 +35,10 @@ struct BoardDescriptor {
   const char* id;
   uint16_t width;
   uint16_t height;
+  // Logical number of panel colors. Native palette codes need not be dense.
   uint8_t palette_colors;
+  // Exact valid Palette4Bpp nibble codes, one bit per native index (0..15).
+  uint16_t native_palette_index_mask;
   bool has_psram;
   bool has_sd;
   bool has_microphone;
@@ -47,9 +50,27 @@ struct BoardDescriptor {
     return (button_mask & boardButtonMask(button)) != 0U;
   }
 
+  constexpr bool supportsNativePaletteIndex(uint8_t index) const {
+    return index < 16U &&
+           (native_palette_index_mask &
+            static_cast<uint16_t>(1U << index)) != 0U;
+  }
+
+  constexpr uint8_t nativePaletteIndexCount() const {
+    uint16_t remaining = native_palette_index_mask;
+    uint8_t count = 0U;
+    while (remaining != 0U) {
+      count = static_cast<uint8_t>(count + (remaining & 1U));
+      remaining = static_cast<uint16_t>(remaining >> 1U);
+    }
+    return count;
+  }
+
   constexpr bool valid() const {
     if (!id || width == 0U || height == 0U || palette_colors == 0U ||
-        palette_colors > 16U || rgb_pixels > kMaximumBoardRgbPixels ||
+        palette_colors > 16U || native_palette_index_mask == 0U ||
+        nativePaletteIndexCount() != palette_colors ||
+        rgb_pixels > kMaximumBoardRgbPixels ||
         (button_mask & static_cast<uint8_t>(~kKnownBoardButtonMask)) != 0U) {
       return false;
     }
@@ -81,7 +102,8 @@ struct BoardRgbPixel {
 };
 
 enum class BoardFrameFormat : uint8_t {
-  // Board-native palette indices, two pixels per byte, high nibble first.
+  // Board-native palette indices from descriptor.native_palette_index_mask,
+  // two pixels per byte, high nibble first.
   Palette4Bpp,
 };
 
@@ -188,6 +210,10 @@ class IBoardDisplay {
   virtual ~IBoardDisplay() = default;
   virtual esp_err_t writeFullFrame(const BoardFrameView& frame) = 0;
   virtual esp_err_t sleep() = 0;
+  // Reinitialize a sleeping controller without issuing a visible refresh.
+  // A failed deep-sleep entry must call this before normal work is admitted
+  // again, so the retained frame remains writable in the same boot.
+  virtual esp_err_t wake() = 0;
   virtual bool busy() const = 0;
 };
 
@@ -208,6 +234,14 @@ class IBoardAdapter {
   virtual gpio_num_t buttonGpio(BoardButton button) const = 0;
   virtual bool buttonPressed(BoardButton button) const = 0;
   virtual esp_err_t setRgb(const BoardRgbPixel* pixels, size_t count) = 0;
+  // Final, board-owned low-power handoff. Product code calls this only after
+  // all work has settled, Wi-Fi is stopped and sleep admission has been
+  // rechecked. Implementations must leave wake GPIOs and the system rail
+  // untouched while sleeping the panel and removing non-wake peripheral
+  // loads. If deep-sleep entry returns, the matching restore call must make
+  // normal operation possible again without refreshing the retained image.
+  virtual esp_err_t prepareForDeepSleep() = 0;
+  virtual esp_err_t restoreAfterFailedDeepSleep() = 0;
   virtual esp_err_t prepareSdCard() = 0;
   virtual bool sdCardInserted() const = 0;
 };

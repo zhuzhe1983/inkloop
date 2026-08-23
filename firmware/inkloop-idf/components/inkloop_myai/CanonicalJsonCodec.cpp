@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <sstream>
 
 namespace inkloop {
@@ -65,12 +66,16 @@ bool keyValuePosition(const std::string& json, const std::string& key,
   return false;
 }
 
-bool readStringAt(const std::string& json, size_t position, std::string& output) {
+bool readStringAt(const std::string& json, size_t position, std::string& output,
+                  size_t* after = nullptr) {
   if (position >= json.size() || json[position] != '"') return false;
   output.clear();
   for (size_t index = position + 1; index < json.size(); ++index) {
     char ch = json[index];
-    if (ch == '"') return true;
+    if (ch == '"') {
+      if (after) *after = index + 1U;
+      return true;
+    }
     if (ch != '\\') {
       output.push_back(ch);
       continue;
@@ -90,6 +95,98 @@ bool readStringAt(const std::string& json, size_t position, std::string& output)
       index += 4;
     } else {
       return false;
+    }
+  }
+  return false;
+}
+
+bool stringField(const std::string& json, const std::string& key,
+                 std::string& output, size_t begin);
+bool intField(const std::string& json, const std::string& key, int& output,
+              size_t begin);
+bool rangeForValue(const std::string& json, const std::string& key,
+                   char opener, char closer, size_t& begin, size_t& end,
+                   size_t from);
+
+bool stringArrayField(const std::string& json, const std::string& key,
+                      std::vector<std::string>& output,
+                      size_t maximum_items = 8U,
+                      size_t maximum_item_bytes = 2048U) {
+  output.clear();
+  size_t begin = 0U, end = 0U;
+  if (!rangeForValue(json, key, '[', ']', begin, end, 0U)) return false;
+  size_t at = skipSpace(json, begin + 1U);
+  while (at + 1U < end) {
+    if (json[at] == ']') return true;
+    if (output.size() >= maximum_items || json[at] != '"') {
+      output.clear();
+      return false;
+    }
+    std::string item;
+    size_t after = at;
+    if (!readStringAt(json, at, item, &after) ||
+        item.size() > maximum_item_bytes) {
+      output.clear();
+      return false;
+    }
+    output.push_back(item);
+    at = skipSpace(json, after);
+    if (at < end && json[at] == ',') {
+      at = skipSpace(json, at + 1U);
+      continue;
+    }
+    if (at < end && json[at] == ']') return true;
+    output.clear();
+    return false;
+  }
+  output.clear();
+  return false;
+}
+
+std::vector<std::string> actionPayloadScopes(const std::string& payload) {
+  std::vector<std::string> scopes;
+  for (const char* key : {"input", "arguments", "payload", "action"}) {
+    size_t begin = 0U, end = 0U;
+    if (rangeForValue(payload, key, '{', '}', begin, end, 0U))
+      scopes.push_back(payload.substr(begin, end - begin));
+  }
+  scopes.push_back(payload);
+  return scopes;
+}
+
+bool firstStringField(const std::vector<std::string>& scopes,
+                      std::initializer_list<const char*> keys,
+                      std::string& output) {
+  for (const char* key : keys) {
+    for (const std::string& scope : scopes) {
+      std::string candidate;
+      if (stringField(scope, key, candidate, 0U) && !candidate.empty()) {
+        output = candidate;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool firstIntField(const std::vector<std::string>& scopes,
+                   std::initializer_list<const char*> keys, int& output) {
+  for (const char* key : keys) {
+    for (const std::string& scope : scopes) {
+      if (intField(scope, key, output, 0U)) return true;
+    }
+  }
+  return false;
+}
+
+bool firstStringArrayField(const std::vector<std::string>& scopes,
+                           const char* key,
+                           std::vector<std::string>& output) {
+  for (const std::string& scope : scopes) {
+    std::vector<std::string> candidate;
+    if (stringArrayField(scope, key, candidate)) {
+      output = candidate;
+      return true;
     }
   }
   return false;
@@ -244,6 +341,19 @@ bool validErrorDiagnostic(const std::string& value) {
     // characters rather than allowing an upstream body to forge log lines or
     // terminal escapes. UTF-8 bytes and ordinary punctuation remain intact.
     if (ch < 0x20 || ch == 0x7f) return false;
+  }
+  std::string lowercase = value;
+  std::transform(lowercase.begin(), lowercase.end(), lowercase.begin(),
+                 [](unsigned char ch) {
+                   return static_cast<char>(
+                       ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
+                 });
+  for (const char* marker : {"bearer ", "device_token", "pairing_token",
+                             "gateway_token", "authorization:",
+                             "authorization=", "cookie:", "password=",
+                             "secret=", "http://", "https://", "ws://",
+                             "wss://", "ags_"}) {
+    if (lowercase.find(marker) != std::string::npos) return false;
   }
   return true;
 }
@@ -542,10 +652,13 @@ std::string CanonicalJsonCodec::sessionUpdateMessage(
        << ",\"metadata\":{\"action_transport\":\"voice_ws.action.execute\"";
   if (!systemPrompt.empty()) body << ",\"shared_system_prompt\":" << quote(systemPrompt);
   body << ",\"mcp_tools\":[{\"name\":\"myai.aigc.generate\",\"kind\":\"aigc.generate\""
-       << ",\"description\":\"Generate one image through the selected MyAI AIGC gateway.\""
+       << ",\"description\":\"Generate one or more images through the selected MyAI AIGC gateway.\""
        << ",\"input_schema\":{\"type\":\"object\",\"required\":[\"prompt\"]"
        << ",\"properties\":{\"prompt\":{\"type\":\"string\"}"
-       << ",\"original_request\":{\"type\":\"string\"}}}}]}}"
+       << ",\"original_request\":{\"type\":\"string\"}"
+       << ",\"count\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":8}"
+       << ",\"prompts\":{\"type\":\"array\",\"maxItems\":8,"
+       << "\"items\":{\"type\":\"string\"}}}}}]}}"
        << ",\"format\":{\"codec\":\"pcm_s16le\",\"sample_rate_hz\":16000,\"channels\":1}}}";
   return body.str();
 }
@@ -571,6 +684,7 @@ std::string CanonicalJsonCodec::responseCreateMessage(const std::string& text) c
 
 Status CanonicalJsonCodec::parseVoiceEvent(const std::string& message,
                                             VoiceEvent& event) const {
+  event = VoiceEvent();
   if (!stringField(message, "type", event.type))
     return Status(ErrorCode::Protocol, 0, "voice event missing type");
   size_t begin = 0, end = 0;
@@ -584,8 +698,31 @@ Status CanonicalJsonCodec::parseVoiceEvent(const std::string& message,
   stringField(payload, "message", event.message);
   stringField(payload, "stream_id", event.streamId);
   stringField(payload, "action_id", event.actionId);
-  stringField(payload, "kind", event.kind);
-  stringField(payload, "prompt", event.prompt);
+  if (event.type == "action.execute") {
+    const std::vector<std::string> scopes = actionPayloadScopes(payload);
+    firstStringField(scopes, {"kind", "name", "tool", "action"},
+                     event.kind);
+    firstStringField(scopes,
+                     {"prompt", "image_prompt", "description"},
+                     event.prompt);
+    firstStringField(scopes,
+                     {"original_request", "user_text", "transcript"},
+                     event.originalRequest);
+    (void)firstStringArrayField(scopes, "prompts", event.prompts);
+    if (event.prompt.empty() && !event.prompts.empty())
+      event.prompt = event.prompts.front();
+    int requested = 0;
+    if (firstIntField(scopes, {"count", "image_count", "num_images", "n"},
+                      requested) && requested > 0) {
+      event.requestedImageCount = static_cast<uint8_t>(
+          std::min(requested, 8));
+    } else if (!event.prompts.empty()) {
+      event.requestedImageCount = static_cast<uint8_t>(event.prompts.size());
+    }
+  } else {
+    stringField(payload, "kind", event.kind);
+    stringField(payload, "prompt", event.prompt);
+  }
   int numberValue = 0;
   if (intField(payload, "sample_rate_hz", numberValue))
     event.sampleRateHz = static_cast<uint32_t>(std::max(0, numberValue));

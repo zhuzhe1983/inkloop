@@ -1,5 +1,7 @@
 #include "inkloop/board.hpp"
 
+#include <new>
+
 #include "M5PM1.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -10,6 +12,7 @@
 #include "freertos/task.h"
 #include "inkloop/papercolor_audio_codec.hpp"
 #include "inkloop/papercolor_ed2208.hpp"
+#include "inkloop/papercolor_ed2208_protocol.hpp"
 #include "inkloop/papercolor_renderer.hpp"
 #include "led_strip.h"
 
@@ -95,13 +98,26 @@ class PaperColorBoardAdapter final : public IBoardAdapter {
       led_strip_del(rgb_strip_);
       rgb_strip_ = nullptr;
     }
-    // M5PM1 borrows this bus and owns its device handle. Normal product
-    // operation never tears the static board adapter down. A failed PM1 begin
-    // removes its own handle, so that limited path can safely release the bus.
-    if (i2c_bus_ && !pm1_ready_) i2c_del_master_bus(i2c_bus_);
-    if (!pm1_ready_) i2c_bus_ = nullptr;
+    // M5PM1 borrows the bus but owns the PM1 device handle. Destroy and
+    // reconstruct it before deleting the caller-owned bus so both successful
+    // startup and partial-begin rollback release ownership in the right order.
+    if (pm1_ready_ || i2c_bus_) {
+      pm1_.~M5PM1();
+      new (&pm1_) M5PM1();
+      pm1_ready_ = false;
+    }
+    if (i2c_bus_) {
+      const esp_err_t released = i2c_del_master_bus(i2c_bus_);
+      if (released == ESP_OK) {
+        i2c_bus_ = nullptr;
+      } else {
+        ESP_LOGE(kTag, "I2C shutdown failed: %s",
+                 esp_err_to_name(released));
+      }
+    }
     initialized_ = false;
     sd_power_ready_ = false;
+    deep_sleep_prepared_ = false;
   }
 
   IBoardDisplay* display() override {
@@ -155,6 +171,57 @@ class PaperColorBoardAdapter final : public IBoardAdapter {
       if (status != ESP_OK) return status;
     }
     return led_strip_refresh(rgb_strip_);
+  }
+
+  esp_err_t prepareForDeepSleep() override {
+    if (!initialized_ || !pm1_ready_ || deep_sleep_prepared_) {
+      return ESP_ERR_INVALID_STATE;
+    }
+    if (display_.busy()) return ESP_ERR_INVALID_STATE;
+
+    // Mark the transaction before its first hardware mutation. The product
+    // sleep owner will call restore even if a later step fails.
+    deep_sleep_prepared_ = true;
+    esp_err_t status = display_.sleep();
+    // Panel sleep is the mandatory first boundary. A failed controller
+    // command must not be followed by rail changes.
+    if (status != ESP_OK) return status;
+    BoardRgbPixel dark[kRgbCount]{};
+    status = setRgb(dark, kRgbCount);
+    if (status != ESP_OK) return status;
+    status = audio_codec_.prepareForDeepSleep();
+    if (status != ESP_OK) return status;
+
+    // Official C151 wiring: PM1 GPIO0 gates EPD power, GPIO3 powers TF,
+    // GPIO4 enables TF detection, and the LDO supplies the two RGB LEDs.
+    // DCDC 3V3 and ESP GPIO 1/9/10 are deliberately untouched so RTC/EXT1
+    // wake remains available. TF also stays powered: until Storage owns a
+    // fail-safe VFS unmount/remount transaction, dropping GPIO3/4 while FAT
+    // is mounted risks corrupting the album.
+    status = pm1Status(pm1_.gpioSet(
+        M5PM1_GPIO_NUM_0, M5PM1_GPIO_MODE_OUTPUT, 0,
+        M5PM1_GPIO_PULL_NONE, M5PM1_GPIO_DRIVE_PUSHPULL));
+    if (status != ESP_OK) return status;
+    return pm1Status(pm1_.setLdoEnable(false));
+  }
+
+  esp_err_t restoreAfterFailedDeepSleep() override {
+    if (!initialized_) return ESP_ERR_INVALID_STATE;
+    if (!deep_sleep_prepared_) return ESP_OK;
+
+    esp_err_t status = pm1Status(pm1_.setLdoEnable(true));
+    if (status != ESP_OK) return status;
+    status = pm1Status(pm1_.gpioSet(
+        M5PM1_GPIO_NUM_0, M5PM1_GPIO_MODE_OUTPUT, 1,
+        M5PM1_GPIO_PULL_NONE, M5PM1_GPIO_DRIVE_PUSHPULL));
+    if (status != ESP_OK) return status;
+    // GPIO0 has just restored EPD power. Wake only reinitializes the ED2208;
+    // it does not visibly refresh the retained e-paper image.
+    vTaskDelay(pdMS_TO_TICKS(20));
+    status = display_.wake();
+    if (status != ESP_OK) return status;
+    deep_sleep_prepared_ = false;
+    return ESP_OK;
   }
 
   esp_err_t prepareSdCard() override {
@@ -291,6 +358,7 @@ class PaperColorBoardAdapter final : public IBoardAdapter {
       400,
       600,
       6,
+      kPaperColorEd2208NativePaletteMask,
       true,
       true,
       true,
@@ -313,6 +381,7 @@ class PaperColorBoardAdapter final : public IBoardAdapter {
   bool pm1_ready_ = false;
   bool spi_bus_ready_ = false;
   bool sd_power_ready_ = false;
+  bool deep_sleep_prepared_ = false;
 };
 
 constexpr BoardDescriptor PaperColorBoardAdapter::descriptor_;

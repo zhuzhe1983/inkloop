@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
+#include "inkloop/diagnostics/diagnostic_detail.hpp"
 #include "inkloop/diagnostics/serial_command_parser.hpp"
 
 namespace inkloop::diagnostics {
@@ -108,9 +110,13 @@ enum class SerialDiagnosticMyAiErrorCode : uint8_t {
   Cancelled = 15,
 };
 
+inline constexpr size_t kMaximumSerialDiagnosticDetailBytes = 96U;
+
 // Fixed POD envelope shared by high-priority owners and the low-priority
-// serial drain. It carries only booleans/enums/counts: never transcript text,
-// URLs, device codes, tokens, cookies, credentials or remote response bodies.
+// serial drain. The optional detail is accepted only for MyAI errors and must
+// already be the canonical, credential-free output of
+// sanitizeDiagnosticDetail(). It is intentionally too small for response
+// bodies and is validated again immediately before USB serialization.
 struct SerialDiagnosticEvent {
   SerialDiagnosticEventKind kind = SerialDiagnosticEventKind::CommandRejected;
   SerialCommand command = SerialCommand::None;
@@ -118,6 +124,7 @@ struct SerialDiagnosticEvent {
   uint32_t second = 0U;
   uint8_t code = 0U;
   uint8_t flags = 0U;
+  std::array<char, kMaximumSerialDiagnosticDetailBytes + 1U> detail{};
 };
 
 class ISerialDiagnosticEventSink {

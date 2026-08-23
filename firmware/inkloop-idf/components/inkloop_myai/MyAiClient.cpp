@@ -566,13 +566,25 @@ Status MyAiClient::openGatewaySession(Capability capability,
     return Status(ErrorCode::Protocol, 0,
                   "MyAI session omitted session or probe token");
   }
+  if (requested.probeToken == credentials_.deviceToken ||
+      requested.probeToken == credentials_.installationFingerprint ||
+      (!credentials_.pending.pairingToken.empty() &&
+       requested.probeToken == credentials_.pending.pairingToken)) {
+    scrubString(requested.probeToken);
+    return Status(ErrorCode::Security, 0,
+                  "MyAI probe credential crossed a durable boundary");
+  }
 
   status = GatewayProbeContract::validateCandidates(requested.gateways);
-  if (!status.ok()) return status;
+  if (!status.ok()) {
+    scrubString(requested.probeToken);
+    return status;
+  }
   for (const GatewayCandidate& candidate : requested.gateways) {
     if (!nonEmptyOpaqueValue(candidate.id, 256) ||
         !isPublicGatewayUrl(candidate.pingUrl) ||
         !isPublicGatewayUrl(candidate.baseUrl)) {
+      scrubString(requested.probeToken);
       return Status(ErrorCode::Security, 0,
                     "non-public MyAI gateway candidate rejected");
     }
@@ -581,6 +593,8 @@ Status MyAiClient::openGatewaySession(Capability capability,
   std::vector<GatewayProbe> probes;
   std::map<std::string, std::string> probeHeaders;
   probeHeaders["Authorization"] = "Bearer " + requested.probeToken;
+  probeHeaders["X-Device-ID"] = credentials_.deviceId;
+  probeHeaders["X-Device-MAC"] = wireMacAddress();
   status = gatewayProbes_.probeConcurrent(
       requested.gateways, probeHeaders,
       GatewayProbeContract::kTotalDeadlineMs, probes);

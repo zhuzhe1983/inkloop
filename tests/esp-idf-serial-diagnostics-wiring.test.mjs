@@ -29,7 +29,7 @@ test("serial diagnostics exposes only four bounded non-destructive commands", ()
   );
 });
 
-test("serial event envelope cannot carry text, URLs, credentials, or responses", () => {
+test("serial error detail is fixed-size, canonical, and credential-free", () => {
   const header = read(
     "inkloop_diagnostics/include/inkloop/diagnostics/serial_diagnostic_events.hpp",
   );
@@ -40,7 +40,11 @@ test("serial event envelope cannot carry text, URLs, credentials, or responses",
   assert.ok(eventBody);
   assert.doesNotMatch(
     eventBody,
-    /std::string|char\s*\*|array\s*<\s*char|span|vector|buffer|payload|body/i,
+    /std::string|char\s*\*|span|vector|buffer|payload|body/i,
+  );
+  assert.match(
+    eventBody,
+    /std::array<char, kMaximumSerialDiagnosticDetailBytes \+ 1U> detail/,
   );
   assert.match(eventBody, /uint32_t first/);
   assert.match(eventBody, /uint32_t second/);
@@ -54,13 +58,14 @@ test("serial event envelope cannot carry text, URLs, credentials, or responses",
   assert.match(formatter, /aigcPhaseName/);
   assert.match(formatter, /myAiErrorSourceName\(event\.flags\)/);
   assert.match(formatter, /myAiErrorCodeName\(event\.code\)/);
+  assert.match(formatter, /isCanonicalDiagnosticDetail/);
   assert.match(
     formatter,
-    /INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,retry_ms=%lu/,
+    /INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,[\s\S]*retry_ms=%lu/,
   );
-  // `pairing`, `pairing_expired` and `apply_prompt` are closed diagnostic
-  // classifications, not a pairing code or prompt body. The event itself is
-  // scalar-only above, so the formatter cannot carry their variable content.
+  assert.match(formatter, /retry_ms=%lu,detail=%s/);
+  // The fixed detail cannot bypass canonicalization, and no response/token
+  // field is accepted by the typed event envelope.
   assert.doesNotMatch(
     formatter,
     /transcript|prompt_(?:text|body)|device[_ ]?code|pairing_(?:token|code)|token|cookie|password|credential|response_(?:body|text)|https?:|wss?:/i,

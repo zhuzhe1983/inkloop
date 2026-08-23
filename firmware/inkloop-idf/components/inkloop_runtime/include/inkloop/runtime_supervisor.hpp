@@ -62,6 +62,14 @@ class RuntimeSupervisor final {
   AdmissionResult cancelBefore(WorkClass work_class,
                                uint64_t generation_floor);
 
+  // Portal-lane deep-sleep barrier. The freeze succeeds only when every
+  // command queue and every other managed callback is idle. While held, new
+  // commands are rejected and a button ISR is latched for the final safety
+  // check instead of racing into hardware quiescence.
+  bool freezeAdmissionForSleep();
+  bool sleepAdmissionStillSafe() const;
+  void thawAdmissionAfterSleepAbort();
+
   bool initialized() const;
   bool started() const;
   SupervisorDiagnostics diagnostics() const;
@@ -114,6 +122,9 @@ class RuntimeSupervisor final {
   void sampleManagedResources(TaskLane lane);
   bool allHandlersRegisteredLocked() const;
   bool calledFromManagedTaskLocked() const;
+  bool currentTaskIsLaneLocked(TaskLane lane) const;
+  bool allAdmissionIdleLocked() const;
+  bool allOtherCallbacksIdleLocked(TaskLane caller) const;
 
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   RuntimeAdmission admission_{};
@@ -122,6 +133,9 @@ class RuntimeSupervisor final {
   StaticEventGroup_t stop_events_storage_{};
   EventGroupHandle_t stop_events_ = nullptr;
   SupervisorDiagnostics diagnostics_{};
+  std::array<bool, kTaskLaneCount> callback_active_{};
+  bool sleep_admission_frozen_ = false;
+  bool sleep_button_event_pending_ = false;
   Lifecycle lifecycle_ = Lifecycle::Uninitialized;
 };
 

@@ -21,9 +21,9 @@ enum class WifiStationAction : uint8_t {
 };
 
 struct WifiStationPolicy {
-  // Retained for settings compatibility. A timeout alone never discards a
-  // saved network or opens Settings AP; only repeated authentication failures
-  // prove that the credential itself is invalid.
+  // A saved network receives bounded association retries before Settings AP
+  // is exposed. The AP fallback never clears the saved credential, so a
+  // renamed or temporarily unreachable network can be repaired explicitly.
   uint32_t saved_connect_timeout_ms = 25000;
   uint32_t retry_base_ms = 1000;
   uint32_t retry_max_ms = 8000;
@@ -31,9 +31,9 @@ struct WifiStationPolicy {
 };
 
 // Pure state machine for saved-credential association. It never mutates or
-// clears Wi-Fi credentials. Temporary AP loss retries silently forever; UI is
-// expected to stay on the previous stable e-paper frame. ProvisioningRequired
-// is reserved for no credential or repeated authentication rejection.
+// clears Wi-Fi credentials. Temporary AP loss retries silently until the
+// bounded saved-connect deadline, then exposes Settings AP while retaining the
+// credential. Repeated authentication rejection may expose Settings AP sooner.
 class WifiStationCore final {
  public:
   explicit WifiStationCore(WifiStationPolicy policy = {});

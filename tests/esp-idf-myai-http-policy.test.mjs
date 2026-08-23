@@ -118,7 +118,9 @@ test("native MyAI transport isolates TLS Center and public short-token Gateway p
   assert.match(source, /remainingMs \/ static_cast<uint32_t>\(remainingCandidates\)/);
   assert.match(source, /results\.reserve\(candidates\.size\(\)\)/);
   assert.match(source, /results\.push_back\(result\)/);
-  assert.match(source, /headers\.size\(\) != 1U/);
+  assert.match(source, /headers\.size\(\) != 3U/);
+  assert.match(source, /"X-Device-ID"/);
+  assert.match(source, /"X-Device-MAC"/);
   assert.match(source, /"X-Gateway-ID"[\s\S]*candidates\[index\]\.id/);
   assert.doesNotMatch(source, /xTaskCreate|std::thread|config\.is_async = true|ESP_ERR_HTTP_EAGAIN|HTTP_METHOD_GET[^\n]+ping/);
   assert.doesNotMatch(source, /ESP_LOG.|\bprintf\s*\(|\bputs\s*\(/);
@@ -424,7 +426,10 @@ int main() {
   g_initialized_clients = 0;
   Clock clock;
   EspGatewayProbeSet probes(clock);
-  std::map<std::string, std::string> headers{{"Authorization", "Bearer opaque"}};
+  std::map<std::string, std::string> headers{
+      {"Authorization", "Bearer opaque"},
+      {"X-Device-ID", "123456"},
+      {"X-Device-MAC", "AA:BB:CC:DD:EE:FF"}};
   std::vector<GatewayCandidate> candidates{
       gateway("slow"), gateway("fast"), gateway("offline")};
   std::vector<GatewayProbe> results;
@@ -439,10 +444,14 @@ int main() {
     assert(result.checkedAt == "2026-08-22T04:30:00Z");
   }
 
-  headers["X-Device-ID"] = "must-not-cross-control-plane";
+  headers["X-Device-ID"] = "not-six-digits";
   assert(probes.probeConcurrent(candidates, headers, 100, results).code ==
          ErrorCode::Security);
-  headers.erase("X-Device-ID");
+  headers["X-Device-ID"] = "123456";
+  headers["X-Device-MAC"] = "aa:bb:cc:dd:ee:ff";
+  assert(probes.probeConcurrent(candidates, headers, 100, results).code ==
+         ErrorCode::Security);
+  headers["X-Device-MAC"] = "AA:BB:CC:DD:EE:FF";
   headers["X-Gateway-ID"] = "caller-must-not-override-candidate";
   assert(probes.probeConcurrent(candidates, headers, 100, results).code ==
          ErrorCode::Security);

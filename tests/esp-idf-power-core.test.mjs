@@ -58,6 +58,9 @@ class FakePreparation final : public ISleepPreparation {
   bool display = true;
   bool voice = true;
   bool network = true;
+  bool freeze = true;
+  bool hardware = true;
+  bool final_admission = true;
   bool restore = true;
   bool inject_aigc_during_network = false;
   int captures = 0;
@@ -65,6 +68,9 @@ class FakePreparation final : public ISleepPreparation {
   int display_calls = 0;
   int voice_calls = 0;
   int network_calls = 0;
+  int freeze_calls = 0;
+  int hardware_calls = 0;
+  int final_admission_calls = 0;
   int restore_calls = 0;
 
   PowerSnapshotResult capturePowerInputs(PowerInputs& output) override {
@@ -87,6 +93,18 @@ class FakePreparation final : public ISleepPreparation {
       final.blockers.set(PowerBlocker::AigcGeneration, true);
     }
     return network;
+  }
+  bool freezeWorkAdmission() override {
+    ++freeze_calls;
+    return freeze;
+  }
+  bool quiesceBoardHardware() override {
+    ++hardware_calls;
+    return hardware;
+  }
+  bool sleepAdmissionStillSafe() override {
+    ++final_admission_calls;
+    return final_admission;
   }
   bool restoreAwakeServices() override { ++restore_calls; return restore; }
 };
@@ -220,7 +238,9 @@ int main() {
   assert(outcome.result == SleepAttemptResult::Entered);
   assert(ready.captures == 2 && ready.task_calls == 1 &&
          ready.display_calls == 1 && ready.voice_calls == 1 &&
-         ready.network_calls == 1 && ready.restore_calls == 0);
+         ready.network_calls == 1 && ready.freeze_calls == 1 &&
+         ready.hardware_calls == 1 && ready.final_admission_calls == 1 &&
+         ready.restore_calls == 0);
   assert(driver.calls == 1 && driver.seconds == 270U);
 
   FakePreparation appeared;
@@ -230,7 +250,8 @@ int main() {
   assert(outcome.result == SleepAttemptResult::RecheckNotEligible);
   assert(outcome.decision.blocker == PowerBlocker::AlbumUpload);
   assert(outcome.restore_attempted && outcome.restore_succeeded);
-  assert(appeared.restore_calls == 1 && not_entered.calls == 0);
+  assert(appeared.hardware_calls == 0 && appeared.restore_calls == 1 &&
+         not_entered.calls == 0);
 
   // Work accepted during network quiescence must be visible in the live final
   // snapshot, restore networking and cancel the sleep entry.
@@ -250,6 +271,48 @@ int main() {
   assert(outcome.result == SleepAttemptResult::VoiceQuiescenceFailed);
   assert(failed_quiescence.network_calls == 0);
   assert(failed_quiescence.restore_calls == 1);
+
+  // Irreversible-looking board work is attempted only after the second live
+  // admission snapshot, and a partial hardware failure is always rolled back.
+  FakePreparation failed_hardware;
+  failed_hardware.hardware = false;
+  outcome = executeSleepAttempt(policy, failed_hardware, not_entered);
+  assert(outcome.result == SleepAttemptResult::HardwareQuiescenceFailed);
+  assert(failed_hardware.captures == 2 &&
+         failed_hardware.freeze_calls == 1 &&
+         failed_hardware.hardware_calls == 1 &&
+         failed_hardware.final_admission_calls == 0 &&
+         failed_hardware.restore_calls == 1 && not_entered.calls == 0);
+
+  // Work entry is frozen only after the live final snapshot. A failed freeze
+  // never touches hardware; a button latched during hardware quiescence is
+  // caught by the last admission check and rolls the board back.
+  FakePreparation failed_freeze;
+  failed_freeze.freeze = false;
+  outcome = executeSleepAttempt(policy, failed_freeze, not_entered);
+  assert(outcome.result == SleepAttemptResult::AdmissionFreezeFailed);
+  assert(failed_freeze.freeze_calls == 1 &&
+         failed_freeze.hardware_calls == 0 &&
+         failed_freeze.final_admission_calls == 0 &&
+         failed_freeze.restore_calls == 1 && not_entered.calls == 0);
+
+  FakePreparation late_button;
+  late_button.final_admission = false;
+  outcome = executeSleepAttempt(policy, late_button, not_entered);
+  assert(outcome.result == SleepAttemptResult::FinalAdmissionFailed);
+  assert(late_button.freeze_calls == 1 && late_button.hardware_calls == 1 &&
+         late_button.final_admission_calls == 1 &&
+         late_button.restore_calls == 1 && not_entered.calls == 0);
+
+  FakePreparation rejected_entry;
+  FakeDriver rejected_driver;
+  rejected_driver.result = DeepSleepResult::ButtonConfigurationFailed;
+  outcome = executeSleepAttempt(policy, rejected_entry, rejected_driver);
+  assert(outcome.result == SleepAttemptResult::DeepSleepRejected);
+  assert(rejected_entry.freeze_calls == 1 &&
+         rejected_entry.hardware_calls == 1 &&
+         rejected_entry.final_admission_calls == 1 &&
+         rejected_entry.restore_calls == 1 && rejected_driver.calls == 1);
 
   // Repeated operational failures back off 5, 10, 20, 40, then 60 seconds.
   // Logs are emitted only on transition or once-per-minute summary.

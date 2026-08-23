@@ -91,6 +91,12 @@ void PaperColorAudioCodec::shutdown() {
   playback_active_ = false;
 }
 
+esp_err_t PaperColorAudioCodec::prepareForDeepSleep() {
+  if (!initialized_) return ESP_ERR_INVALID_STATE;
+  if (capture_active_ || playback_active_) return ESP_ERR_INVALID_STATE;
+  return setPower(false, false);
+}
+
 esp_err_t PaperColorAudioCodec::writeRegister(
     i2c_master_dev_handle_t device, uint8_t reg, uint8_t value) {
   if (!device) return ESP_ERR_INVALID_STATE;

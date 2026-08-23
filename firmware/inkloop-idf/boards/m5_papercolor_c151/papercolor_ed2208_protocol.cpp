@@ -43,9 +43,9 @@ Ed2208CommandView ed2208InitCommand(size_t index) {
 }
 
 bool ed2208PaletteIndexValid(uint8_t index) {
-  // ED2208 native palette: black, white, yellow, red, blue, green. Values
-  // 4 and 7 are controller-reserved and must never reach panel RAM.
-  return index <= 3U || index == 5U || index == 6U;
+  return index < 16U &&
+         (kPaperColorEd2208NativePaletteMask &
+          static_cast<uint16_t>(1U << index)) != 0U;
 }
 
 bool ed2208FrameValid(const uint8_t* bytes, size_t length) {

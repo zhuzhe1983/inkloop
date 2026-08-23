@@ -17,6 +17,10 @@ constexpr gpio_num_t kBusy = GPIO_NUM_11;
 constexpr gpio_num_t kDataCommand = GPIO_NUM_43;
 constexpr gpio_num_t kChipSelect = GPIO_NUM_44;
 constexpr uint32_t kSpiClockHz = 4000000;
+// A normal SDSPI operation releases the shared bus well inside this window.
+// Bound acquisition so a wedged storage owner becomes ESP_ERR_TIMEOUT instead
+// of permanently blocking the Display lane and runtime shutdown.
+constexpr uint32_t kSharedSpiAcquireTimeoutMs = 2000U;
 constexpr size_t kRowBytes = kPaperColorEd2208Width / 2U;
 
 void delayMs(uint32_t milliseconds) {
@@ -101,7 +105,13 @@ esp_err_t PaperColorEd2208Display::hardwareReset() {
 
 esp_err_t PaperColorEd2208Display::beginTransaction() {
   if (!device_ || transaction_active_) return ESP_ERR_INVALID_STATE;
-  esp_err_t status = spi_device_acquire_bus(device_, portMAX_DELAY);
+  TickType_t acquire_timeout = pdMS_TO_TICKS(kSharedSpiAcquireTimeoutMs);
+  if (acquire_timeout == 0U) acquire_timeout = 1U;
+  esp_err_t status = spi_device_acquire_bus(device_, acquire_timeout);
+  if (status == ESP_ERR_TIMEOUT) {
+    ESP_LOGE(kTag, "shared SPI acquire timeout after %lu ms",
+             static_cast<unsigned long>(kSharedSpiAcquireTimeoutMs));
+  }
   if (status != ESP_OK) return status;
   status = gpio_set_level(kChipSelect, 0);
   if (status != ESP_OK) {
@@ -181,7 +191,8 @@ esp_err_t PaperColorEd2208Display::initializeController() {
   return status;
 }
 
-esp_err_t PaperColorEd2208Display::wakeIfNeeded() {
+esp_err_t PaperColorEd2208Display::wake() {
+  if (!initialized_) return ESP_ERR_INVALID_STATE;
   if (!sleeping_) return ESP_OK;
   esp_err_t status = hardwareReset();
   if (status == ESP_OK) status = initializeController();
@@ -198,7 +209,7 @@ esp_err_t PaperColorEd2208Display::writeFullFrame(
       !ed2208FrameValid(frame.bytes, frame.length)) {
     return ESP_ERR_INVALID_ARG;
   }
-  esp_err_t status = wakeIfNeeded();
+  esp_err_t status = wake();
   if (status != ESP_OK) return status;
   status = beginTransaction();
   if (status != ESP_OK) return status;

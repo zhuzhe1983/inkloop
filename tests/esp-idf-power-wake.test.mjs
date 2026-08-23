@@ -384,6 +384,10 @@ test("native wake composition is capability-injected and preserves the panel", (
     join(power, "include/inkloop/power_runtime.hpp"), "utf8");
   const board = readFileSync(
     join(firmware, "boards/m5_papercolor_c151/board.cpp"), "utf8");
+  const boardContract = readFileSync(
+    join(firmware, "components/inkloop_board/include/inkloop/board.hpp"),
+    "utf8",
+  );
   const cmake = readFileSync(join(native, "CMakeLists.txt"), "utf8");
   const nativePower = readFileSync(
     join(firmware, "components/inkloop_product/native_power_owner.cpp"),
@@ -505,6 +509,40 @@ test("native wake composition is capability-injected and preserves the panel", (
   assert.match(
     nativePower,
     /quiesceVoiceAndAudio\(\)[\s\S]{0,180}!voice_\.interactiveAudioBusy\(\)/,
+  );
+  assert.match(boardContract, /prepareForDeepSleep/);
+  assert.match(boardContract, /restoreAfterFailedDeepSleep/);
+  assert.match(
+    nativePower,
+    /quiesceBoardHardware\(\)[\s\S]{0,320}board_restore_needed_ = true[\s\S]{0,180}board_\.prepareForDeepSleep\(\)/,
+  );
+  assert.match(
+    nativePower,
+    /restoreAwakeServices\(\)[\s\S]{0,700}board_\.restoreAfterFailedDeepSleep\(\)[\s\S]{0,700}wifi_\.restoreAfterSleep/,
+  );
+  assert.match(
+    nativePower,
+    /freezeWorkAdmission\(\)[\s\S]{0,240}supervisor_\.freezeAdmissionForSleep\(\)/,
+  );
+  assert.match(
+    nativePower,
+    /sleepAdmissionStillSafe\(\)[\s\S]{0,420}supervisor_\.sleepAdmissionStillSafe\(\)[\s\S]{0,220}deep_sleep_\.wakeButtonsReleased\(\)/,
+  );
+  assert.match(
+    nativePower,
+    /restoreAwakeServices\(\)[\s\S]{0,1500}supervisor_\.thawAdmissionAfterSleepAbort\(\)/,
+  );
+  assert.match(
+    wakeHeader,
+    /freezeWorkAdmission\(\)[\s\S]*AdmissionFreezeFailed/,
+  );
+  assert.match(
+    wakeHeader,
+    /quiesceBoardHardware\(\)[\s\S]*HardwareQuiescenceFailed/,
+  );
+  assert.match(
+    wakeHeader,
+    /sleepAdmissionStillSafe\(\)[\s\S]*FinalAdmissionFailed/,
   );
   assert.doesNotMatch(nativePower, /voiceActive\(led\.voiceMode\(\)\)/);
   assert.match(

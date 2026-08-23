@@ -75,6 +75,12 @@ const char* sleepAttemptResultName(SleepAttemptResult result) {
       return "FINAL_SNAPSHOT_FAILED";
     case SleepAttemptResult::RecheckNotEligible:
       return "RECHECK_NOT_ELIGIBLE";
+    case SleepAttemptResult::AdmissionFreezeFailed:
+      return "ADMISSION_FREEZE_FAILED";
+    case SleepAttemptResult::HardwareQuiescenceFailed:
+      return "HARDWARE_QUIESCENCE_FAILED";
+    case SleepAttemptResult::FinalAdmissionFailed:
+      return "FINAL_ADMISSION_FAILED";
     case SleepAttemptResult::DeepSleepRejected:
       return "DEEP_SLEEP_REJECTED";
   }
@@ -137,6 +143,31 @@ SleepAttemptOutcome executeSleepAttempt(const SleepPolicy& policy,
   outcome.decision = policy.evaluate(final_inputs);
   if (!outcome.decision.should_sleep) {
     outcome.result = SleepAttemptResult::RecheckNotEligible;
+    restoreAfterAbort(preparation, outcome);
+    return outcome;
+  }
+
+  if (!preparation.freezeWorkAdmission()) {
+    outcome.result = SleepAttemptResult::AdmissionFreezeFailed;
+    restoreAfterAbort(preparation, outcome);
+    return outcome;
+  }
+
+  // Panel sleep, LEDs, codecs and board rails are deliberately deferred until
+  // after the live recheck and admission freeze. If wake configuration or
+  // deep-sleep entry returns, restoreAfterAbort() reverses this final hardware
+  // transaction as well as the earlier network stop and admission freeze.
+  if (!preparation.quiesceBoardHardware()) {
+    outcome.result = SleepAttemptResult::HardwareQuiescenceFailed;
+    restoreAfterAbort(preparation, outcome);
+    return outcome;
+  }
+
+  // A button interrupt during board quiescence is latched by the frozen
+  // supervisor. Recheck that latch and physical wake inputs in the smallest
+  // practical window before configuring wake sources and entering sleep.
+  if (!preparation.sleepAdmissionStillSafe()) {
+    outcome.result = SleepAttemptResult::FinalAdmissionFailed;
     restoreAfterAbort(preparation, outcome);
     return outcome;
   }

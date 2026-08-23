@@ -116,6 +116,8 @@ struct NativeMyAiErrorSnapshot {
   uint32_t retry_after_ms = 0U;
   uint32_t sequence = 0U;
   uint32_t observed_at_ms = 0U;
+  std::array<char,
+             diagnostics::kMaximumDiagnosticDetailBytes + 1U> detail{};
   bool available = false;
 };
 
@@ -403,6 +405,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   // A gateway AIGC action is accepted only for the current, explicit user
   // utterance. System-authored tutorial response.create calls never arm it.
   bool voice_aigc_action_armed_ = false;
+  uint32_t voice_aigc_action_deadline_ms_ = 0U;
+  uint64_t voice_aigc_request_fingerprint_ = 0U;
   bool wifi_was_online_ = false;
   bool local_confirmation_pending_ = false;
   bool local_confirmation_format_pending_ = false;

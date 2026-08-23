@@ -49,7 +49,7 @@ class EspSerialDiagnosticsOwner final : public ISerialDiagnosticEventSink {
   static constexpr size_t kEventDepth = 32U;
   static constexpr size_t kReadBytesPerTick = 64U;
   static constexpr size_t kEventsPerTick = 16U;
-  static constexpr size_t kMaximumFrameBytes = 192U;
+  static constexpr size_t kMaximumFrameBytes = 320U;
 
   void handleParseResult(const SerialParseResult& result);
   void drainEvents();

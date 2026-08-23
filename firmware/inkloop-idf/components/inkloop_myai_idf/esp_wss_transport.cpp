@@ -5,6 +5,7 @@
 #include "esp_transport_ssl.h"
 #include "esp_transport_tcp.h"
 #include "esp_transport_ws.h"
+#include "esp_timer.h"
 #include "inkloop/myai/EndpointPolicy.h"
 #include "inkloop/myai/esp_network_operation_gate.hpp"
 
@@ -33,6 +34,10 @@ constexpr size_t kMaximumOutboundTextBytes = 12U * 1024U;
 constexpr size_t kMaximumOutboundAudioBytes = 12U * 1024U;
 constexpr int kConnectTimeoutMs = 15000;
 constexpr int kSendTimeoutMs = 250;
+
+uint64_t monotonicMs() {
+  return static_cast<uint64_t>(esp_timer_get_time()) / 1000ULL;
+}
 
 Status transportError(const char* detail) {
   return Status(ErrorCode::Transport, 0, detail);
@@ -183,6 +188,7 @@ Status EspWssTransport::connect(
   listener_ = &listener;
   ingress_.reset();
   currentFrameOffset_ = 0;
+  keep_alive_.start(monotonicMs());
   listener_->onWebSocketOpen();
   return Status::success();
 }
@@ -224,10 +230,34 @@ Status EspWssTransport::sendBinary(const uint8_t* bytes, size_t length) {
   return send(WS_TRANSPORT_OPCODES_BINARY, bytes, length);
 }
 
+Status EspWssTransport::serviceKeepAlive() {
+  if (!connected_ || !websocket_) {
+    return Status(ErrorCode::InvalidState, 0, "MyAI WSS is not open");
+  }
+  const uint64_t now_ms = monotonicMs();
+  if (!keep_alive_.pingDue(now_ms)) return Status::success();
+  // A one-byte, credential-free payload avoids SDK-specific zero-length frame
+  // handling while remaining a valid RFC 6455 control frame. The transport
+  // consumes Pong/control frames internally (`propagate_control_frames=false`).
+  const uint8_t payload = 0U;
+  const int sent = esp_transport_ws_send_raw(
+      websocket_, static_cast<ws_transport_opcodes_t>(
+                      WS_TRANSPORT_OPCODES_FIN | WS_TRANSPORT_OPCODES_PING),
+      reinterpret_cast<const char*>(&payload), 1, kSendTimeoutMs);
+  if (sent != 1) {
+    notifyClosed(1006, "keepalive_ping_failed");
+    return transportError("MyAI WSS keepalive ping failed");
+  }
+  keep_alive_.notePingSent(now_ms);
+  return Status::success();
+}
+
 Status EspWssTransport::pollIngress() {
   if (!connected_ || !websocket_ || !listener_) {
     return Status(ErrorCode::InvalidState, 0, "MyAI WSS is not open");
   }
+  const Status keep_alive = serviceKeepAlive();
+  if (!keep_alive.ok()) return keep_alive;
   // Backpressure is evaluated before touching the socket. The existing
   // partially assembled frame may continue only when one maximum legal audio
   // message fits in the playback bridge; this prevents callback-side loss.
@@ -320,6 +350,7 @@ void EspWssTransport::notifyClosed(int code, const char* reason) {
 
 void EspWssTransport::releaseTransport() {
   connected_ = false;
+  keep_alive_.stop();
   currentFrameOffset_ = 0;
   ingress_.reset();
   if (websocket_) {

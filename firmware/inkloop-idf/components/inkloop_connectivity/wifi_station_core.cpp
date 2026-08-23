@@ -80,6 +80,12 @@ WifiStationAction WifiStationCore::tick(uint32_t now_ms) {
     phase_ = WifiStationPhase::ProvisioningRequired;
     return WifiStationAction::RequireProvisioning;
   }
+  if ((phase_ == WifiStationPhase::Connecting ||
+       phase_ == WifiStationPhase::RetryWaiting) &&
+      due(now_ms, overall_deadline_ms_)) {
+    phase_ = WifiStationPhase::ProvisioningRequired;
+    return WifiStationAction::RequireProvisioning;
+  }
   if (phase_ == WifiStationPhase::RetryWaiting && due(now_ms, retry_at_ms_)) {
     phase_ = WifiStationPhase::Connecting;
     return WifiStationAction::Connect;

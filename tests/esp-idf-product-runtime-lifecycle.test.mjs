@@ -202,7 +202,9 @@ test("quiesce APIs release tasks, HTTP, callbacks, audio and storage writers", (
     /vSemaphoreDelete/,
     /heap_caps_free/,
   ]) assert.match(portalShutdown, contract);
-  assert.match(portal, /mdns_service_remove[\s\S]*mdns_free/);
+  assert.match(portal, /mdns_service_remove/);
+  assert.match(portal, /releasePortalMdnsServiceLease/);
+  assert.doesNotMatch(portal, /mdns_free\s*\(/);
 
   const voiceShutdown = body(
     voice,

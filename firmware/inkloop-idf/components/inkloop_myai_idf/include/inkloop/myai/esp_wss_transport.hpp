@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inkloop/myai/MyAiAdapters.h"
+#include "inkloop/myai/WssKeepAlive.h"
 #include "inkloop/myai/WssIngress.h"
 #include "inkloop/myai/esp_http_adapters.hpp"
 
@@ -41,6 +42,7 @@ class EspWssTransport final : public IWebSocketTransport {
  private:
   Status configure(const std::string& url,
                    const std::map<std::string, std::string>& headers);
+  Status serviceKeepAlive();
   Status send(uint8_t opcode, const uint8_t* bytes, size_t length);
   void releaseTransport();
   void notifyClosed(int code, const char* reason);
@@ -50,6 +52,7 @@ class EspWssTransport final : public IWebSocketTransport {
   esp_transport_handle_t websocket_;
   IWebSocketListener* listener_;
   WssIngressAssembler ingress_;
+  WssKeepAlive keep_alive_;
   std::string host_;
   std::string path_;
   std::string headerBlock_;

@@ -21,12 +21,12 @@ class PaperColorEd2208Display final : public IBoardDisplay {
 
   esp_err_t writeFullFrame(const BoardFrameView& frame) override;
   esp_err_t sleep() override;
+  esp_err_t wake() override;
   bool busy() const override;
 
  private:
   esp_err_t hardwareReset();
   esp_err_t initializeController();
-  esp_err_t wakeIfNeeded();
   esp_err_t waitBusy(uint32_t timeout_ms = 20000) const;
   esp_err_t beginTransaction();
   void endTransaction();

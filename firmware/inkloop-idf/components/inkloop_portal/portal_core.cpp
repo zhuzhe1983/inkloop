@@ -8,6 +8,8 @@
 #include <sstream>
 #include <utility>
 
+#include "inkloop/diagnostics/diagnostic_detail.hpp"
+
 namespace inkloop {
 namespace portal {
 namespace {
@@ -605,7 +607,8 @@ bool validState(const PortalStateSnapshot& state) {
             state.myai_error.http_status == 0U &&
             state.myai_error.retry_after_ms == 0U &&
             state.myai_error.sequence == 0U &&
-            state.myai_error.observed_at_ms == 0U
+            state.myai_error.observed_at_ms == 0U &&
+            state.myai_error.detail.empty()
       : state.myai_error.source != MyAiPortalErrorSource::None &&
             static_cast<uint8_t>(state.myai_error.source) <=
                 static_cast<uint8_t>(MyAiPortalErrorSource::Heartbeat) &&
@@ -615,7 +618,10 @@ bool validState(const PortalStateSnapshot& state) {
             (state.myai_error.http_status == 0U ||
              (state.myai_error.http_status >= 100U &&
               state.myai_error.http_status <= 599U)) &&
-            state.myai_error.sequence != 0U;
+            state.myai_error.sequence != 0U &&
+            (state.myai_error.detail.empty() ||
+             diagnostics::isCanonicalDiagnosticDetail(
+                 state.myai_error.detail));
   return validText(state.firmware_version, 64U, false, false) &&
          validFirmwareUpdateState(state.firmware_update) &&
          validText(state.device_name, kMaximumStateLabelBytes, true, false) &&
@@ -973,6 +979,7 @@ PortalResponse PortalCore::renderState() {
        << "\",\"displayWidth\":" << state.display_width
        << ",\"displayHeight\":" << state.display_height
        << ",\"wifiOnline\":" << (state.wifi_online ? "true" : "false")
+       << ",\"mdnsReady\":" << (state.mdns_ready ? "true" : "false")
        << ",\"storageReady\":" << (state.storage_ready ? "true" : "false")
        << ",\"storageFreeBytes\":" << state.storage_free_bytes
        << ",\"storageTotalBytes\":" << state.storage_total_bytes
@@ -1067,6 +1074,7 @@ PortalResponse PortalCore::renderState() {
        << ",\"retryAfterMs\":" << state.myai_error.retry_after_ms
        << ",\"sequence\":" << state.myai_error.sequence
        << ",\"observedAtMs\":" << state.myai_error.observed_at_ms
+       << ",\"detail\":\"" << jsonEscape(state.myai_error.detail) << "\""
        << "},\"tutorial\":{\"step\":\""
        << tutorialStepName(state.tutorial.step)
        << "\",\"inFlight\":"

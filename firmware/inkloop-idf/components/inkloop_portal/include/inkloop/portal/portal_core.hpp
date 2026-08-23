@@ -118,6 +118,7 @@ struct MyAiPortalErrorSnapshot {
   uint32_t retry_after_ms = 0U;
   uint32_t sequence = 0U;
   uint32_t observed_at_ms = 0U;
+  std::string detail;
   bool available = false;
 };
 
@@ -256,6 +257,7 @@ struct PortalStateSnapshot {
   uint16_t display_width = 0U;
   uint16_t display_height = 0U;
   bool wifi_online = false;
+  bool mdns_ready = false;
   bool storage_ready = false;
   uint64_t storage_free_bytes = 0;
   uint64_t storage_total_bytes = 0;

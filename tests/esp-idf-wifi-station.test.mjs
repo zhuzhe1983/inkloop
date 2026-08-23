@@ -42,6 +42,12 @@ int main() {
   saved.connectStarted(1002000, true);
   saved.connected();
   assert(saved.online());
+  saved.disconnected(203, false, 2000000);
+  assert(saved.tick(2002000) == WifiStationAction::Connect);
+  saved.connectStarted(2002000, true);
+  assert(saved.tick(2024999) == WifiStationAction::None);
+  assert(saved.tick(2025000) == WifiStationAction::RequireProvisioning);
+  assert(saved.phase() == WifiStationPhase::ProvisioningRequired);
 
   WifiStationCore rejected;
   assert(rejected.begin(true, 0) == WifiStationAction::Connect);
@@ -56,8 +62,23 @@ int main() {
          WifiStationAction::Connect);
   timeout.connectStarted(UINT32_MAX - 1000U, true);
   assert(timeout.tick(23998U) == WifiStationAction::None);
-  assert(timeout.tick(23999U) == WifiStationAction::None);
-  assert(timeout.phase() == WifiStationPhase::Connecting);
+  assert(timeout.tick(23999U) == WifiStationAction::RequireProvisioning);
+  assert(timeout.phase() == WifiStationPhase::ProvisioningRequired);
+
+  WifiStationPolicy unreachable_policy;
+  unreachable_policy.saved_connect_timeout_ms = 5000;
+  WifiStationCore unreachable(unreachable_policy);
+  assert(unreachable.begin(true, 1000) == WifiStationAction::Connect);
+  unreachable.connectStarted(1000, true);
+  unreachable.disconnected(201, false, 1100);
+  assert(unreachable.tick(3099) == WifiStationAction::None);
+  assert(unreachable.tick(3100) == WifiStationAction::Connect);
+  unreachable.connectStarted(3100, true);
+  unreachable.disconnected(201, false, 3200);
+  assert(unreachable.tick(5999) == WifiStationAction::None);
+  assert(unreachable.tick(6000) ==
+         WifiStationAction::RequireProvisioning);
+  assert(unreachable.hasSavedCredentials());
 
   WifiStationPolicy custom;
   custom.saved_connect_timeout_ms = 100;
@@ -113,6 +134,7 @@ test("native station owner owns credential provisioning without broad reset", ()
   assert.match(source, /IP_EVENT_STA_GOT_IP/);
   assert.equal((source.match(/esp_wifi_set_config\(WIFI_IF_STA/g) ?? []).length, 1);
   assert.match(source, /submitted Wi-Fi credentials persisted; connecting/);
+  assert.match(source, /WifiStationAction::RequireProvisioning[\s\S]*startProvisioningPortal/);
   assert.doesNotMatch(source, /esp_wifi_restore|nvs_erase|nvs_flash_erase|format/);
   assert.doesNotMatch(combined, /passphrase|Arduino\.h|WiFiManager/);
   assert.doesNotMatch(source, /ESP_LOG\w*\([^\n]*(submitted_password_|sta\.password)/);

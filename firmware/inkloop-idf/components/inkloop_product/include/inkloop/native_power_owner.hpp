@@ -46,6 +46,9 @@ class NativePowerOwner final : public ISleepPreparation,
   bool quiesceDisplay() override;
   bool quiesceVoiceAndAudio() override;
   bool quiesceNetwork() override;
+  bool freezeWorkAdmission() override;
+  bool quiesceBoardHardware() override;
+  bool sleepAdmissionStillSafe() override;
   bool restoreAwakeServices() override;
 
   bool requestAwakeIndicator() override;
@@ -85,6 +88,8 @@ class NativePowerOwner final : public ISleepPreparation,
   WakeCause boot_wake_cause_ = WakeCause::Unknown;
   bool recovery_active_ = false;
   bool network_quiesced_ = false;
+  bool work_admission_frozen_ = false;
+  bool board_restore_needed_ = false;
   bool initialized_ = false;
 };
 

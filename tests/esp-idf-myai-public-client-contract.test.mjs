@@ -21,6 +21,7 @@ const harness = String.raw`
 #include "GatewayProbeContract.h"
 #include "MyAiClient.h"
 #include "inkloop/voice_aigc_handoff_policy.hpp"
+#include "inkloop/voice_aigc_intent_policy.hpp"
 
 using namespace inkloop::myai;
 
@@ -219,10 +220,14 @@ struct Probes final : IGatewayProbeSet {
                          uint32_t deadline,
                          std::vector<GatewayProbe>& results) override {
     assert(candidates.size() == 1);
-    assert(headers.size() == 1);
+    assert(headers.size() == 3);
     assert(headers.at("Authorization") == "Bearer probe-secret");
-    assert(headers.find("X-Device-ID") == headers.end());
-    assert(headers.find("X-Device-MAC") == headers.end());
+    assert(headers.at("X-Device-ID") == "123456");
+    assert(headers.at("X-Device-MAC") == "AA:BB:CC:DD:EE:FF");
+    for (const auto& header : headers) {
+      assert(header.second.find("device-secret") == std::string::npos);
+      assert(header.second.find("pairing-secret") == std::string::npos);
+    }
     assert(deadline == GatewayProbeContract::kTotalDeadlineMs);
     GatewayProbe probe;
     probe.gatewayId = "fast";
@@ -393,6 +398,12 @@ void checkPairingDiagnostic(int httpStatus, const char* error,
 
 int main() {
   CanonicalJsonCodec codec("contract-test");
+  GatewayLease schema_lease;
+  schema_lease.sessionId = "session-1";
+  schema_lease.providerProfileId = "voice-profile";
+  std::printf("SESSION_UPDATE:%s\n",
+              codec.sessionUpdateMessage(
+                  schema_lease, "123456", "system prompt").c_str());
   assert(codec.parseErrorDiagnostic(
       "{\"error\":{\"code\":\"subscription_required\","
       "\"message\":\"Activate this device in MyAI\"}}") ==
@@ -408,6 +419,36 @@ int main() {
   assert(codec.parseErrorDiagnostic(
       std::string("{\"message\":\"") + std::string(257, 'x') +
       "\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      "{\"message\":\"Bearer device-secret\"}").empty());
+
+  VoiceEvent action;
+  assert(codec.parseVoiceEvent(
+      "{\"type\":\"action.execute\",\"payload\":{"
+      "\"kind\":\"myai.aigc.generate\","
+      "\"payload\":{\"prompt\":\"first prompt\","
+      "\"original_request\":\"请生成图片\"},"
+      "\"arguments\":{\"count\":2},"
+      "\"input\":{\"prompts\":[\"first prompt\",\"second prompt\"]}}}",
+      action).ok());
+  assert(action.kind == "myai.aigc.generate");
+  assert(action.prompt == "first prompt");
+  assert(action.originalRequest == "请生成图片");
+  assert(action.prompts ==
+         std::vector<std::string>({"first prompt", "second prompt"}));
+  assert(action.requestedImageCount == 2);
+
+  assert(!inkloop::nextVoiceAigcIntentArmed(false, false, "好的"));
+  assert(inkloop::nextVoiceAigcIntentArmed(false, false, "请生成一张图片"));
+  assert(inkloop::nextVoiceAigcIntentArmed(true, true, "好的"));
+  assert(!inkloop::nextVoiceAigcIntentArmed(true, true, "不用了"));
+  assert(!inkloop::nextVoiceAigcIntentArmed(true, false, "确认"));
+  const uint64_t confirmed = inkloop::voiceAigcRequestFingerprint("好的");
+  assert(confirmed != 0U);
+  assert(confirmed == inkloop::voiceAigcRequestFingerprint(" 好的。 "));
+  assert(confirmed !=
+         inkloop::voiceAigcRequestFingerprint("请生成一张图片"));
+  assert(inkloop::voiceAigcRequestFingerprint("") == 0U);
   Security security;
   Clock clock;
   Probes probes;
@@ -602,12 +643,23 @@ function buildAndRun(sanitized) {
       args.splice(1, 0, "-fsanitize=address,undefined", "-fno-omit-frame-pointer");
     }
     execFileSync("c++", args, { stdio: "pipe" });
-    execFileSync(binary, [], {
+    const output = execFileSync(binary, [], {
       env: sanitized
         ? { ...process.env, ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1" }
         : process.env,
-      stdio: "pipe",
+      encoding: "utf8",
     });
+    const session = output.split("\n").find(
+      (line) => line.startsWith("SESSION_UPDATE:"),
+    );
+    assert.ok(session);
+    const value = JSON.parse(session.slice("SESSION_UPDATE:".length));
+    assert.equal(value.type, "session.update");
+    assert.equal(
+      value.payload.voice_assistant.metadata.mcp_tools[0]
+        .input_schema.properties.count.maximum,
+      8,
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -649,19 +701,19 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
     source,
     /voiceResponseCompletionDue|completeVoiceResponseAfterTtsStop/,
   );
-  assert.match(source, /bool explicitImageIntent\(/);
+  assert.match(source, /nextVoiceAigcIntentArmed\(/);
   assert.match(
     source,
-    /onTranscript[\s\S]*voice_aigc_action_armed_ = explicitImageIntent\(text\)/,
+    /onTranscript[\s\S]*voice_aigc_action_deadline_ms_[\s\S]*nextVoiceAigcIntentArmed/,
   );
   assert.match(
     source,
     /onVoiceAction[\s\S]*const bool armed = voice_aigc_action_armed_[\s\S]*aigc\.rejected_no_explicit_voice_intent/,
   );
-  const diagnostic = source.slice(
-    source.indexOf("std::string safeAigcFailureState"),
-    source.indexOf("bool sixDigits"),
+  assert.match(
+    source,
+    /onVoiceAction[\s\S]*voiceAigcRequestFingerprint\(action\.originalRequest\)[\s\S]*aigc\.rejected_mismatched_voice_request/,
   );
-  for (const marker of ["token", "authorization", "bearer", "http://", "https://"])
-    assert.match(diagnostic, new RegExp(`\"${marker.replace("/", "\\/")}`));
+  assert.match(source, /sanitizeDiagnosticDetail\(status\.detail\)/);
+  assert.doesNotMatch(source, /detail=status\.detail|status\.detail\.c_str\(\)/);
 });

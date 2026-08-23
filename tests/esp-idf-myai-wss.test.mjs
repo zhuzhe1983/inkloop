@@ -16,6 +16,7 @@ const harness = String.raw`
 #include <string>
 #include <vector>
 
+#include "WssKeepAlive.h"
 #include "WssIngress.h"
 
 using namespace inkloop::myai;
@@ -34,6 +35,20 @@ Status append(WssIngressAssembler& parser, uint8_t opcode, bool fin,
 }
 
 int main() {
+  WssKeepAlive keep_alive;
+  assert(!keep_alive.pingDue(0));
+  keep_alive.start(1000);
+  assert(!keep_alive.pingDue(20999));
+  assert(keep_alive.pingDue(21000));
+  keep_alive.notePingSent(21000);
+  assert(!keep_alive.pingDue(40999));
+  assert(keep_alive.pingDue(41000));
+  // A monotonic-clock rollback is treated as due instead of suppressing
+  // liveness forever.
+  assert(keep_alive.pingDue(20000));
+  keep_alive.stop();
+  assert(!keep_alive.pingDue(999999));
+
   WssIngressAssembler parser;
   bool complete = false;
   WssCompletedMessage output;
@@ -137,6 +152,9 @@ test("native WS/WSS adapter rejects redirects and checks the connected public pe
   assert.match(source, /esp_transport_poll_read\(websocket_, 0\)/);
   assert.match(source, /std::array<uint8_t, 2048> chunk/);
   assert.match(source, /currentFrameOffset_/);
+  assert.match(source, /WS_TRANSPORT_OPCODES_FIN \| WS_TRANSPORT_OPCODES_PING/);
+  assert.match(source, /keep_alive_\.pingDue\(now_ms\)/);
+  assert.match(source, /keep_alive_\.notePingSent\(now_ms\)/);
   assert.match(source, /CONFIG_LOG_MAXIMUM_LEVEL > 3/);
   assert.match(cmake, /tcp_transport/);
   assert.match(defaults, /CONFIG_WS_BUFFER_SIZE=4096/);

@@ -114,26 +114,38 @@ try {
     }, 128 * 1024);
   sessionId = created.json.session?.id || "";
   const gateways = Array.isArray(created.json.gateways) ? created.json.gateways : [];
+  const probeToken = typeof created.json.probe_token === "string"
+    ? created.json.probe_token.trim()
+    : "";
   if (!sessionId || gateways.length === 0) throw new Error("no_gateway_candidates");
+  if (!probeToken || Buffer.byteLength(probeToken) > 2048)
+    throw new Error("missing_or_invalid_probe_token");
   console.log(`SESSION PASS http=${created.status} candidates=${gateways.length}`);
 
   const probes = [];
   for (const candidate of gateways) {
+    const candidateId = String(candidate.id || "");
     const ping = new URL(candidate.ping_url);
-    if (ping.protocol !== "https:") continue;
+    if (!candidateId || candidateId.length > 256 || ping.protocol !== "https:")
+      continue;
     const started = performance.now();
     let ok = false;
     try {
       const response = await fetch(ping, {
         method: "HEAD",
-        headers: deviceHeaders,
+        headers: {
+          Authorization: `Bearer ${probeToken}`,
+          "X-Device-ID": deviceId,
+          "X-Device-MAC": wireMac,
+          "X-Gateway-ID": candidateId,
+        },
         redirect: "error",
         signal: AbortSignal.timeout(8_000),
       });
       ok = response.status >= 200 && response.status < 400;
     } catch {}
     probes.push({
-      gateway_id: String(candidate.id || ""),
+      gateway_id: candidateId,
       ok,
       latency_ms: Math.max(1, Math.round(performance.now() - started)),
       checked_at: new Date().toISOString(),
@@ -156,14 +168,22 @@ try {
     throw new Error("invalid_gateway_selection");
   console.log(`SELECT PASS http=${selected.status}`);
 
+  const gatewayHeaders = {
+    Authorization: `Bearer ${gatewayToken}`,
+    "X-Gateway-Session-Token": gatewayToken,
+    "X-Gateway-Session-ID": sessionId,
+    "X-Gateway-ID": gatewayId,
+    "Content-Type": "application/json",
+  };
+
   const started = await request(
-    "POST", `${gatewayBase}/api/v1/gateway/sessions/start`,
-    { "Content-Type": "application/json", "X-Gateway-Session-Token": gatewayToken },
+    "POST", `${gatewayBase}/gateway/v1/gateway/sessions/start`,
+    gatewayHeaders,
     { session_id: sessionId, gateway_id: gatewayId }, 64 * 1024);
   console.log(`GATEWAY_START PASS http=${started.status}`);
 
   const generated = await request(
-    "POST", `${gatewayBase}/gateway/v1/aigc/generate`, deviceHeaders,
+    "POST", `${gatewayBase}/gateway/v1/aigc/generate`, gatewayHeaders,
     {
       device_id: deviceId,
       mac_address: wireMac,
@@ -180,9 +200,9 @@ try {
 
   let terminal;
   for (let attempt = 1; attempt <= 120; ++attempt) {
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
     const status = await request(
-      "POST", `${gatewayBase}/gateway/v1/aigc/status`, deviceHeaders,
+      "POST", `${gatewayBase}/gateway/v1/aigc/status`, gatewayHeaders,
       { device_id: deviceId, mac_address: wireMac, app_id: "inkloop", prompt_id: promptId },
       256 * 1024);
     const state = String(status.json.status || "").toLowerCase();
@@ -200,7 +220,7 @@ try {
   console.log(`POLL PASS status=${terminal.status} outputs=${terminal.outputs.length}`);
 
   const fetched = await request(
-    "POST", `${gatewayBase}/gateway/v1/aigc/output`, deviceHeaders,
+    "POST", `${gatewayBase}/gateway/v1/aigc/output`, gatewayHeaders,
     {
       device_id: deviceId,
       mac_address: wireMac,

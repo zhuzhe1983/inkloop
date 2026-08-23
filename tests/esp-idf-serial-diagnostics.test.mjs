@@ -16,6 +16,7 @@ test("serial diagnostics parser is bounded, strict, and recovers per line", () =
   writeFileSync(harness, String.raw`
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include "inkloop/diagnostics/serial_command_parser.hpp"
@@ -165,6 +166,19 @@ int main() {
   assert(std::string(frame) ==
          "INKLOOP_MYAI_ERROR:source=authorization,code=unauthorized,"
          "http=401,retry_ms=5000\n");
+  const std::string safe_detail = "authorization rejected by MyAI";
+  std::memcpy(event.detail.data(), safe_detail.data(), safe_detail.size());
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_MYAI_ERROR:source=authorization,code=unauthorized,"
+         "http=401,retry_ms=5000,detail=authorization rejected by MyAI\n");
+  event.detail = {};
+  const std::string unsafe_detail = "Bearer device-secret";
+  std::memcpy(event.detail.data(), unsafe_detail.data(), unsafe_detail.size());
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
+  event.detail.fill('x');
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
+  event.detail = {};
   event.first = 42;
   assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
 
@@ -191,6 +205,7 @@ int main() {
       "-I", join(component, "include"),
       harness,
       join(component, "serial_command_parser.cpp"),
+      join(component, "diagnostic_detail.cpp"),
       join(component, "serial_diagnostic_events.cpp"),
       "-o", binary,
     ], { stdio: "pipe" });

@@ -34,7 +34,17 @@ than solve these ownership and scheduling failures.
 
 ## 2. Current device safety state
 
-The authorized C151 now runs the native ESP-IDF `0.4.0-beta.11` image from
+Current update (2026-08-24): source is now `0.4.0-beta.28`. The final digital
+gate is 403/403 repository tests, lint with zero errors, and clean official
+ESP-IDF v6.0.2 C151/mock links. The C151 application SHA-256 is
+`cd9498e006693b7b3ea61c143dbd230f61873f9f1a0d41a5dff020327f14091a`.
+beta28 has not been flashed, signed or promoted. The authorized C151 still
+runs beta27 from app1 and has only a Recovery-path physical pass because three
+valid divergent TF album indexes require an explicit operator choice. app0
+beta25 remains the retained rollback image.
+
+Historical retained evidence: the authorized C151 previously ran the native
+ESP-IDF `0.4.0-beta.11` image from
 commit `57ec42b`. It was flashed through the standard four-image boundaries and
 each written range was read back and verified. Two matching 16 MiB pre-flash
 backups were retained with restricted permissions, and NVS, LittleFS and TF
@@ -54,7 +64,8 @@ Its independent digital candidate gate and guarded physical first-cycle gate
 both passed. The 100-cycle beta10 baseline completed 100/100 before beta11 was
 allowed to replace it.
 
-Main now includes the former `codex/esp-idf-serial-diagnostics` work through
+Historical development note: main later included the former
+`codex/esp-idf-serial-diagnostics` work through
 `6f06d01`: bounded secret-free diagnostics, authenticated Portal acceptance,
 the reusable board-porting contract and fail-closed descriptor validation. Its
 pre-merge complete ESP-IDF host suite was 271/271 PASS and both C151 and mock
@@ -124,8 +135,11 @@ types or concrete transports should be copied. Preserve:
 - immediate stop of pairing polling after a device token is accepted;
 - bounded status/error bodies and original 401/402 diagnostics;
 - `device_token` only on authenticated Center requests;
-- short-lived `probe_token` only on concurrent candidate `HEAD` probes, with
-  the candidate-specific `X-Gateway-ID`;
+- short-lived `probe_token` only on bounded candidate `HEAD` probes, with
+  `X-Device-ID`, `X-Device-MAC` and adapter-owned `X-Gateway-ID`; the ESP-IDF
+  client intentionally probes one candidate at a time under one fair global
+  deadline because simultaneous lwIP/TLS state machines were unstable under
+  concurrent Voice/AIGC load;
 - selected `gateway_token` on Gateway start, business HTTP, Voice WebSocket and
   AIGC, using `Authorization`, `X-Gateway-Session-Token`,
   `X-Gateway-Session-ID` and `X-Gateway-ID` together;
@@ -143,9 +157,10 @@ Replace adapters with native implementations:
 - I2S standard driver with DMA rings for microphone and speaker.
 
 Do not call the MyAI client recursively from a wait-pump. Network results are
-messages delivered to voice/control. Gateway probes must be concurrent or
-bounded by one total deadline, not N sequential 8-second waits. Cache a valid
-selected gateway for its lease lifetime.
+messages delivered to voice/control. Gateway probes need one bounded total
+deadline; the ESP-IDF implementation is deliberately serial and divides the
+remaining deadline fairly, so it never degenerates into N sequential
+8-second waits. Cache a valid selected gateway for its lease lifetime.
 
 ## 6. TTS/audio design
 
