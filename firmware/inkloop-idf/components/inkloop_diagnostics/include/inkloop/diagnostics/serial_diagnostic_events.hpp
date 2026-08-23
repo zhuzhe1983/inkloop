@@ -74,6 +74,40 @@ enum SerialDiagnosticAigcStateFlag : uint8_t {
   AigcSerialDiagnostic = 1U << 2U,
 };
 
+// Stable numeric mirrors used only by the credential-free serial protocol.
+// Product composition maps its private MyAI/network enums into these fields.
+enum class SerialDiagnosticMyAiErrorSource : uint8_t {
+  Command = 1,
+  Tick = 2,
+  Initialize = 3,
+  ApplyPrompt = 4,
+  Pairing = 5,
+  Authorization = 6,
+  Aigc = 7,
+  VoiceConnect = 8,
+  VoiceIngress = 9,
+  CaptureUpload = 10,
+  Heartbeat = 11,
+};
+
+enum class SerialDiagnosticMyAiErrorCode : uint8_t {
+  InvalidArgument = 1,
+  InvalidState = 2,
+  Storage = 3,
+  Security = 4,
+  Transport = 5,
+  Protocol = 6,
+  Unauthorized = 7,
+  PaymentRequired = 8,
+  RecoveryRequired = 9,
+  PairingExpired = 10,
+  Conflict = 11,
+  AppNotRegistered = 12,
+  NoGateway = 13,
+  TooLarge = 14,
+  Cancelled = 15,
+};
+
 // Fixed POD envelope shared by high-priority owners and the low-priority
 // serial drain. It carries only booleans/enums/counts: never transcript text,
 // URLs, device codes, tokens, cookies, credentials or remote response bodies.

@@ -29,6 +29,14 @@ INKLOOP_EMBEDDED_WAV(display_refresh_start);
 INKLOOP_EMBEDDED_WAV(display_please_wait);
 INKLOOP_EMBEDDED_WAV(images_empty);
 INKLOOP_EMBEDDED_WAV(device_restored);
+INKLOOP_EMBEDDED_WAV(confirmation_press_top_button);
+INKLOOP_EMBEDDED_WAV(confirmation_expired);
+INKLOOP_EMBEDDED_WAV(storage_free_space);
+INKLOOP_EMBEDDED_WAV(storage_formatted);
+INKLOOP_EMBEDDED_WAV(images_deleted);
+INKLOOP_EMBEDDED_WAV(images_cleared);
+INKLOOP_EMBEDDED_WAV(settings_saved);
+INKLOOP_EMBEDDED_WAV(voice_error);
 
 struct EmbeddedAsset {
   const uint8_t* start;
@@ -45,6 +53,15 @@ const EmbeddedAsset kRefreshStart = INKLOOP_ASSET(display_refresh_start);
 const EmbeddedAsset kPleaseWait = INKLOOP_ASSET(display_please_wait);
 const EmbeddedAsset kAlbumEmpty = INKLOOP_ASSET(images_empty);
 const EmbeddedAsset kDeviceRestored = INKLOOP_ASSET(device_restored);
+const EmbeddedAsset kConfirmationRequired =
+    INKLOOP_ASSET(confirmation_press_top_button);
+const EmbeddedAsset kConfirmationExpired = INKLOOP_ASSET(confirmation_expired);
+const EmbeddedAsset kStorageQueried = INKLOOP_ASSET(storage_free_space);
+const EmbeddedAsset kStorageFormatted = INKLOOP_ASSET(storage_formatted);
+const EmbeddedAsset kImageDeleted = INKLOOP_ASSET(images_deleted);
+const EmbeddedAsset kAlbumCleared = INKLOOP_ASSET(images_cleared);
+const EmbeddedAsset kSettingsSaved = INKLOOP_ASSET(settings_saved);
+const EmbeddedAsset kError = INKLOOP_ASSET(voice_error);
 const std::array<EmbeddedAsset, 10> kDigits{{
     INKLOOP_ASSET(ordinal_digit_zero),
     INKLOOP_ASSET(ordinal_digit_one),
@@ -177,6 +194,30 @@ bool LocalPromptPlayer::request(LocalPrompt prompt,
       break;
     case LocalPrompt::DeviceRestored:
       asset = kDeviceRestored;
+      break;
+    case LocalPrompt::ConfirmationRequired:
+      asset = kConfirmationRequired;
+      break;
+    case LocalPrompt::ConfirmationExpired:
+      asset = kConfirmationExpired;
+      break;
+    case LocalPrompt::StorageQueried:
+      asset = kStorageQueried;
+      break;
+    case LocalPrompt::StorageFormatted:
+      asset = kStorageFormatted;
+      break;
+    case LocalPrompt::ImageDeleted:
+      asset = kImageDeleted;
+      break;
+    case LocalPrompt::AlbumCleared:
+      asset = kAlbumCleared;
+      break;
+    case LocalPrompt::SettingsSaved:
+      asset = kSettingsSaved;
+      break;
+    case LocalPrompt::Error:
+      asset = kError;
       break;
   }
   const uint8_t* starts[] = {asset.start};

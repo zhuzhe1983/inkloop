@@ -75,8 +75,8 @@ test("volume preview is explicit Voice-lane audio and restores persisted volume"
   const restore = body(voice, "void NativeVoiceService::restoreVolumeAfterPreview", "WorkDisposition NativeVoiceService::handleTopButton");
   assert.match(restore, /setVolumePercent\(saved\)/);
   assert.match(restore, /hardware_volume_percent_ = saved/);
-  assert.match(voice, /if \(!assistance_enabled\) return WorkDisposition::Complete/);
-  assert.match(voice, /explicit volume-preview action deliberately bypasses it/);
+  assert.match(voice, /if \(!assistance_enabled && !safety_confirmation\)/);
+  assert.match(voice, /explicit volume-preview action and destructive-operation confirmation/);
 });
 
 test("MyAI pairing and rebind remain Network-owned and never synthesize a public code", () => {
@@ -110,6 +110,19 @@ test("Portal distinguishes a token from live MyAI authorization and reports real
   );
   assert.match(publish, /next\.authorization_verified = authorization_verified_/);
   assert.match(portal, /authorization_verified \? portal::MyAiPortalState::Active/);
+  assert.match(portal, /ActivationState::PaymentRequired[\s\S]*MyAiPortalState::PaymentRequired/);
+  assert.match(portal, /ActivationState::RecoveryRequired[\s\S]*MyAiPortalState::RecoveryRequired/);
+  assert.match(portal, /voice_\.myAiErrorSnapshot\(\)/);
+  const error = body(
+    voice,
+    "void NativeVoiceService::onError",
+    "NativeVoiceDiagnostics NativeVoiceService::diagnostics",
+  );
+  assert.match(error, /network_diagnostic_operation_/);
+  assert.match(error, /myai_error_\.source = source/);
+  assert.match(error, /myai_error_\.http_status = http_status/);
+  assert.match(error, /queueChat\(ProductTextKind::ToolState, message\)/);
+  assert.doesNotMatch(error, /status\.detail/);
   assert.match(portal, /esp_app_get_description\(\)/);
   assert.doesNotMatch(portal, /idf-native/);
 });

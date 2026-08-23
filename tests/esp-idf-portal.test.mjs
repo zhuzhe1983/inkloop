@@ -102,6 +102,7 @@ struct Cache final : IPortalReadCache {
   mutable bool bad_runtime_queue = false;
   mutable bool bad_runtime_core = false;
   mutable bool bad_display_dimensions = false;
+  mutable bool bad_myai_error = false;
   mutable bool minimal_capabilities = false;
   mutable PortalFirmwareUpdateSnapshot firmware_update{};
 
@@ -140,6 +141,15 @@ struct Cache final : IPortalReadCache {
           {"solid-clean", "纯色 / 文字"};
     }
     value.myai_state = MyAiPortalState::Pairing;
+    value.myai_error.available = true;
+    value.myai_error.source = MyAiPortalErrorSource::Authorization;
+    value.myai_error.code = MyAiPortalErrorCode::Unauthorized;
+    value.myai_error.http_status = bad_myai_error ? 42 : 401;
+    value.myai_error.retry_after_ms = 5000;
+    value.myai_error.sequence = 7;
+    value.myai_error.observed_at_ms = 12345;
+    value.tutorial.step = TutorialPortalStep::GalleryPaging;
+    value.tutorial.persistence_pending = true;
     value.pairing_code = "950940";
     value.binding_url = "https://myai.vibapp.ai/device/950940";
     value.runtime.available = true;
@@ -313,6 +323,8 @@ int main() {
   assert(rendered.body.find("/api/album/upload") != std::string::npos);
   assert(rendered.body.find("/api/album/preview") != std::string::npos);
   assert(rendered.body.find("/api/chat?limit=") != std::string::npos);
+  assert(rendered.body.find("/api/tutorial/restart") != std::string::npos);
+  assert(rendered.body.find("id=\"tutorial-restart\"") != std::string::npos);
   assert(rendered.body.find("name=\"storage_preference\"") != std::string::npos);
   assert(rendered.body.find("name=\"default_render_strategy\"") != std::string::npos);
   assert(rendered.body.find("name=\"local_password\"") != std::string::npos);
@@ -355,6 +367,9 @@ int main() {
   assert(state_response.body.find("\"tabs\":[\"device\",\"album\",\"myai\",\"settings\"]") != std::string::npos);
   assert(state_response.body.find("\"firmwareUpdate\":{\"configured\":false,\"acceptedOffline\":false,\"currentVersion\":\"idf-0.3\",\"status\":\"unavailable\",\"code\":\"none\"}") != std::string::npos);
   assert(state_response.body.find("950940") != std::string::npos);
+  assert(state_response.body.find("\"state\":\"pairing\"") != std::string::npos);
+  assert(state_response.body.find("\"lastError\":{\"available\":true,\"source\":\"authorization\",\"code\":\"unauthorized\",\"httpStatus\":401,\"retryAfterMs\":5000,\"sequence\":7,\"observedAtMs\":12345}") != std::string::npos);
+  assert(state_response.body.find("\"tutorial\":{\"step\":\"gallery_paging\",\"inFlight\":false,\"persistencePending\":true,\"persistenceError\":false}") != std::string::npos);
   assert(state_response.body.find("device_token") == std::string::npos);
   assert(state_response.body.find("pairing_token") == std::string::npos);
   assert(state_response.body.find("image_url") == std::string::npos);
@@ -396,6 +411,9 @@ int main() {
   cache.bad_display_dimensions = true;
   assert(portal.handle(state).status == 422);
   cache.bad_display_dimensions = false;
+  cache.bad_myai_error = true;
+  assert(portal.handle(state).status == 422);
+  cache.bad_myai_error = false;
 
   PortalRequest expired = state;
   expired.now_seconds = 1000;
@@ -570,6 +588,7 @@ int main() {
   const std::pair<const char*, PortalCommandType> simple[] = {
       {"/api/onboarding/myai/start", PortalCommandType::StartMyAiPairing},
       {"/api/onboarding/myai/rebind", PortalCommandType::RebindMyAi},
+      {"/api/tutorial/restart", PortalCommandType::RestartMyAiTutorial},
       {"/api/chat/clear", PortalCommandType::ClearLocalChat},
   };
   for (const auto& route : simple) {
@@ -677,6 +696,9 @@ int main() {
       "POST", "/api/settings", minimal_cookie);
   minimal_led.body = "led_brightness=18";
   assert(minimal_portal.handle(minimal_led).status == 422);
+  PortalRequest minimal_tutorial = authenticated(
+      "POST", "/api/tutorial/restart", minimal_cookie);
+  assert(minimal_portal.handle(minimal_tutorial).status == 422);
   PortalRequest minimal_storage = authenticated(
       "POST", "/api/settings", minimal_cookie);
   minimal_storage.body = "storage_preference=removable";

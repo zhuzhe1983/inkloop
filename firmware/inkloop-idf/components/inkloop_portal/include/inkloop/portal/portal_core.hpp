@@ -54,8 +54,71 @@ enum class MyAiPortalState : uint8_t {
   Pairing,
   Bound,
   Active,
+  PaymentRequired,
   RecoveryRequired,
   Unavailable,
+};
+
+enum class TutorialPortalStep : uint8_t {
+  PressToTalk = 0,
+  VoiceLedStates,
+  GalleryPaging,
+  DisplayBusyGuard,
+  LocalPortal,
+  Complete,
+};
+
+struct TutorialPortalSnapshot {
+  TutorialPortalStep step = TutorialPortalStep::PressToTalk;
+  bool in_flight = false;
+  bool persistence_pending = false;
+  bool persistence_error = false;
+};
+
+// Stable, credential-free categories for the most recent MyAI client error.
+// They deliberately exclude remote response text, URLs and every token type.
+enum class MyAiPortalErrorSource : uint8_t {
+  None = 0,
+  Command,
+  Tick,
+  Initialize,
+  ApplyPrompt,
+  Pairing,
+  Authorization,
+  Aigc,
+  VoiceConnect,
+  VoiceIngress,
+  CaptureUpload,
+  Heartbeat,
+};
+
+enum class MyAiPortalErrorCode : uint8_t {
+  None = 0,
+  InvalidArgument,
+  InvalidState,
+  Storage,
+  Security,
+  Transport,
+  Protocol,
+  Unauthorized,
+  PaymentRequired,
+  RecoveryRequired,
+  PairingExpired,
+  Conflict,
+  AppNotRegistered,
+  NoGateway,
+  TooLarge,
+  Cancelled,
+};
+
+struct MyAiPortalErrorSnapshot {
+  MyAiPortalErrorSource source = MyAiPortalErrorSource::None;
+  MyAiPortalErrorCode code = MyAiPortalErrorCode::None;
+  uint16_t http_status = 0U;
+  uint32_t retry_after_ms = 0U;
+  uint32_t sequence = 0U;
+  uint32_t observed_at_ms = 0U;
+  bool available = false;
 };
 
 enum class ChatRole : uint8_t {
@@ -92,6 +155,7 @@ enum class PortalCommandType : uint8_t {
   PreviewVolume,
   StartMyAiPairing,
   RebindMyAi,
+  RestartMyAiTutorial,
   DisplayAlbumItem,
   DeleteAlbumItem,
   SetAlbumRenderStrategy,
@@ -202,6 +266,8 @@ struct PortalStateSnapshot {
   uint32_t display_panel_refresh_ms = 0;
   uint32_t display_total_ms = 0;
   MyAiPortalState myai_state = MyAiPortalState::Unconfigured;
+  MyAiPortalErrorSnapshot myai_error;
+  TutorialPortalSnapshot tutorial;
   std::string pairing_code;
   std::string binding_url;
   PortalBoardCapabilities capabilities;

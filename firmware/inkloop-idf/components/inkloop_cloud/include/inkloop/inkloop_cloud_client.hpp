@@ -72,6 +72,8 @@ class IInkloopFrameDownloader {
 struct InkloopCloudConfig {
   std::string api_url = "https://inkloop.mess.host/api/devices";
   std::string sku_id = "m5-papercolor-c151";
+  // Portable callers may retain this fallback, but production composition
+  // replaces it with esp_app_desc.version from the exact running image.
   std::string firmware_version = "0.3.0-idf";
   uint32_t request_timeout_ms = 20000;
   size_t maximum_response_bytes = 256U * 1024U;

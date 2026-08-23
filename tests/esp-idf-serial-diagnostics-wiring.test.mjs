@@ -52,9 +52,18 @@ test("serial event envelope cannot carry text, URLs, credentials, or responses",
   assert.match(formatter, /serialParseCodeName/);
   assert.match(formatter, /voiceStateName/);
   assert.match(formatter, /aigcPhaseName/);
+  assert.match(formatter, /myAiErrorSourceName\(event\.flags\)/);
+  assert.match(formatter, /myAiErrorCodeName\(event\.code\)/);
+  assert.match(
+    formatter,
+    /INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,retry_ms=%lu/,
+  );
+  // `pairing`, `pairing_expired` and `apply_prompt` are closed diagnostic
+  // classifications, not a pairing code or prompt body. The event itself is
+  // scalar-only above, so the formatter cannot carry their variable content.
   assert.doesNotMatch(
     formatter,
-    /transcript|prompt|device[_ ]?code|pairing|token|cookie|password|credential|response|https?:|wss?:/i,
+    /transcript|prompt_(?:text|body)|device[_ ]?code|pairing_(?:token|code)|token|cookie|password|credential|response_(?:body|text)|https?:|wss?:/i,
   );
 });
 

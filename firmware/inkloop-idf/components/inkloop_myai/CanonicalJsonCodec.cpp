@@ -319,13 +319,14 @@ Status CanonicalJsonCodec::parseModelPreference(
 
 std::string CanonicalJsonCodec::sessionRequestBody(
     Capability capability, const std::string& deviceId,
-    const std::string& fingerprint, const std::string& clientRegion) const {
+    const std::string& fingerprint, const std::string& clientRegion,
+    const std::string& clientVersion) const {
   const bool voice = capability == Capability::Voice;
   std::ostringstream body;
   body << "{";
   appendIdentity(body, deviceId, fingerprint);
   body << ",\"client_id\":\"inkloop-papercolor-" << (voice ? "voice" : "image")
-       << "\",\"client_version\":\"" << kClientVersion << "\"";
+       << "\",\"client_version\":" << quote(clientVersion);
   if (!clientRegion.empty()) body << ",\"client_region\":" << quote(clientRegion);
   body << ",\"required_scenarios\":[\"" << (voice ? "voice" : "image") << "\"]"
        << ",\"required_kinds\":"

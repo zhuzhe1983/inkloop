@@ -28,6 +28,7 @@ idf_component_register(
     inkloop_myai
     inkloop_myai_idf
     inkloop_onboarding
+    inkloop_tutorial_state_idf
     inkloop_pngle
     inkloop_portal
     inkloop_portal_idf
@@ -61,4 +62,12 @@ idf_component_register(
     "assets/display_please_wait.wav"
     "assets/images_empty.wav"
     "assets/device_restored.wav"
+    "assets/confirmation_press_top_button.wav"
+    "assets/confirmation_expired.wav"
+    "assets/storage_free_space.wav"
+    "assets/storage_formatted.wav"
+    "assets/images_deleted.wav"
+    "assets/images_cleared.wav"
+    "assets/settings_saved.wav"
+    "assets/voice_error.wav"
 )

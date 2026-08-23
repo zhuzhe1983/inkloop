@@ -13,9 +13,13 @@ struct ClientConfig {
   std::string macAddress;
   std::string deviceLabel;
   std::string clientRegion;
+  // Product builds set this to esp_app_desc.version. The fallback keeps the
+  // portable client usable in host tests and other hardware integrations.
+  std::string clientVersion;
   std::string systemPrompt;
 
-  ClientConfig() : deviceLabel("Inkloop PaperColor") {}
+  ClientConfig()
+      : deviceLabel("Inkloop PaperColor"), clientVersion("0.1.0") {}
 };
 
 class MyAiClient final : public IWebSocketListener {

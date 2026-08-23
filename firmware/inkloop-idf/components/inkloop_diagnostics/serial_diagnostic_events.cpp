@@ -43,6 +43,53 @@ const char* aigcPhaseName(uint8_t value) {
   return nullptr;
 }
 
+const char* myAiErrorSourceName(uint8_t value) {
+  switch (static_cast<SerialDiagnosticMyAiErrorSource>(value)) {
+    case SerialDiagnosticMyAiErrorSource::Command: return "command";
+    case SerialDiagnosticMyAiErrorSource::Tick: return "tick";
+    case SerialDiagnosticMyAiErrorSource::Initialize: return "initialize";
+    case SerialDiagnosticMyAiErrorSource::ApplyPrompt: return "apply_prompt";
+    case SerialDiagnosticMyAiErrorSource::Pairing: return "pairing";
+    case SerialDiagnosticMyAiErrorSource::Authorization:
+      return "authorization";
+    case SerialDiagnosticMyAiErrorSource::Aigc: return "aigc";
+    case SerialDiagnosticMyAiErrorSource::VoiceConnect:
+      return "voice_connect";
+    case SerialDiagnosticMyAiErrorSource::VoiceIngress:
+      return "voice_ingress";
+    case SerialDiagnosticMyAiErrorSource::CaptureUpload:
+      return "capture_upload";
+    case SerialDiagnosticMyAiErrorSource::Heartbeat: return "heartbeat";
+  }
+  return nullptr;
+}
+
+const char* myAiErrorCodeName(uint8_t value) {
+  switch (static_cast<SerialDiagnosticMyAiErrorCode>(value)) {
+    case SerialDiagnosticMyAiErrorCode::InvalidArgument:
+      return "invalid_argument";
+    case SerialDiagnosticMyAiErrorCode::InvalidState: return "invalid_state";
+    case SerialDiagnosticMyAiErrorCode::Storage: return "storage";
+    case SerialDiagnosticMyAiErrorCode::Security: return "security";
+    case SerialDiagnosticMyAiErrorCode::Transport: return "transport";
+    case SerialDiagnosticMyAiErrorCode::Protocol: return "protocol";
+    case SerialDiagnosticMyAiErrorCode::Unauthorized: return "unauthorized";
+    case SerialDiagnosticMyAiErrorCode::PaymentRequired:
+      return "payment_required";
+    case SerialDiagnosticMyAiErrorCode::RecoveryRequired:
+      return "recovery_required";
+    case SerialDiagnosticMyAiErrorCode::PairingExpired:
+      return "pairing_expired";
+    case SerialDiagnosticMyAiErrorCode::Conflict: return "conflict";
+    case SerialDiagnosticMyAiErrorCode::AppNotRegistered:
+      return "app_not_registered";
+    case SerialDiagnosticMyAiErrorCode::NoGateway: return "no_gateway";
+    case SerialDiagnosticMyAiErrorCode::TooLarge: return "too_large";
+    case SerialDiagnosticMyAiErrorCode::Cancelled: return "cancelled";
+  }
+  return nullptr;
+}
+
 size_t finishFormat(int written, size_t capacity) {
   if (written <= 0 || static_cast<size_t>(written) >= capacity) return 0U;
   return static_cast<size_t>(written);
@@ -147,8 +194,19 @@ size_t formatSerialDiagnosticEvent(const SerialDiagnosticEvent& event,
                               static_cast<unsigned>(event.code));
       break;
     case SerialDiagnosticEventKind::MyAiError:
-      written = std::snprintf(output, capacity, "INKLOOP_MYAI_ERROR:E%u\n",
-                              static_cast<unsigned>(event.code));
+      if (const char* source = myAiErrorSourceName(event.flags)) {
+        if (const char* code = myAiErrorCodeName(event.code)) {
+          if (event.first != 0U &&
+              (event.first < 100U || event.first > 599U)) {
+            return 0U;
+          }
+          written = std::snprintf(
+              output, capacity,
+              "INKLOOP_MYAI_ERROR:source=%s,code=%s,http=%lu,retry_ms=%lu\n",
+              source, code, static_cast<unsigned long>(event.first),
+              static_cast<unsigned long>(event.second));
+        }
+      }
       break;
     case SerialDiagnosticEventKind::AigcError:
       written = std::snprintf(output, capacity, "INKLOOP_AIGC_ERROR:E%u\n",

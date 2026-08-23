@@ -31,7 +31,8 @@ class CanonicalJsonCodec final : public IWireCodec {
   std::string sessionRequestBody(Capability capability,
                                  const std::string& deviceId,
                                  const std::string& fingerprint,
-                                 const std::string& clientRegion) const override;
+                                 const std::string& clientRegion,
+                                 const std::string& clientVersion) const override;
   Status parseSessionRequest(const std::string& body,
                              SessionRequestResponse& output) const override;
   std::string sessionSelectBody(const std::string& sessionId,

@@ -137,6 +137,7 @@ myai::ClientConfig makeMyAiConfig() {
   config.macAddress = macAddress;
   config.deviceLabel = "Inkloop M5 PaperColor";
   config.clientRegion = "cn";
+  config.clientVersion = kBuildVersion;
   config.systemPrompt =
       "你是 Inkloop PaperColor 的语音助手。生成图片时使用当前 400x600 "
       "竖向六色电子纸画布（设备底边朝下），并优先输出高对比度、少渐变、"

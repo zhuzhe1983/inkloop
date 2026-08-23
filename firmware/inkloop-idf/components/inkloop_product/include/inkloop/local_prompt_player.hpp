@@ -12,6 +12,14 @@ enum class LocalPrompt : uint8_t {
   PleaseWait,
   AlbumEmpty,
   DeviceRestored,
+  ConfirmationRequired,
+  ConfirmationExpired,
+  StorageQueried,
+  StorageFormatted,
+  ImageDeleted,
+  AlbumCleared,
+  SettingsSaved,
+  Error,
 };
 
 struct LocalPromptDiagnostics {

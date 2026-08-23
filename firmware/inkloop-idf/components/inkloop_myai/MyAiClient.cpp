@@ -176,6 +176,8 @@ Status MyAiClient::initialize() {
   credentialHealthy_ = false;
   if (config_.installationFingerprint.empty())
     return Status(ErrorCode::InvalidArgument, 0, "missing installation fingerprint");
+  if (config_.clientVersion.empty() || config_.clientVersion.size() > 40U)
+    return Status(ErrorCode::InvalidArgument, 0, "invalid client version");
   const std::string& mac = config_.macAddress.empty()
       ? config_.installationFingerprint : config_.macAddress;
   if (!canonicalMacAddress(mac))
@@ -540,7 +542,8 @@ Status MyAiClient::openGatewaySession(Capability capability,
       centerRequest("POST", "/api/v1/client/sessions",
                     codec_.sessionRequestBody(
                         capability, credentials_.deviceId,
-                        wireMacAddress(), config_.clientRegion),
+                        wireMacAddress(), config_.clientRegion,
+                        config_.clientVersion),
                     true),
       requestedResponse, RequestKind::CenterAuthenticated);
   if (!status.ok()) return status;

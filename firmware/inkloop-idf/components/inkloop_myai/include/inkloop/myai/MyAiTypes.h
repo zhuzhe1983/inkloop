@@ -12,7 +12,6 @@ namespace myai {
 static const char kAppId[] = "inkloop";
 static const char kCenterBaseUrl[] = "https://myai.mess.host";
 static const char kHardwareSku[] = "m5-papercolor-c151";
-static const char kClientVersion[] = "0.1.0";
 static const uint32_t kVoiceSampleRateHz = 16000;
 static const uint8_t kVoiceChannels = 1;
 

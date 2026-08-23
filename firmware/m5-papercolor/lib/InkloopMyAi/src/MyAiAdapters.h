@@ -100,7 +100,8 @@ class IWireCodec {
                                       std::string& providerProfileId) const = 0;
   virtual std::string sessionRequestBody(
       Capability capability, const std::string& deviceId,
-      const std::string& fingerprint, const std::string& clientRegion) const = 0;
+      const std::string& fingerprint, const std::string& clientRegion,
+      const std::string& clientVersion) const = 0;
   virtual Status parseSessionRequest(const std::string& body,
                                      SessionRequestResponse& output) const = 0;
   virtual std::string sessionSelectBody(

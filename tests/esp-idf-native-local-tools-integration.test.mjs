@@ -17,6 +17,7 @@ const opcodes = readFileSync(
 );
 const productCmake = readFileSync(join(product, "CMakeLists.txt"), "utf8");
 const localTools = readFileSync(join(tools, "local_tools.cpp"), "utf8");
+const cloud = readFileSync(join(product, "native_inkloop_service.cpp"), "utf8");
 
 function section(source, start, end) {
   const from = source.indexOf(start);
@@ -193,6 +194,48 @@ test("saved settings cross only their owning lanes and feed real MyAI prompts", 
   assert.match(voice, /validStoredPrompt\(saved_system_prompt\)/);
 });
 
+test("local tool outcomes restore the Arduino offline spoken feedback", () => {
+  const outcome = section(
+    voice,
+    "void NativeVoiceService::publishLocalToolOutcome",
+    "WorkDisposition NativeVoiceService::handleLocalToolCommand",
+  );
+  for (const prompt of [
+    "ConfirmationRequired",
+    "ConfirmationExpired",
+    "StorageQueried",
+    "StorageFormatted",
+    "ImageDeleted",
+    "AlbumCleared",
+    "SettingsSaved",
+    "Error",
+  ]) {
+    assert.match(outcome, new RegExp(`LocalPrompt::${prompt}`));
+  }
+  assert.match(outcome, /enqueueLocalPrompt\(feedback\)/);
+  assert.match(opcodes, /VoicePromptToolStatus/);
+  const playback = section(
+    voice,
+    "WorkDisposition NativeVoiceService::handleLocalPrompt",
+    "WorkDisposition NativeVoiceService::handleVolumePreview",
+  );
+  assert.match(playback, /safety_confirmation/);
+  assert.match(playback, /LocalPrompt::ConfirmationRequired/);
+  assert.match(playback, /!assistance_enabled\s*&&\s*!safety_confirmation/);
+  for (const asset of [
+    "confirmation_press_top_button.wav",
+    "confirmation_expired.wav",
+    "storage_free_space.wav",
+    "storage_formatted.wav",
+    "images_deleted.wav",
+    "images_cleared.wav",
+    "settings_saved.wav",
+    "voice_error.wav",
+  ]) {
+    assert.match(productCmake, new RegExp(asset.replace(".", "\\.")));
+  }
+});
+
 test("MyAI heartbeat yields to capture and playback without moving its deadline", () => {
   const network = section(
     voice,
@@ -219,4 +262,16 @@ test("MyAI heartbeat yields to capture and playback without moving its deadline"
     /heartbeat\.ok\(\)[\s\S]*last_heartbeat_ms_\s*=\s*now/,
   );
   assert.match(voiceHeader, /heartbeat_audio_deferrals/);
+});
+
+test("production cloud and MyAI requests use the running image version", () => {
+  const config = section(
+    voice,
+    "myai::ClientConfig NativeVoiceService::makeConfig",
+    "esp_err_t NativeVoiceService::initialize",
+  );
+  assert.match(config, /esp_app_get_description\(\)/);
+  assert.match(config, /config\.clientVersion\s*=\s*app\s*\?\s*app->version/);
+  assert.match(cloud, /esp_app_get_description\(\)/);
+  assert.match(cloud, /config\.firmware_version\s*=\s*app->version/);
 });

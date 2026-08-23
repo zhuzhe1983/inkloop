@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "esp_mac.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -31,6 +32,23 @@ constexpr uint32_t kMinimumReconnectMs = 1000;
 constexpr uint32_t kAigcPollMs = 5000;
 constexpr uint32_t kAigcPromptMaximum = 1024;
 constexpr uint32_t kLocalToolDeadlineMs = 5000;
+constexpr uint32_t kRepeatedMyAiErrorChatMs = 5U * 60U * 1000U;
+constexpr uint32_t kTutorialRetryMs = 30000U;
+constexpr uint32_t kTutorialResponseTimeoutMs = 120000U;
+
+static_assert(static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Command) ==
+              static_cast<uint8_t>(
+                  diagnostics::SerialDiagnosticMyAiErrorSource::Command));
+static_assert(static_cast<uint8_t>(
+                  NativeNetworkDiagnosticOperation::Heartbeat) ==
+              static_cast<uint8_t>(
+                  diagnostics::SerialDiagnosticMyAiErrorSource::Heartbeat));
+static_assert(static_cast<uint8_t>(myai::ErrorCode::InvalidArgument) ==
+              static_cast<uint8_t>(
+                  diagnostics::SerialDiagnosticMyAiErrorCode::InvalidArgument));
+static_assert(static_cast<uint8_t>(myai::ErrorCode::Cancelled) ==
+              static_cast<uint8_t>(
+                  diagnostics::SerialDiagnosticMyAiErrorCode::Cancelled));
 
 uint32_t diagnosticNowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -68,6 +86,50 @@ class NetworkDiagnosticScope final {
 bool terminalImageSuccess(const std::string& status) {
   return status == "completed" || status == "complete" ||
       status == "succeeded";
+}
+
+const char* myAiErrorSourceName(NativeNetworkDiagnosticOperation source) {
+  switch (source) {
+    case NativeNetworkDiagnosticOperation::Idle: return "tick";
+    case NativeNetworkDiagnosticOperation::Command: return "command";
+    case NativeNetworkDiagnosticOperation::Tick: return "tick";
+    case NativeNetworkDiagnosticOperation::Initialize: return "initialize";
+    case NativeNetworkDiagnosticOperation::ApplyPrompt: return "apply_prompt";
+    case NativeNetworkDiagnosticOperation::Pairing: return "pairing";
+    case NativeNetworkDiagnosticOperation::Authorization:
+      return "authorization";
+    case NativeNetworkDiagnosticOperation::AigcHandoff: return "aigc";
+    case NativeNetworkDiagnosticOperation::VoiceConnect:
+      return "voice_connect";
+    case NativeNetworkDiagnosticOperation::VoiceIngress:
+      return "voice_ingress";
+    case NativeNetworkDiagnosticOperation::CaptureUpload:
+      return "capture_upload";
+    case NativeNetworkDiagnosticOperation::Heartbeat: return "heartbeat";
+  }
+  return "tick";
+}
+
+const char* myAiErrorCodeName(myai::ErrorCode code) {
+  switch (code) {
+    case myai::ErrorCode::None: return "none";
+    case myai::ErrorCode::InvalidArgument: return "invalid_argument";
+    case myai::ErrorCode::InvalidState: return "invalid_state";
+    case myai::ErrorCode::Storage: return "storage";
+    case myai::ErrorCode::Security: return "security";
+    case myai::ErrorCode::Transport: return "transport";
+    case myai::ErrorCode::Protocol: return "protocol";
+    case myai::ErrorCode::Unauthorized: return "unauthorized";
+    case myai::ErrorCode::PaymentRequired: return "payment_required";
+    case myai::ErrorCode::RecoveryRequired: return "recovery_required";
+    case myai::ErrorCode::PairingExpired: return "pairing_expired";
+    case myai::ErrorCode::Conflict: return "conflict";
+    case myai::ErrorCode::AppNotRegistered: return "app_not_registered";
+    case myai::ErrorCode::NoGateway: return "no_gateway";
+    case myai::ErrorCode::TooLarge: return "too_large";
+    case myai::ErrorCode::Cancelled: return "cancelled";
+  }
+  return "protocol";
 }
 
 std::string safeAigcFailureState(const myai::Status& status) {
@@ -190,6 +252,54 @@ diagnostics::SerialDiagnosticVoiceState serialVoiceState(
   return SerialDiagnosticVoiceState::Error;
 }
 
+onboarding::TutorialStep nextTutorialStep(onboarding::TutorialStep step) {
+  using onboarding::TutorialStep;
+  switch (step) {
+    case TutorialStep::PressToTalk: return TutorialStep::VoiceLedStates;
+    case TutorialStep::VoiceLedStates: return TutorialStep::GalleryPaging;
+    case TutorialStep::GalleryPaging: return TutorialStep::DisplayBusyGuard;
+    case TutorialStep::DisplayBusyGuard: return TutorialStep::LocalPortal;
+    case TutorialStep::LocalPortal: return TutorialStep::Complete;
+    case TutorialStep::Complete: return TutorialStep::Complete;
+  }
+  return TutorialStep::PressToTalk;
+}
+
+std::string tutorialPrompt(onboarding::TutorialStep step,
+                           const BoardDescriptor& board) {
+  const char* lesson = nullptr;
+  switch (step) {
+    case onboarding::TutorialStep::PressToTalk:
+      lesson = "这是第一段。按一下顶部按键开始讲话，再按一下结束录音。请等左侧状态灯变绿后再说话。";
+      break;
+    case onboarding::TutorialStep::VoiceLedStates:
+      lesson = "这是第二段。左侧灯表示语音状态：绿色正在听，思考和播报时会切换状态；红色表示暂时无法语音，请稍后重试。";
+      break;
+    case onboarding::TutorialStep::GalleryPaging:
+      lesson = "这是第三段。用屏幕侧边的上、下按键浏览缓存相册。快速连续选择时，设备会先播报序号，停留一秒后才刷新最终选中的图片。";
+      break;
+    case onboarding::TutorialStep::DisplayBusyGuard:
+      lesson = "这是第四段。墨水屏正在刷新时请耐心等待，设备会忽略翻页，避免重复写屏。右侧状态灯表示图片生成、下载、转换和写屏进度。";
+      break;
+    case onboarding::TutorialStep::LocalPortal:
+      lesson = "这是最后一段。你可以访问 inkloop 点 local 管理相册、存储、音量、提示词和 MyAI，也可以直接用语音生成图片或管理设备。教程结束。";
+      break;
+    case onboarding::TutorialStep::Complete:
+      return std::string();
+  }
+  std::string prompt =
+      "Inkloop 首次使用教程播报。请只用自然、简洁的中文准确复述下面引号里的内容，不要回答问题，不要调用工具，不要生成图片，不要增加开场白或结束语。设备是 ";
+  prompt += board.id ? board.id : "Inkloop 墨水屏";
+  prompt += "，屏幕尺寸 ";
+  prompt += std::to_string(board.width);
+  prompt += " 乘 ";
+  prompt += std::to_string(board.height);
+  prompt += "。\n\"";
+  prompt += lesson;
+  prompt += "\"";
+  return prompt;
+}
+
 }  // namespace
 
 NativeVoiceService::NativeVoiceService(IBoardAdapter& board,
@@ -278,9 +388,11 @@ bool NativeVoiceService::maintenanceBlocksInteractiveWork() const {
   return blocked;
 }
 
-bool NativeVoiceService::beginTrackedStorageWork() {
+bool NativeVoiceService::beginTrackedStorageWork(
+    bool requires_album_storage) {
   portENTER_CRITICAL(&maintenance_mux_);
-  if (storage_maintenance_active_ || !storage_available_ ||
+  if (storage_maintenance_active_ ||
+      (requires_album_storage && !storage_available_) ||
       tracked_storage_work_ == std::numeric_limits<uint32_t>::max()) {
     portEXIT_CRITICAL(&maintenance_mux_);
     return false;
@@ -448,6 +560,8 @@ myai::ClientConfig NativeVoiceService::makeConfig() const {
   config.macAddress = wire_mac;
   config.deviceLabel = myAiDeviceLabel(board_.descriptor());
   config.clientRegion = "cn";
+  const esp_app_desc_t* app = esp_app_get_description();
+  config.clientVersion = app ? app->version : std::string();
   config.systemPrompt = defaultAssistantPrompt(board_.descriptor());
   return config;
 }
@@ -503,6 +617,22 @@ esp_err_t NativeVoiceService::initialize() {
   storage::ChatRecovery recovery;
   const storage::ChatLogResult recovered = chat_log_->recover(recovery);
   if (!recovered.ok()) return ESP_FAIL;
+
+  const onboarding::TutorialStateResult tutorial_loaded =
+      tutorial_.initialize();
+  if (tutorial_loaded == onboarding::TutorialStateResult::InvalidArgument) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  portENTER_CRITICAL(&tutorial_mux_);
+  tutorial_snapshot_.step = tutorial_.step();
+  tutorial_snapshot_.in_flight = false;
+  tutorial_snapshot_.persistence_pending = false;
+  tutorial_snapshot_.persistence_error = tutorial_.persistenceError();
+  portEXIT_CRITICAL(&tutorial_mux_);
+  if (tutorial_loaded == onboarding::TutorialStateResult::Corrupt ||
+      tutorial_loaded == onboarding::TutorialStateResult::Storage) {
+    ESP_LOGW(kTag, "tutorial state unavailable; replaying from first step");
+  }
 
   myai::ClientConfig config = makeConfig();
   std::string saved_system_prompt;
@@ -576,6 +706,9 @@ void NativeVoiceService::shutdown() {
   portENTER_CRITICAL(&onboarding_mux_);
   onboarding_ = NativeMyAiOnboardingSnapshot{};
   portEXIT_CRITICAL(&onboarding_mux_);
+  portENTER_CRITICAL(&tutorial_mux_);
+  tutorial_snapshot_ = NativeTutorialSnapshot{};
+  portEXIT_CRITICAL(&tutorial_mux_);
   portENTER_CRITICAL(&chat_snapshot_state_mux_);
   chat_snapshot_mailbox_ = NativeLocalChatSnapshot{};
   chat_snapshot_request_pending_ = false;
@@ -602,6 +735,8 @@ void NativeVoiceService::shutdown() {
   next_voice_reconnect_ms_ = 0U;
   last_heartbeat_ms_ = 0U;
   next_aigc_poll_ms_ = 0U;
+  next_tutorial_retry_ms_ = 0U;
+  tutorial_response_deadline_ms_ = 0U;
   activation_state_ = myai::ActivationState::Unconfigured;
   network_voice_state_ = myai::VoiceState::Idle;
   voice_task_state_ = myai::VoiceState::Idle;
@@ -624,6 +759,7 @@ void NativeVoiceService::shutdown() {
   volume_preview_active_ = false;
   pairing_start_requested_ = false;
   rebind_requested_ = false;
+  tutorial_response_observed_ = false;
   voice_hardware_available_ = false;
   initialized_ = false;
 }
@@ -721,8 +857,21 @@ AdmissionResult NativeVoiceService::enqueueLocalPrompt(LocalPrompt prompt) {
     case LocalPrompt::DeviceRestored:
       opcode = ProductOpcode::VoicePromptDeviceRestored;
       break;
+    case LocalPrompt::ConfirmationRequired:
+    case LocalPrompt::ConfirmationExpired:
+    case LocalPrompt::StorageQueried:
+    case LocalPrompt::StorageFormatted:
+    case LocalPrompt::ImageDeleted:
+    case LocalPrompt::AlbumCleared:
+    case LocalPrompt::SettingsSaved:
+    case LocalPrompt::Error:
+      opcode = ProductOpcode::VoicePromptToolStatus;
+      break;
   }
-  return post(WorkClass::Voice, opcode, 0, kResponsiveDeadlineMs);
+  const uint8_t flags = opcode == ProductOpcode::VoicePromptToolStatus
+      ? static_cast<uint8_t>(prompt)
+      : 0U;
+  return post(WorkClass::Voice, opcode, flags, kResponsiveDeadlineMs);
 }
 
 AdmissionResult NativeVoiceService::enqueueVolumePreview(
@@ -746,6 +895,18 @@ AdmissionResult NativeVoiceService::enqueueRebindMyAi() {
   if (!initialized_) return AdmissionResult::NotReady;
   return post(WorkClass::MyAiNetwork, ProductOpcode::NetworkRebindMyAi, 0,
               kNetworkDeadlineMs);
+}
+
+AdmissionResult NativeVoiceService::enqueueRestartTutorial() {
+  if (!initialized_) return AdmissionResult::NotReady;
+  portENTER_CRITICAL(&tutorial_mux_);
+  const bool busy = tutorial_snapshot_.in_flight ||
+      tutorial_snapshot_.persistence_pending;
+  portEXIT_CRITICAL(&tutorial_mux_);
+  if (busy) return AdmissionResult::QueueFull;
+  return scheduleTutorialPersistence(onboarding::TutorialStep::PressToTalk)
+      ? AdmissionResult::Admitted
+      : AdmissionResult::QueueFull;
 }
 
 AdmissionResult NativeVoiceService::enqueueImageGeneration(
@@ -976,7 +1137,9 @@ WorkDisposition NativeVoiceService::handleVoice(
       envelope.opcode == productOpcode(ProductOpcode::VoicePromptPleaseWait) ||
       envelope.opcode == productOpcode(ProductOpcode::VoicePromptAlbumEmpty) ||
       envelope.opcode ==
-          productOpcode(ProductOpcode::VoicePromptDeviceRestored)) {
+          productOpcode(ProductOpcode::VoicePromptDeviceRestored) ||
+      envelope.opcode ==
+          productOpcode(ProductOpcode::VoicePromptToolStatus)) {
     return handleLocalPrompt(envelope);
   }
   if (envelope.opcode == productOpcode(ProductOpcode::VoiceStartCapture))
@@ -1018,9 +1181,16 @@ WorkDisposition NativeVoiceService::handleLocalPrompt(
   const bool assistance_enabled = voice_assistance_enabled_;
   portEXIT_CRITICAL(&settings_mux_);
   // This preference suppresses routine navigation/status speech only. The
-  // explicit volume-preview action deliberately bypasses it so the slider is
-  // still testable after an experienced user disables assistance.
-  if (!assistance_enabled) return WorkDisposition::Complete;
+  // explicit volume-preview action and destructive-operation confirmation
+  // deliberately bypass it: disabling convenience narration must never make
+  // a physical safety confirmation ambiguous.
+  const bool safety_confirmation =
+      envelope.opcode ==
+          productOpcode(ProductOpcode::VoicePromptToolStatus) &&
+      envelope.flags ==
+          static_cast<uint8_t>(LocalPrompt::ConfirmationRequired);
+  if (!assistance_enabled && !safety_confirmation)
+    return WorkDisposition::Complete;
   if (local_prompts_.busy()) local_prompts_.cancel(*audio_device_);
   restoreVolumeAfterPreview();
   const bool network_turn_active = voice_begin_pending_ ||
@@ -1062,6 +1232,13 @@ WorkDisposition NativeVoiceService::handleLocalPrompt(
              productOpcode(ProductOpcode::VoicePromptDeviceRestored)) {
     accepted =
         local_prompts_.request(LocalPrompt::DeviceRestored, *audio_device_);
+  } else if (envelope.opcode ==
+                 productOpcode(ProductOpcode::VoicePromptToolStatus) &&
+             envelope.flags >=
+                 static_cast<uint8_t>(LocalPrompt::ConfirmationRequired) &&
+             envelope.flags <= static_cast<uint8_t>(LocalPrompt::Error)) {
+    accepted = local_prompts_.request(
+        static_cast<LocalPrompt>(envelope.flags), *audio_device_);
   }
   if (!accepted) {
     noteLocalAudioActive(false);
@@ -1319,7 +1496,9 @@ bool NativeVoiceService::handleControlResult(
        envelope.opcode ==
            productOpcode(ProductOpcode::StorageReadLocalChat) ||
        envelope.opcode ==
-           productOpcode(ProductOpcode::StorageClearLocalChat)))
+           productOpcode(ProductOpcode::StorageClearLocalChat) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::StorageSetTutorialState)))
     return true;
   if (envelope.work_class == WorkClass::Storage &&
       envelope.opcode == productOpcode(
@@ -1546,6 +1725,108 @@ bool NativeVoiceService::applyPendingSystemPrompt() {
   return true;
 }
 
+bool NativeVoiceService::scheduleTutorialPersistence(
+    onboarding::TutorialStep step) {
+  if (!onboarding::validTutorialStep(step) ||
+      !beginTrackedStorageWork(false))
+    return false;
+  portENTER_CRITICAL(&tutorial_mux_);
+  if (tutorial_snapshot_.persistence_pending) {
+    portEXIT_CRITICAL(&tutorial_mux_);
+    finishTrackedStorageWork();
+    return false;
+  }
+  tutorial_snapshot_.persistence_pending = true;
+  portEXIT_CRITICAL(&tutorial_mux_);
+
+  const AdmissionResult admitted = post(
+      WorkClass::Storage, ProductOpcode::StorageSetTutorialState,
+      static_cast<uint8_t>(step), 0U);
+  if (admitted != AdmissionResult::Admitted) {
+    portENTER_CRITICAL(&tutorial_mux_);
+    tutorial_snapshot_.persistence_pending = false;
+    portEXIT_CRITICAL(&tutorial_mux_);
+    finishTrackedStorageWork();
+    return false;
+  }
+  return true;
+}
+
+void NativeVoiceService::serviceTutorial(uint32_t now_ms) {
+  NativeTutorialSnapshot tutorial = tutorialSnapshot();
+  if (tutorial.in_flight) {
+    if (tutorial_response_deadline_ms_ != 0U &&
+        due(now_ms, tutorial_response_deadline_ms_)) {
+      client_->disconnectVoice("tutorial_response_timeout");
+      portENTER_CRITICAL(&tutorial_mux_);
+      tutorial_snapshot_.in_flight = false;
+      tutorial_response_observed_ = false;
+      portEXIT_CRITICAL(&tutorial_mux_);
+      tutorial_response_deadline_ms_ = 0U;
+      noteVoiceTurnActive(false);
+      next_tutorial_retry_ms_ = now_ms + kTutorialRetryMs;
+      queueChat(ProductTextKind::ToolState,
+                "tutorial.timeout retry=30s");
+      scheduleReconnect(kMinimumReconnectMs);
+    }
+    return;
+  }
+  portENTER_CRITICAL(&settings_mux_);
+  const bool voice_assistance = voice_assistance_enabled_;
+  portEXIT_CRITICAL(&settings_mux_);
+  if (tutorial.step == onboarding::TutorialStep::Complete ||
+      tutorial.persistence_pending ||
+      !due(now_ms, next_tutorial_retry_ms_) || !client_ ||
+      !voice_hardware_available_ || !wss_.connected() ||
+      activation_state_ != myai::ActivationState::Bound ||
+      !authorization_verified_ ||
+      network_voice_state_ != myai::VoiceState::Ready ||
+      !voice_assistance || voice_begin_pending_ || aigcBusy() ||
+      interactiveAudioBusy()) {
+    return;
+  }
+
+  const std::string prompt = tutorialPrompt(tutorial.step,
+                                             board_.descriptor());
+  if (prompt.empty()) {
+    (void)scheduleTutorialPersistence(onboarding::TutorialStep::Complete);
+    return;
+  }
+
+  portENTER_CRITICAL(&tutorial_mux_);
+  if (tutorial_snapshot_.in_flight ||
+      tutorial_snapshot_.persistence_pending ||
+      tutorial_snapshot_.step != tutorial.step) {
+    portEXIT_CRITICAL(&tutorial_mux_);
+    return;
+  }
+  tutorial_snapshot_.in_flight = true;
+  tutorial_response_observed_ = false;
+  portEXIT_CRITICAL(&tutorial_mux_);
+  tutorial_response_deadline_ms_ = now_ms + kTutorialResponseTimeoutMs;
+
+  noteVoiceTurnActive(true);
+  postVoiceState(myai::VoiceState::Thinking);
+  queueChat(ProductTextKind::ToolState,
+            std::string("tutorial.started step=") +
+                onboarding::tutorialStepName(tutorial.step));
+  const myai::Status requested = client_->requestResponse(prompt);
+  if (requested.ok()) return;
+
+  portENTER_CRITICAL(&tutorial_mux_);
+  tutorial_snapshot_.in_flight = false;
+  tutorial_response_observed_ = false;
+  portEXIT_CRITICAL(&tutorial_mux_);
+  tutorial_response_deadline_ms_ = 0U;
+  noteVoiceTurnActive(false);
+  next_tutorial_retry_ms_ = now_ms + kTutorialRetryMs;
+  portENTER_CRITICAL(&diagnostics_mux_);
+  ++diagnostics_.network_failures;
+  portEXIT_CRITICAL(&diagnostics_mux_);
+  onError(requested);
+  postVoiceState(myai::VoiceState::Error);
+}
+
 void NativeVoiceService::networkTick(bool wifi_online) {
   if (!initialized_ || !client_) return;
   NetworkDiagnosticScope tick_operation(
@@ -1721,6 +2002,7 @@ void NativeVoiceService::networkTick(bool wifi_online) {
       return;
     }
   }
+  serviceTutorial(now);
   if (due(now, last_heartbeat_ms_ + kHeartbeatMs)) {
     // Lease maintenance is low-priority control traffic. Never contend with
     // microphone uplink or TTS DMA; leaving last_heartbeat_ms_ unchanged makes
@@ -2117,6 +2399,21 @@ WorkDisposition NativeVoiceService::handleStorage(
       envelope.work_class != WorkClass::Storage || !chat_log_)
     return WorkDisposition::Failed;
   if (envelope.opcode == productOpcode(
+          ProductOpcode::StorageSetTutorialState)) {
+    const onboarding::TutorialStep step =
+        static_cast<onboarding::TutorialStep>(envelope.flags);
+    const onboarding::TutorialStateResult saved = tutorial_.set(step);
+    portENTER_CRITICAL(&tutorial_mux_);
+    tutorial_snapshot_.step = tutorial_.step();
+    tutorial_snapshot_.persistence_pending = false;
+    tutorial_snapshot_.persistence_error = tutorial_.persistenceError();
+    portEXIT_CRITICAL(&tutorial_mux_);
+    finishTrackedStorageWork();
+    return saved == onboarding::TutorialStateResult::Ok
+        ? WorkDisposition::Complete
+        : WorkDisposition::Failed;
+  }
+  if (envelope.opcode == productOpcode(
           ProductOpcode::StorageRecoverLocalChatAfterFormat)) {
     const std::string directory = std::string(storage_root_) + "/inkloop";
     bool recovered = (::mkdir(directory.c_str(),
@@ -2146,7 +2443,9 @@ WorkDisposition NativeVoiceService::handleStorage(
   const bool tracked_opcode =
       envelope.opcode == productOpcode(ProductOpcode::StorageReadLocalChat) ||
       envelope.opcode == productOpcode(ProductOpcode::StorageClearLocalChat) ||
-      envelope.opcode == productOpcode(ProductOpcode::StorageAppendChat);
+      envelope.opcode == productOpcode(ProductOpcode::StorageAppendChat) ||
+      envelope.opcode ==
+          productOpcode(ProductOpcode::StorageSetTutorialState);
   if (!tracked_opcode) return WorkDisposition::Failed;
   auto finish = [this](WorkDisposition disposition) {
     finishTrackedStorageWork();
@@ -2418,6 +2717,51 @@ void NativeVoiceService::publishLocalToolOutcome(
       outcome.command == local_tools::CommandKind::FormatTfCard;
   portEXIT_CRITICAL(&local_tools_mux_);
   queueChat(ProductTextKind::ToolState, describeLocalToolOutcome(outcome));
+  LocalPrompt feedback = LocalPrompt::Error;
+  bool feedback_available = true;
+  if (outcome.code == local_tools::ExecutionCode::ConfirmationRequired) {
+    feedback = LocalPrompt::ConfirmationRequired;
+  } else if (outcome.code == local_tools::ExecutionCode::ConfirmationExpired) {
+    feedback = LocalPrompt::ConfirmationExpired;
+  } else if (outcome.code != local_tools::ExecutionCode::Executed) {
+    feedback_available = outcome.code != local_tools::ExecutionCode::Ignored;
+  } else {
+    switch (outcome.command) {
+      case local_tools::CommandKind::QueryStorage:
+        feedback = LocalPrompt::StorageQueried;
+        break;
+      case local_tools::CommandKind::DeleteImageOrdinal:
+      case local_tools::CommandKind::DeleteImageId:
+        feedback = LocalPrompt::ImageDeleted;
+        break;
+      case local_tools::CommandKind::ClearAlbum:
+        feedback = LocalPrompt::AlbumCleared;
+        break;
+      case local_tools::CommandKind::FormatTfCard:
+        feedback = LocalPrompt::StorageFormatted;
+        break;
+      case local_tools::CommandKind::SetVolume:
+      case local_tools::CommandKind::SetAssistantPrompt:
+      case local_tools::CommandKind::SetAigcPrompt:
+      case local_tools::CommandKind::SetLedMaximumBrightness:
+        feedback = LocalPrompt::SettingsSaved;
+        break;
+      case local_tools::CommandKind::QueryVolume:
+      case local_tools::CommandKind::QueryAssistantPrompt:
+      case local_tools::CommandKind::QueryAigcPrompt:
+      case local_tools::CommandKind::None:
+        // Exact dynamic results stay in the local chat log. Avoid a false
+        // fixed phrase for these queries until dynamic TTS is available.
+        feedback_available = false;
+        break;
+    }
+  }
+  if (feedback_available &&
+      enqueueLocalPrompt(feedback) != AdmissionResult::Admitted) {
+    queueChat(ProductTextKind::ToolState,
+              std::string("local_tool.feedback_queue_busy command=") +
+                  local_tools::commandName(outcome.command));
+  }
   if (outcome.command == local_tools::CommandKind::QueryStorage) {
     diagnostics::SerialDiagnosticEvent event;
     event.kind = diagnostics::SerialDiagnosticEventKind::VoiceToolStorage;
@@ -2579,6 +2923,46 @@ void NativeVoiceService::onVoiceState(myai::VoiceState state) {
   serial_event.kind = diagnostics::SerialDiagnosticEventKind::VoiceState;
   serial_event.code = static_cast<uint8_t>(serialVoiceState(state));
   emitSerialDiagnostic(serial_event);
+
+  bool tutorial_step_spoken = false;
+  bool tutorial_interrupted = false;
+  onboarding::TutorialStep spoken_step = onboarding::TutorialStep::PressToTalk;
+  portENTER_CRITICAL(&tutorial_mux_);
+  if (tutorial_snapshot_.in_flight) {
+    if (state == myai::VoiceState::Speaking) {
+      tutorial_response_observed_ = true;
+    } else if (state == myai::VoiceState::Ready &&
+               tutorial_response_observed_) {
+      spoken_step = tutorial_snapshot_.step;
+      tutorial_snapshot_.in_flight = false;
+      tutorial_response_observed_ = false;
+      tutorial_step_spoken = true;
+    } else if (state == myai::VoiceState::Idle ||
+               state == myai::VoiceState::Error) {
+      tutorial_snapshot_.in_flight = false;
+      tutorial_response_observed_ = false;
+      tutorial_interrupted = true;
+    }
+  }
+  portEXIT_CRITICAL(&tutorial_mux_);
+  if (tutorial_step_spoken) {
+    tutorial_response_deadline_ms_ = 0U;
+    const onboarding::TutorialStep next = nextTutorialStep(spoken_step);
+    if (!scheduleTutorialPersistence(next)) {
+      next_tutorial_retry_ms_ = nowMs() + kTutorialRetryMs;
+      queueChat(ProductTextKind::ToolState,
+                "tutorial.persistence_queue_busy retry=30s");
+    } else {
+      queueChat(ProductTextKind::ToolState,
+                std::string("tutorial.spoken step=") +
+                    onboarding::tutorialStepName(spoken_step));
+    }
+  } else if (tutorial_interrupted) {
+    tutorial_response_deadline_ms_ = 0U;
+    next_tutorial_retry_ms_ = nowMs() + kTutorialRetryMs;
+    queueChat(ProductTextKind::ToolState,
+              "tutorial.interrupted retry=30s");
+  }
   // Connecting is used both for a real button-initiated turn and for the
   // client's idle gateway preconnection/retry loop. Preserve the existing
   // turn authority through Connecting: handleTopButton() has already raised
@@ -2668,10 +3052,70 @@ void NativeVoiceService::onAigcState(myai::AigcState state,
 }
 
 void NativeVoiceService::onError(const myai::Status& status) {
+  if (status.ok()) return;
+  uint8_t raw_source =
+      static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
+  portENTER_CRITICAL(&network_diagnostic_mux_);
+  raw_source = network_diagnostic_operation_;
+  portEXIT_CRITICAL(&network_diagnostic_mux_);
+  NativeNetworkDiagnosticOperation source =
+      raw_source <= static_cast<uint8_t>(
+                        NativeNetworkDiagnosticOperation::Heartbeat)
+      ? static_cast<NativeNetworkDiagnosticOperation>(raw_source)
+      : NativeNetworkDiagnosticOperation::Tick;
+  if (source == NativeNetworkDiagnosticOperation::Idle)
+    source = NativeNetworkDiagnosticOperation::Tick;
+  const uint16_t http_status =
+      status.httpStatus >= 100 && status.httpStatus <= 599
+      ? static_cast<uint16_t>(status.httpStatus)
+      : 0U;
+  const uint32_t now = nowMs();
+  bool append_chat = false;
+  portENTER_CRITICAL(&myai_error_mux_);
+  do {
+    ++myai_error_.sequence;
+  } while (myai_error_.sequence == 0U);
+  myai_error_.source = source;
+  myai_error_.code = status.code;
+  myai_error_.http_status = http_status;
+  myai_error_.retry_after_ms = status.retryAfterMs;
+  myai_error_.observed_at_ms = now;
+  myai_error_.available = true;
+  const bool changed =
+      last_error_chat_source_ != static_cast<uint8_t>(source) ||
+      last_error_chat_code_ != static_cast<uint8_t>(status.code) ||
+      last_error_chat_http_status_ != http_status;
+  if (changed || due(now, next_error_chat_ms_)) {
+    append_chat = true;
+    last_error_chat_source_ = static_cast<uint8_t>(source);
+    last_error_chat_code_ = static_cast<uint8_t>(status.code);
+    last_error_chat_http_status_ = http_status;
+    next_error_chat_ms_ = now + kRepeatedMyAiErrorChatMs;
+  }
+  portEXIT_CRITICAL(&myai_error_mux_);
+
   diagnostics::SerialDiagnosticEvent event;
   event.kind = diagnostics::SerialDiagnosticEventKind::MyAiError;
   event.code = static_cast<uint8_t>(status.code);
+  event.flags = static_cast<uint8_t>(source);
+  event.first = http_status;
+  event.second = status.retryAfterMs;
   emitSerialDiagnostic(event);
+  if (append_chat) {
+    std::string message = "myai.error source=";
+    message += myAiErrorSourceName(source);
+    message += " code=";
+    message += myAiErrorCodeName(status.code);
+    if (http_status != 0U) {
+      message += " http=";
+      message += std::to_string(http_status);
+    }
+    if (status.retryAfterMs != 0U) {
+      message += " retry_ms=";
+      message += std::to_string(status.retryAfterMs);
+    }
+    queueChat(ProductTextKind::ToolState, message);
+  }
   ESP_LOGW(kTag, "MyAI error code=%u http=%d retry_ms=%lu",
            static_cast<unsigned>(status.code), status.httpStatus,
            static_cast<unsigned long>(status.retryAfterMs));
@@ -2688,6 +3132,20 @@ NativeMyAiOnboardingSnapshot NativeVoiceService::onboardingSnapshot() const {
   portENTER_CRITICAL(&onboarding_mux_);
   const NativeMyAiOnboardingSnapshot value = onboarding_;
   portEXIT_CRITICAL(&onboarding_mux_);
+  return value;
+}
+
+NativeMyAiErrorSnapshot NativeVoiceService::myAiErrorSnapshot() const {
+  portENTER_CRITICAL(&myai_error_mux_);
+  const NativeMyAiErrorSnapshot value = myai_error_;
+  portEXIT_CRITICAL(&myai_error_mux_);
+  return value;
+}
+
+NativeTutorialSnapshot NativeVoiceService::tutorialSnapshot() const {
+  portENTER_CRITICAL(&tutorial_mux_);
+  const NativeTutorialSnapshot value = tutorial_snapshot_;
+  portEXIT_CRITICAL(&tutorial_mux_);
   return value;
 }
 

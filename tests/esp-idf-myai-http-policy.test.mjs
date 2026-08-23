@@ -206,6 +206,8 @@ static bool g_peer_private = false;
 static bool g_socket_shutdown = false;
 static bool g_wire_headers_sent = false;
 static bool g_complete_response = true;
+static int g_response_status = 200;
+static esp_err_t g_perform_result = ESP_OK;
 static std::string g_response_body = "{}";
 
 extern "C" int fake_getaddrinfo(const char*, const char*, const addrinfo*,
@@ -302,8 +304,8 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t client) {
       assert(client->config.event_handler(&data) == ESP_OK);
       if (g_socket_shutdown) return ESP_FAIL;
     }
-    client->status = 200;
-    return ESP_OK;
+    client->status = g_response_status;
+    return g_perform_result;
   }
   if (!g_first_perform_saw_all) {
     assert(g_initialized_clients == g_expected_clients);
@@ -370,6 +372,19 @@ int main() {
   assert(http.perform(request, response).ok());
   assert(response.status == 200 && response.body == g_response_body);
   assert(g_wire_headers_sent);
+
+  // IDF reports a disabled-auth-retry 401 as ESP_FAIL. The response headers
+  // are still authoritative, while its undrained body must be discarded.
+  g_response_status = 401;
+  g_perform_result = ESP_FAIL;
+  g_complete_response = false;
+  g_response_body.clear();
+  assert(http.perform(request, response).ok());
+  assert(response.status == 401 && response.body.empty());
+  g_response_status = 200;
+  g_perform_result = ESP_OK;
+  g_complete_response = true;
+  g_response_body = "ok";
 
   g_peer_private = true;
   g_wire_headers_sent = false;

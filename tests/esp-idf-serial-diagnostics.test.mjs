@@ -154,6 +154,21 @@ int main() {
   assert(std::string(frame) == "INKLOOP_VOICE_ASR_FINAL:LOCAL:12\n");
 
   event = {};
+  event.kind = SerialDiagnosticEventKind::MyAiError;
+  event.flags = static_cast<uint8_t>(
+      SerialDiagnosticMyAiErrorSource::Authorization);
+  event.code = static_cast<uint8_t>(
+      SerialDiagnosticMyAiErrorCode::Unauthorized);
+  event.first = 401;
+  event.second = 5000;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_MYAI_ERROR:source=authorization,code=unauthorized,"
+         "http=401,retry_ms=5000\n");
+  event.first = 42;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
+
+  event = {};
   event.kind = SerialDiagnosticEventKind::AigcPhase;
   event.code = static_cast<uint8_t>(
       SerialDiagnosticAigcPhase::DisplayComplete);

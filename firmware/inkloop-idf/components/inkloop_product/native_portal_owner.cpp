@@ -101,6 +101,93 @@ bool boardSupportsRenderStrategy(IBoardAdapter& board,
          renderer->supportsRenderStrategy(strategy);
 }
 
+portal::MyAiPortalErrorSource portalMyAiErrorSource(
+    NativeNetworkDiagnosticOperation source) {
+  switch (source) {
+    case NativeNetworkDiagnosticOperation::Idle:
+      return portal::MyAiPortalErrorSource::None;
+    case NativeNetworkDiagnosticOperation::Command:
+      return portal::MyAiPortalErrorSource::Command;
+    case NativeNetworkDiagnosticOperation::Tick:
+      return portal::MyAiPortalErrorSource::Tick;
+    case NativeNetworkDiagnosticOperation::Initialize:
+      return portal::MyAiPortalErrorSource::Initialize;
+    case NativeNetworkDiagnosticOperation::ApplyPrompt:
+      return portal::MyAiPortalErrorSource::ApplyPrompt;
+    case NativeNetworkDiagnosticOperation::Pairing:
+      return portal::MyAiPortalErrorSource::Pairing;
+    case NativeNetworkDiagnosticOperation::Authorization:
+      return portal::MyAiPortalErrorSource::Authorization;
+    case NativeNetworkDiagnosticOperation::AigcHandoff:
+      return portal::MyAiPortalErrorSource::Aigc;
+    case NativeNetworkDiagnosticOperation::VoiceConnect:
+      return portal::MyAiPortalErrorSource::VoiceConnect;
+    case NativeNetworkDiagnosticOperation::VoiceIngress:
+      return portal::MyAiPortalErrorSource::VoiceIngress;
+    case NativeNetworkDiagnosticOperation::CaptureUpload:
+      return portal::MyAiPortalErrorSource::CaptureUpload;
+    case NativeNetworkDiagnosticOperation::Heartbeat:
+      return portal::MyAiPortalErrorSource::Heartbeat;
+  }
+  return portal::MyAiPortalErrorSource::None;
+}
+
+portal::MyAiPortalErrorCode portalMyAiErrorCode(myai::ErrorCode code) {
+  switch (code) {
+    case myai::ErrorCode::None: return portal::MyAiPortalErrorCode::None;
+    case myai::ErrorCode::InvalidArgument:
+      return portal::MyAiPortalErrorCode::InvalidArgument;
+    case myai::ErrorCode::InvalidState:
+      return portal::MyAiPortalErrorCode::InvalidState;
+    case myai::ErrorCode::Storage:
+      return portal::MyAiPortalErrorCode::Storage;
+    case myai::ErrorCode::Security:
+      return portal::MyAiPortalErrorCode::Security;
+    case myai::ErrorCode::Transport:
+      return portal::MyAiPortalErrorCode::Transport;
+    case myai::ErrorCode::Protocol:
+      return portal::MyAiPortalErrorCode::Protocol;
+    case myai::ErrorCode::Unauthorized:
+      return portal::MyAiPortalErrorCode::Unauthorized;
+    case myai::ErrorCode::PaymentRequired:
+      return portal::MyAiPortalErrorCode::PaymentRequired;
+    case myai::ErrorCode::RecoveryRequired:
+      return portal::MyAiPortalErrorCode::RecoveryRequired;
+    case myai::ErrorCode::PairingExpired:
+      return portal::MyAiPortalErrorCode::PairingExpired;
+    case myai::ErrorCode::Conflict:
+      return portal::MyAiPortalErrorCode::Conflict;
+    case myai::ErrorCode::AppNotRegistered:
+      return portal::MyAiPortalErrorCode::AppNotRegistered;
+    case myai::ErrorCode::NoGateway:
+      return portal::MyAiPortalErrorCode::NoGateway;
+    case myai::ErrorCode::TooLarge:
+      return portal::MyAiPortalErrorCode::TooLarge;
+    case myai::ErrorCode::Cancelled:
+      return portal::MyAiPortalErrorCode::Cancelled;
+  }
+  return portal::MyAiPortalErrorCode::None;
+}
+
+portal::TutorialPortalStep portalTutorialStep(
+    onboarding::TutorialStep step) {
+  switch (step) {
+    case onboarding::TutorialStep::PressToTalk:
+      return portal::TutorialPortalStep::PressToTalk;
+    case onboarding::TutorialStep::VoiceLedStates:
+      return portal::TutorialPortalStep::VoiceLedStates;
+    case onboarding::TutorialStep::GalleryPaging:
+      return portal::TutorialPortalStep::GalleryPaging;
+    case onboarding::TutorialStep::DisplayBusyGuard:
+      return portal::TutorialPortalStep::DisplayBusyGuard;
+    case onboarding::TutorialStep::LocalPortal:
+      return portal::TutorialPortalStep::LocalPortal;
+    case onboarding::TutorialStep::Complete:
+      return portal::TutorialPortalStep::Complete;
+  }
+  return portal::TutorialPortalStep::PressToTalk;
+}
+
 }  // namespace
 
 NativePortalOwner::NativePortalOwner(
@@ -154,6 +241,7 @@ portal::MyAiPortalState NativePortalOwner::portalMyAiState(
       return authorization_verified ? portal::MyAiPortalState::Active
                                     : portal::MyAiPortalState::Bound;
     case myai::ActivationState::PaymentRequired:
+      return portal::MyAiPortalState::PaymentRequired;
     case myai::ActivationState::RecoveryRequired:
       return portal::MyAiPortalState::RecoveryRequired;
     case myai::ActivationState::Offline:
@@ -682,6 +770,12 @@ portal::PortalResult NativePortalOwner::tryEnqueue(
     }
     case portal::PortalCommandType::RebindMyAi:
       break;
+    case portal::PortalCommandType::RestartMyAiTutorial:
+      if (!board_.descriptor().has_microphone ||
+          !board_.descriptor().has_speaker) {
+        return portal::PortalResult::InvalidData;
+      }
+      break;
     case portal::PortalCommandType::GenerateImage:
       if (command.prompt.empty() ||
           command.prompt.size() > portal::kMaximumGeneratePromptBytes) {
@@ -1019,6 +1113,10 @@ void NativePortalOwner::serviceCommand(
     voice_.enqueueRebindMyAi();
     return;
   }
+  if (command.type == portal::PortalCommandType::RestartMyAiTutorial) {
+    voice_.enqueueRestartTutorial();
+    return;
+  }
   if (command.type == portal::PortalCommandType::GenerateImage) {
     voice_.enqueueImageGeneration(command.prompt);
     return;
@@ -1197,6 +1295,21 @@ void NativePortalOwner::refreshState() {
   next.display_total_ms = display_diagnostics.last_album_total_ms;
   next.myai_state = portalMyAiState(onboarding.activation_state,
                                     onboarding.authorization_verified);
+  const NativeMyAiErrorSnapshot myai_error = voice_.myAiErrorSnapshot();
+  if (myai_error.available) {
+    next.myai_error.available = true;
+    next.myai_error.source = portalMyAiErrorSource(myai_error.source);
+    next.myai_error.code = portalMyAiErrorCode(myai_error.code);
+    next.myai_error.http_status = myai_error.http_status;
+    next.myai_error.retry_after_ms = myai_error.retry_after_ms;
+    next.myai_error.sequence = myai_error.sequence;
+    next.myai_error.observed_at_ms = myai_error.observed_at_ms;
+  }
+  const NativeTutorialSnapshot tutorial = voice_.tutorialSnapshot();
+  next.tutorial.step = portalTutorialStep(tutorial.step);
+  next.tutorial.in_flight = tutorial.in_flight;
+  next.tutorial.persistence_pending = tutorial.persistence_pending;
+  next.tutorial.persistence_error = tutorial.persistence_error;
   next.pairing_code = onboarding.device_code.data();
   next.binding_url = onboarding.pairing_view_available
                          ? onboarding.binding_url.data() : std::string();

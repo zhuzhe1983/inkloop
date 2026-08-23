@@ -22,6 +22,10 @@ enum class ProductOpcode : uint16_t {
   VoicePromptPleaseWait = 22,
   VoicePromptAlbumEmpty = 23,
   VoicePromptDeviceRestored = 24,
+  // Additional fixed, offline feedback selected by LocalPrompt in flags.
+  // Tool execution remains on Portal; only bounded prompt playback crosses
+  // to the responsive Voice owner.
+  VoicePromptToolStatus = 25,
   SetVoiceLed = 100,
   SetImageLed = 101,
   SetLedMaximumBrightness = 102,
@@ -35,6 +39,7 @@ enum class ProductOpcode : uint16_t {
   StorageReadLocalChat = 301,
   StorageClearLocalChat = 302,
   StorageRecoverLocalChatAfterFormat = 303,
+  StorageSetTutorialState = 304,
   PortalRunAigc = 400,
   PortalRunLocalTool = 401,
   PortalConfirmLocalTool = 402,

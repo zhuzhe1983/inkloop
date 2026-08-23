@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "inkloop/product_opcodes.hpp"
@@ -73,8 +74,12 @@ esp_err_t NativeInkloopService::initialize() {
   task_store_.reset(
       new (std::nothrow) storage::PosixTaskStore(std::string(task_root_)));
   if (!task_store_ || !task_store_->pathsValid()) return ESP_ERR_NO_MEM;
+  cloud::InkloopCloudConfig config;
+  const esp_app_desc_t* app = esp_app_get_description();
+  if (!app || app->version[0] == '\0') return ESP_ERR_INVALID_VERSION;
+  config.firmware_version = app->version;
   client_.reset(new (std::nothrow) cloud::InkloopCloudClient(
-      cloud::InkloopCloudConfig{}, http_, identity_store_, *task_store_));
+      std::move(config), http_, identity_store_, *task_store_));
   if (!client_) return ESP_ERR_NO_MEM;
   const cloud::InkloopCloudStatus status = client_->initialize();
   if (!status.ok()) {

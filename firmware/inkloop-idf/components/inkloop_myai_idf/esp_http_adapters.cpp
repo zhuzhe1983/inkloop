@@ -302,6 +302,15 @@ Status EspHttpTransport::perform(const HttpRequest& request,
     return Status(ErrorCode::TooLarge, 0,
                   "MyAI HTTP response exceeded its byte limit");
   }
+  // ESP-IDF returns ESP_FAIL when authorization retry is disabled and a
+  // server replies 401, even though the response status is authoritative.
+  // Preserve that status so the portable client can revoke the stale device
+  // credential and start a fresh six-digit pairing flow. The body may not
+  // have been drained on this SDK path, so never expose or parse a partial one.
+  if (response.status == 401) {
+    if (!complete) response.body.clear();
+    return Status::success();
+  }
   if (performed != ESP_OK || !complete || response.status <= 0) {
     response = HttpResponse();
     return Status(ErrorCode::Transport, 0,

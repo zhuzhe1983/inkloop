@@ -21,6 +21,8 @@
 #include "inkloop/myai/esp_http_adapters.hpp"
 #include "inkloop/myai/esp_nvs_credential_store.hpp"
 #include "inkloop/myai/esp_wss_transport.hpp"
+#include "inkloop/onboarding/esp_nvs_tutorial_state_store.hpp"
+#include "inkloop/onboarding/tutorial_state.hpp"
 #include "inkloop/product_opcodes.hpp"
 #include "inkloop/runtime_supervisor.hpp"
 #include "inkloop/status_led_core.hpp"
@@ -106,6 +108,24 @@ enum class NativeNetworkDiagnosticOperation : uint8_t {
   Heartbeat = 11,
 };
 
+struct NativeMyAiErrorSnapshot {
+  NativeNetworkDiagnosticOperation source =
+      NativeNetworkDiagnosticOperation::Idle;
+  myai::ErrorCode code = myai::ErrorCode::None;
+  uint16_t http_status = 0U;
+  uint32_t retry_after_ms = 0U;
+  uint32_t sequence = 0U;
+  uint32_t observed_at_ms = 0U;
+  bool available = false;
+};
+
+struct NativeTutorialSnapshot {
+  onboarding::TutorialStep step = onboarding::TutorialStep::PressToTalk;
+  bool in_flight = false;
+  bool persistence_pending = false;
+  bool persistence_error = false;
+};
+
 struct NativeVoiceSerialDiagnosticSnapshot {
   myai::ActivationState activation_state =
       myai::ActivationState::Unconfigured;
@@ -152,6 +172,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   AdmissionResult enqueueVolumePreview(uint8_t temporary_percent);
   AdmissionResult enqueueStartMyAiPairing();
   AdmissionResult enqueueRebindMyAi();
+  AdmissionResult enqueueRestartTutorial();
   AdmissionResult enqueueImageGeneration(const std::string& prompt);
   AdmissionResult enqueueDiagnosticImageGeneration(
       const std::string& prompt);
@@ -194,6 +215,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool storageMaintenanceActive() const;
   NativeVoiceDiagnostics diagnostics() const;
   NativeMyAiOnboardingSnapshot onboardingSnapshot() const;
+  NativeMyAiErrorSnapshot myAiErrorSnapshot() const;
+  NativeTutorialSnapshot tutorialSnapshot() const;
   NativeVoiceSerialDiagnosticSnapshot serialDiagnosticSnapshot() const;
 
   myai::LocalTranscriptDecision inspect(
@@ -250,12 +273,14 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   void startPairingIfNeeded(uint32_t now_ms);
   myai::Status startPairingNow(uint32_t now_ms);
   void serviceRequestedPairingActions(uint32_t now_ms);
+  void serviceTutorial(uint32_t now_ms);
+  bool scheduleTutorialPersistence(onboarding::TutorialStep step);
   bool acceptAigcPrompt(std::string prompt,
                         bool serial_diagnostic = false,
                         uint64_t queued_ticket = 0U);
   void cancelQueuedAigcAdmission(uint64_t queued_ticket);
   void restoreVolumeAfterPreview();
-  bool beginTrackedStorageWork();
+  bool beginTrackedStorageWork(bool requires_album_storage = true);
   void finishTrackedStorageWork();
   bool maintenanceBlocksInteractiveWork() const;
   bool voiceTurnActive() const;
@@ -301,6 +326,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   myai::JsonSha256CredentialCodec credential_codec_{};
   myai::CredentialPersistenceCore credentials_{credential_journal_,
                                                 credential_codec_};
+  onboarding::EspNvsTutorialStateStore tutorial_store_{};
+  onboarding::TutorialStateCore tutorial_{tutorial_store_};
   myai::CanonicalJsonCodec wire_codec_{};
   std::unique_ptr<EspCrossCoreAudioBridge> audio_bridge_;
   DisabledAudioSink disabled_audio_sink_{};
@@ -326,11 +353,15 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   mutable portMUX_TYPE chat_snapshot_state_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE maintenance_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE network_diagnostic_mux_ = portMUX_INITIALIZER_UNLOCKED;
+  mutable portMUX_TYPE myai_error_mux_ = portMUX_INITIALIZER_UNLOCKED;
+  mutable portMUX_TYPE tutorial_mux_ = portMUX_INITIALIZER_UNLOCKED;
   StaticSemaphore_t chat_snapshot_mutex_storage_{};
   SemaphoreHandle_t chat_snapshot_mutex_ = nullptr;
   NativeLocalChatSnapshot chat_snapshot_mailbox_{};
   NativeVoiceDiagnostics diagnostics_{};
   NativeMyAiOnboardingSnapshot onboarding_{};
+  NativeMyAiErrorSnapshot myai_error_{};
+  NativeTutorialSnapshot tutorial_snapshot_{};
   uint64_t sequence_ = 0;
   uint32_t next_pairing_poll_ms_ = 0;
   uint32_t next_pairing_start_ms_ = 0;
@@ -338,6 +369,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   uint32_t next_voice_reconnect_ms_ = 0;
   uint32_t last_heartbeat_ms_ = 0;
   uint32_t next_aigc_poll_ms_ = 0;
+  uint32_t next_tutorial_retry_ms_ = 0;
+  uint32_t tutorial_response_deadline_ms_ = 0;
   enum class AigcPhase : uint8_t { Idle, PendingHandoff, Start, Poll, Download };
   AigcPhase aigc_phase_ = AigcPhase::Idle;
   bool aigc_admission_pending_ = false;
@@ -373,6 +406,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool volume_preview_active_ = false;
   bool pairing_start_requested_ = false;
   bool rebind_requested_ = false;
+  bool tutorial_response_observed_ = false;
   uint32_t tracked_storage_work_ = 0;
   bool storage_maintenance_active_ = false;
   bool voice_turn_active_ = false;
@@ -390,6 +424,12 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   uint8_t network_diagnostic_operation_ =
       static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
   uint32_t network_diagnostic_started_ms_ = 0U;
+  uint32_t next_error_chat_ms_ = 0U;
+  uint16_t last_error_chat_http_status_ = 0U;
+  uint8_t last_error_chat_source_ =
+      static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
+  uint8_t last_error_chat_code_ =
+      static_cast<uint8_t>(myai::ErrorCode::None);
 };
 
 }  // namespace inkloop
