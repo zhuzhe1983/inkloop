@@ -4,6 +4,8 @@
 #include <array>
 #include <cstring>
 
+#include "esp_timer.h"
+
 namespace inkloop {
 namespace {
 
@@ -193,6 +195,12 @@ esp_err_t EspI2sAudioDevice::beginPlayback(uint32_t sample_rate_hz,
   }
   playback_sample_rate_hz_ = sample_rate_hz;
   playback_channels_ = channels;
+  playback_last_write_us_ = 0;
+  const uint64_t dma_frames =
+      static_cast<uint64_t>(config_.dma_frame_count) *
+      config_.dma_descriptor_count;
+  playback_drain_wait_us_ = static_cast<uint32_t>(
+      (dma_frames * 1000000ULL + sample_rate_hz - 1U) / sample_rate_hz);
   mode_ = Mode::Playback;
   ++diagnostics_.playback_starts;
   return ESP_OK;
@@ -273,8 +281,19 @@ esp_err_t EspI2sAudioDevice::writePlayback(const uint8_t* pcm16,
       source_offset += source_bytes;
     }
   }
-  if (status == ESP_OK) diagnostics_.played_source_bytes += length;
+  if (status == ESP_OK) {
+    diagnostics_.played_source_bytes += length;
+    playback_last_write_us_ = esp_timer_get_time();
+  }
   return status;
+}
+
+bool EspI2sAudioDevice::playbackDrained() const {
+  if (mode_ != Mode::Playback || !playback_channel_) return true;
+  if (playback_last_write_us_ == 0 || playback_drain_wait_us_ == 0)
+    return true;
+  const int64_t elapsed = esp_timer_get_time() - playback_last_write_us_;
+  return elapsed >= static_cast<int64_t>(playback_drain_wait_us_);
 }
 
 esp_err_t EspI2sAudioDevice::releasePlaybackChannel(bool deactivate_codec) {
@@ -292,6 +311,8 @@ esp_err_t EspI2sAudioDevice::releasePlaybackChannel(bool deactivate_codec) {
   }
   playback_sample_rate_hz_ = 0;
   playback_channels_ = 0;
+  playback_last_write_us_ = 0;
+  playback_drain_wait_us_ = 0;
   return first;
 }
 

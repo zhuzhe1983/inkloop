@@ -38,6 +38,7 @@ class LocalPromptPlayer final {
   bool requestOrdinal(size_t one_based_ordinal, bool refresh_start,
                       EspI2sAudioDevice& device);
   bool request(LocalPrompt prompt, EspI2sAudioDevice& device);
+  bool requestVolumePreview(EspI2sAudioDevice& device);
   esp_err_t service(EspI2sAudioDevice& device);
   void cancel(EspI2sAudioDevice& device);
   bool busy() const { return active_; }
@@ -58,6 +59,8 @@ class LocalPromptPlayer final {
   size_t clip_count_ = 0;
   size_t clip_index_ = 0;
   size_t clip_offset_ = 0;
+  size_t tone_sample_offset_ = 0;
+  bool tone_active_ = false;
   bool playback_started_ = false;
   bool active_ = false;
   LocalPromptDiagnostics diagnostics_{};

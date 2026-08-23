@@ -75,6 +75,17 @@ const std::array<EmbeddedAsset, 10> kDigits{{
     INKLOOP_ASSET(ordinal_digit_nine),
 }};
 
+constexpr size_t kPlaybackChunkBytes = 320U;
+constexpr size_t kPreviewToneSamples = 4800U;
+constexpr size_t kPreviewToneChunkSamples = 160U;
+constexpr size_t kPreviewToneFadeSamples = 240U;
+constexpr std::array<int16_t, 32> kSine32{{
+    0, 1951, 3827, 5556, 7071, 8315, 9239, 9808,
+    10000, 9808, 9239, 8315, 7071, 5556, 3827, 1951,
+    0, -1951, -3827, -5556, -7071, -8315, -9239, -9808,
+    -10000, -9808, -9239, -8315, -7071, -5556, -3827, -1951,
+}};
+
 uint16_t readLe16(const uint8_t* bytes) {
   return static_cast<uint16_t>(bytes[0]) |
          static_cast<uint16_t>(bytes[1]) << 8U;
@@ -148,6 +159,8 @@ bool LocalPromptPlayer::replace(const uint8_t* const* starts,
   clip_count_ = count;
   clip_index_ = 0;
   clip_offset_ = 0;
+  tone_sample_offset_ = 0;
+  tone_active_ = false;
   playback_started_ = false;
   active_ = true;
   ++diagnostics_.requests;
@@ -225,6 +238,23 @@ bool LocalPromptPlayer::request(LocalPrompt prompt,
   return replace(starts, ends, 1U, device);
 }
 
+bool LocalPromptPlayer::requestVolumePreview(EspI2sAudioDevice& device) {
+  if (active_ || device.mode() != EspI2sAudioDevice::Mode::Idle) {
+    device.abort();
+    ++diagnostics_.interruptions;
+  }
+  clips_ = {};
+  clip_count_ = 0;
+  clip_index_ = 0;
+  clip_offset_ = 0;
+  tone_sample_offset_ = 0;
+  tone_active_ = true;
+  playback_started_ = false;
+  active_ = true;
+  ++diagnostics_.requests;
+  return true;
+}
+
 esp_err_t LocalPromptPlayer::service(EspI2sAudioDevice& device) {
   if (!active_) return ESP_OK;
   if (!playback_started_) {
@@ -236,7 +266,40 @@ esp_err_t LocalPromptPlayer::service(EspI2sAudioDevice& device) {
     }
     playback_started_ = true;
   }
+  if (tone_active_) {
+    std::array<int16_t, kPreviewToneChunkSamples> pcm{};
+    const size_t remaining = kPreviewToneSamples - tone_sample_offset_;
+    const size_t count = std::min(remaining, pcm.size());
+    for (size_t index = 0; index < count; ++index) {
+      const size_t absolute = tone_sample_offset_ + index;
+      const size_t from_end = kPreviewToneSamples - absolute - 1U;
+      const size_t fade = std::min(
+          kPreviewToneFadeSamples, std::min(absolute, from_end));
+      const size_t phase = absolute < kPreviewToneSamples / 2U
+          ? absolute & 31U
+          : (absolute * 2U) & 31U;
+      pcm[index] = static_cast<int16_t>(
+          static_cast<int32_t>(kSine32[phase]) * fade /
+          kPreviewToneFadeSamples);
+    }
+    const size_t bytes = count * sizeof(int16_t);
+    const esp_err_t written = device.writePlayback(
+        reinterpret_cast<const uint8_t*>(pcm.data()), bytes, 20U);
+    if (written != ESP_OK) {
+      ++diagnostics_.playback_failures;
+      device.abort();
+      active_ = false;
+      playback_started_ = false;
+      tone_active_ = false;
+      return written;
+    }
+    diagnostics_.pcm_bytes += bytes;
+    tone_sample_offset_ += count;
+    if (tone_sample_offset_ == kPreviewToneSamples) tone_active_ = false;
+    return ESP_OK;
+  }
   if (clip_index_ >= clip_count_) {
+    if (!device.playbackDrained()) return ESP_OK;
     const esp_err_t ended = device.endPlayback();
     if (ended != ESP_OK) ++diagnostics_.playback_failures;
     active_ = false;
@@ -245,7 +308,7 @@ esp_err_t LocalPromptPlayer::service(EspI2sAudioDevice& device) {
   }
   const Clip& clip = clips_[clip_index_];
   const size_t remaining = clip.bytes - clip_offset_;
-  const size_t count = std::min<size_t>(remaining, 2048U);
+  const size_t count = std::min<size_t>(remaining, kPlaybackChunkBytes);
   const esp_err_t written =
       device.writePlayback(clip.pcm + clip_offset_, count, 20U);
   if (written != ESP_OK) {
@@ -271,6 +334,8 @@ void LocalPromptPlayer::cancel(EspI2sAudioDevice& device) {
   clip_count_ = 0;
   clip_index_ = 0;
   clip_offset_ = 0;
+  tone_sample_offset_ = 0;
+  tone_active_ = false;
 }
 
 }  // namespace inkloop

@@ -65,6 +65,10 @@ class EspI2sAudioDevice final {
   esp_err_t beginPlayback(uint32_t sample_rate_hz, uint8_t channels);
   esp_err_t writePlayback(const uint8_t* pcm16, size_t length,
                           uint32_t timeout_ms = 20);
+  // The IDF TX write call completes when PCM has entered DMA, not when the
+  // final sample has reached the codec.  Keep the channel alive until one
+  // complete DMA ring has elapsed so short prompts and TTS tails are not cut.
+  bool playbackDrained() const;
   esp_err_t endPlayback();
   void setVolumePercent(uint8_t value) {
     volume_percent_ = value > 100 ? 100 : value;
@@ -91,6 +95,8 @@ class EspI2sAudioDevice final {
   Mode mode_ = Mode::Idle;
   uint32_t playback_sample_rate_hz_ = 0;
   uint8_t playback_channels_ = 0;
+  int64_t playback_last_write_us_ = 0;
+  uint32_t playback_drain_wait_us_ = 0;
   uint8_t volume_percent_ = 60;
   EspI2sAudioDiagnostics diagnostics_{};
 };

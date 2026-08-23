@@ -370,6 +370,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   uint32_t next_voice_reconnect_ms_ = 0;
   uint32_t last_heartbeat_ms_ = 0;
   uint32_t next_aigc_poll_ms_ = 0;
+  uint32_t aigc_deadline_ms_ = 0;
   uint32_t next_tutorial_retry_ms_ = 0;
   uint32_t tutorial_response_deadline_ms_ = 0;
   enum class AigcPhase : uint8_t { Idle, PendingHandoff, Start, Poll, Download };
@@ -399,6 +400,9 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool heartbeat_audio_deferred_ = false;
   bool aigc_exclusive_ = false;
   bool aigc_serial_diagnostic_ = false;
+  // A gateway AIGC action is accepted only for the current, explicit user
+  // utterance. System-authored tutorial response.create calls never arm it.
+  bool voice_aigc_action_armed_ = false;
   bool wifi_was_online_ = false;
   bool local_confirmation_pending_ = false;
   bool local_confirmation_format_pending_ = false;

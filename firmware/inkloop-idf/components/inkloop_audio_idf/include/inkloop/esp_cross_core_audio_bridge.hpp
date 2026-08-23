@@ -31,7 +31,10 @@ class EspCrossCoreAudioBridge final : public myai::IAudioSink {
   static constexpr size_t kMaximumWssAudioMessageBytes = 12U * 1024U;
   static constexpr size_t kPlaybackCapacityBytes = 32U * 1024U;
   static constexpr size_t kCaptureCapacityBytes = 16U * 1024U;
-  static constexpr size_t kPumpFrameBytes = 2048U;
+  // Playback pumps one dynamically sized 10 ms frame.  This upper bound is a
+  // 48 kHz stereo frame; capture is the fixed MyAI 16 kHz mono 10 ms frame.
+  static constexpr size_t kMaximumPlaybackPumpBytes = 1920U;
+  static constexpr size_t kCapturePumpBytes = 320U;
 
   EspCrossCoreAudioBridge();
   ~EspCrossCoreAudioBridge() override;

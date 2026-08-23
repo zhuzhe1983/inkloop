@@ -1,16 +1,23 @@
 #include "inkloop/storage/esp_storage_mount.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 
 #include "driver/sdspi_host.h"
 #include "driver/spi_master.h"
+#include "esp_log.h"
 #include "esp_littlefs.h"
 #include "esp_partition.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace inkloop {
 namespace storage {
 namespace {
+
+constexpr char kTag[] = "ink-storage";
 
 bool validAbsoluteRoot(const char* value) {
   if (!value || value[0] != '/' || value[1] == '\0') return false;
@@ -30,6 +37,21 @@ bool applyCapacity(uint64_t total, uint64_t free,
   status.writable = true;
   status.state = MountState::Mounted;
   return true;
+}
+
+// M5Stack's C151 factory ESP-IDF firmware deliberately probes removable media
+// at 20/10/4 MHz (with a retry at each rate). Some otherwise healthy cards
+// answer the initial SPI commands at 400 kHz but reject the CSD read when the
+// driver switches directly to 25 MHz. Keep the same conservative ladder. A
+// failed esp_vfs_fat_sdspi_mount() releases the SDSPI device/host state, so a
+// later attempt cannot retain a stale card handle or VFS registration.
+constexpr std::array<int, 3> kPaperColorSdProbeKhz{{20000, 10000, 4000}};
+constexpr size_t kPaperColorSdAttemptsPerRate = 2U;
+constexpr uint32_t kPaperColorSdRetryDelayMs = 500U;
+
+bool retryableSdProbeError(esp_err_t status) {
+  return status == ESP_ERR_INVALID_RESPONSE || status == ESP_ERR_TIMEOUT ||
+         status == ESP_ERR_INVALID_CRC;
 }
 
 }  // namespace
@@ -169,7 +191,6 @@ esp_err_t EspStorageMountOwner::mountSd(bool power_ready,
 
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
   host.slot = config_.sd_spi_host;
-  host.max_freq_khz = config_.sd_max_frequency_khz;
   sdspi_device_config_t device = SDSPI_DEVICE_CONFIG_DEFAULT();
   device.host_id = config_.sd_spi_host;
   device.gpio_cs = static_cast<gpio_num_t>(config_.sd_cs_gpio);
@@ -183,8 +204,32 @@ esp_err_t EspStorageMountOwner::mountSd(bool power_ready,
       .disk_status_check_enable = true,
       .use_one_fat = false,
   };
-  result = esp_vfs_fat_sdspi_mount(config_.sd_base_path, &host, &device, &fat,
-                                   &sd_card_);
+  int previous_frequency_khz = 0;
+  for (const int official_frequency_khz : kPaperColorSdProbeKhz) {
+    const int frequency_khz =
+        std::min(config_.sd_max_frequency_khz, official_frequency_khz);
+    if (frequency_khz == previous_frequency_khz) continue;
+    previous_frequency_khz = frequency_khz;
+    host.max_freq_khz = frequency_khz;
+    for (size_t attempt = 0; attempt < kPaperColorSdAttemptsPerRate;
+         ++attempt) {
+      sd_card_ = nullptr;
+      result = esp_vfs_fat_sdspi_mount(config_.sd_base_path, &host, &device,
+                                       &fat, &sd_card_);
+      if (result == ESP_OK) {
+        ESP_LOGI(kTag, "SD mount succeeded at %d KHz attempt=%u",
+                 frequency_khz, static_cast<unsigned>(attempt + 1U));
+        break;
+      }
+      sd_card_ = nullptr;
+      if (!retryableSdProbeError(result)) break;
+      if (attempt + 1U < kPaperColorSdAttemptsPerRate) {
+        vTaskDelay(pdMS_TO_TICKS(kPaperColorSdRetryDelayMs));
+      }
+    }
+    if (result == ESP_OK || !retryableSdProbeError(result)) break;
+    vTaskDelay(pdMS_TO_TICKS(kPaperColorSdRetryDelayMs));
+  }
   if (result != ESP_OK) {
     if (sd_bus_owned_) {
       spi_bus_free(config_.sd_spi_host);

@@ -126,6 +126,14 @@ test("native mount preserves by default and exposes only confirmed TF format", (
   assert.match(header, /sd_miso_gpio = 14/);
   assert.match(header, /sd_mosi_gpio = 13/);
   assert.match(header, /sd_cs_gpio = 47/);
+  assert.match(source, /kPaperColorSdProbeKhz\{\{20000, 10000, 4000\}\}/);
+  assert.match(source, /kPaperColorSdAttemptsPerRate = 2U/);
+  assert.match(source, /retryableSdProbeError/);
+  assert.match(source, /SD mount succeeded at %d KHz attempt=%u/);
+  assert.match(
+    source,
+    /esp_vfs_fat_sdspi_mount[\s\S]*vTaskDelay\(pdMS_TO_TICKS\(kPaperColorSdRetryDelayMs\)\)/,
+  );
   assert.match(manifest, /==1\.22\.3/);
   assert.match(lock, /joltwallet\/littlefs:/);
   assert.match(lock, /version: 1\.22\.3/);

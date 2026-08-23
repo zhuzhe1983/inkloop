@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <new>
 #include <utility>
@@ -30,6 +31,11 @@ constexpr uint32_t kPairingStartRetryMs = 30000;
 constexpr uint32_t kHeartbeatMs = 30000;
 constexpr uint32_t kMinimumReconnectMs = 1000;
 constexpr uint32_t kAigcPollMs = 5000;
+// Match the maintained MyAI Flutter client: a gateway image job gets a
+// bounded three-minute window.  Without this boundary an orphaned `pending`
+// job keeps the AIGC/storage ownership lane and opens a new TLS connection
+// every five seconds forever.
+constexpr uint32_t kAigcTimeoutMs = 3U * 60U * 1000U;
 constexpr uint32_t kAigcPromptMaximum = 1024;
 constexpr uint32_t kLocalToolDeadlineMs = 5000;
 constexpr uint32_t kRepeatedMyAiErrorChatMs = 5U * 60U * 1000U;
@@ -82,11 +88,6 @@ class NetworkDiagnosticScope final {
   uint8_t previous_ = 0U;
   uint32_t previous_started_ms_ = 0U;
 };
-
-bool terminalImageSuccess(const std::string& status) {
-  return status == "completed" || status == "complete" ||
-      status == "succeeded";
-}
 
 const char* myAiErrorSourceName(NativeNetworkDiagnosticOperation source) {
   switch (source) {
@@ -167,6 +168,58 @@ bool sixDigits(const std::string& value) {
   for (char ch : value)
     if (ch < '0' || ch > '9') return false;
   return true;
+}
+
+bool containsAny(const std::string& text,
+                 std::initializer_list<const char*> values) {
+  for (const char* value : values) {
+    if (value && text.find(value) != std::string::npos) return true;
+  }
+  return false;
+}
+
+// MyAI owns prompt optimization, but the device retains the final authority
+// to execute a tool. Require an explicit image-making request from the latest
+// ASR utterance so a normal question, a stale action, or the firmware-authored
+// tutorial cannot accidentally enqueue an image job.
+bool explicitImageIntent(const std::string& text) {
+  if (text.empty() || text.size() > kAigcPromptMaximum) return false;
+  std::string normalized = text;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char ch) {
+                   return static_cast<char>(
+                       ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
+                 });
+  if (containsAny(normalized,
+                  {"不要生成", "不要画", "不要绘制", "不生成图片",
+                   "do not generate", "don't generate", "dont generate",
+                   "not generate", "do not draw", "don't draw"})) {
+    return false;
+  }
+  if (containsAny(normalized,
+                  {"什么是", "为什么", "怎么", "如何", "解释", "介绍",
+                   "what is", "why ", "how to", "explain "})) {
+    return false;
+  }
+  if (containsAny(normalized,
+                  {"帮我生成", "请生成", "给我生成", "我要生成", "想生成",
+                   "画一", "画个", "画一个", "帮我画", "请画", "给我画",
+                   "来一张", "做一张", "换一张", "draw a ", "draw an ",
+                   "paint a ", "paint an "})) {
+    return true;
+  }
+  const bool chinese_action = containsAny(
+      normalized, {"生成", "绘制", "创作", "制作", "设计"});
+  const bool chinese_visual = containsAny(
+      normalized, {"图片", "图像", "一张图", "一幅图", "插画", "海报", "壁纸",
+                   "照片", "素材", "卡片", "屏保", "画面"});
+  if (chinese_action && chinese_visual) return true;
+  const bool english_action = containsAny(
+      normalized, {"generate", "draw", "create", "make", "design", "render"});
+  const bool english_visual = containsAny(
+      normalized, {"image", "picture", "illustration", "poster", "wallpaper",
+                   "photo", "artwork", "card", "screensaver"});
+  return english_action && english_visual;
 }
 
 size_t boundedUtf8Prefix(const std::string& text, size_t maximum) {
@@ -697,11 +750,13 @@ void NativeVoiceService::shutdown() {
   aigc_admission_pending_ = false;
   aigc_admission_ticket_ = 0U;
   aigc_phase_ = AigcPhase::Idle;
+  aigc_deadline_ms_ = 0U;
   aigc_request_ = myai::ImageRequest{};
   aigc_generated_ = myai::AigcGenerateResponse{};
   aigc_status_ = myai::AigcStatusResponse{};
   aigc_exclusive_ = false;
   aigc_serial_diagnostic_ = false;
+  voice_aigc_action_armed_ = false;
   portEXIT_CRITICAL(&aigc_mux_);
   portENTER_CRITICAL(&onboarding_mux_);
   onboarding_ = NativeMyAiOnboardingSnapshot{};
@@ -1282,7 +1337,7 @@ WorkDisposition NativeVoiceService::handleVolumePreview(
   portENTER_CRITICAL(&settings_mux_);
   volume_preview_active_ = true;
   portEXIT_CRITICAL(&settings_mux_);
-  if (!local_prompts_.request(LocalPrompt::DeviceRestored, *audio_device_)) {
+  if (!local_prompts_.requestVolumePreview(*audio_device_)) {
     restoreVolumeAfterPreview();
     noteLocalAudioActive(false);
     postVoiceLed(VoiceLedMode::Error);
@@ -1805,6 +1860,10 @@ void NativeVoiceService::serviceTutorial(uint32_t now_ms) {
   portEXIT_CRITICAL(&tutorial_mux_);
   tutorial_response_deadline_ms_ = now_ms + kTutorialResponseTimeoutMs;
 
+  portENTER_CRITICAL(&aigc_mux_);
+  voice_aigc_action_armed_ = false;
+  portEXIT_CRITICAL(&aigc_mux_);
+
   noteVoiceTurnActive(true);
   postVoiceState(myai::VoiceState::Thinking);
   queueChat(ProductTextKind::ToolState,
@@ -2297,9 +2356,11 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
                   " prompt=" + aigc_request_.prompt);
     status = client_->startImage(aigc_request_, aigc_generated_);
     if (status.ok()) {
+      const uint32_t submitted_at = nowMs();
       portENTER_CRITICAL(&aigc_mux_);
       aigc_phase_ = AigcPhase::Poll;
-      next_aigc_poll_ms_ = nowMs() + kAigcPollMs;
+      next_aigc_poll_ms_ = submitted_at + kAigcPollMs;
+      aigc_deadline_ms_ = submitted_at + kAigcTimeoutMs;
       portEXIT_CRITICAL(&aigc_mux_);
       if (serial_diagnostic) {
         emitSerialAigcPhase(
@@ -2309,23 +2370,34 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
       return;
     }
   } else if (phase == AigcPhase::Poll) {
-    if (!due(nowMs(), next_aigc_poll_ms_)) return;
-    status = client_->pollImage(aigc_generated_.promptId, aigc_status_);
-    if (status.ok() && terminalImageSuccess(aigc_status_.status) &&
-        !aigc_status_.outputs.empty()) {
-      portENTER_CRITICAL(&aigc_mux_);
-      aigc_phase_ = AigcPhase::Download;
-      portEXIT_CRITICAL(&aigc_mux_);
-      if (serial_diagnostic) {
-        emitSerialAigcPhase(
-            diagnostics::SerialDiagnosticAigcPhase::GenerationComplete);
+    const uint32_t now = nowMs();
+    if (due(now, aigc_deadline_ms_)) {
+      status = myai::Status(myai::ErrorCode::Transport, 504,
+                            "image job timed out");
+    } else {
+      if (!due(now, next_aigc_poll_ms_)) return;
+      // Do not retain outputs from an earlier status response when the gateway
+      // returns a later pending/error envelope.
+      aigc_status_ = myai::AigcStatusResponse();
+      status = client_->pollImage(aigc_generated_.promptId, aigc_status_);
+      // The maintained MyAI client treats a bounded output reference as the
+      // readiness contract. Some provider adapters expose outputs before their
+      // textual status reaches one of the historical terminal spellings.
+      if (status.ok() && !aigc_status_.outputs.empty()) {
+        portENTER_CRITICAL(&aigc_mux_);
+        aigc_phase_ = AigcPhase::Download;
+        portEXIT_CRITICAL(&aigc_mux_);
+        if (serial_diagnostic) {
+          emitSerialAigcPhase(
+              diagnostics::SerialDiagnosticAigcPhase::GenerationComplete);
+        }
+        queueChat(ProductTextKind::AigcState, "aigc.generated downloading");
+        return;
       }
-      queueChat(ProductTextKind::AigcState, "aigc.generated downloading");
-      return;
-    }
-    if (status.ok()) {
-      next_aigc_poll_ms_ = nowMs() + kAigcPollMs;
-      return;
+      if (status.ok()) {
+        next_aigc_poll_ms_ = now + kAigcPollMs;
+        return;
+      }
     }
   } else if (phase == AigcPhase::Download) {
     if (!album_mutation_allowed) return;
@@ -2385,6 +2457,7 @@ void NativeVoiceService::finishAigc(bool success, const char* state) {
   aigc_admission_pending_ = false;
   aigc_admission_ticket_ = 0U;
   aigc_phase_ = AigcPhase::Idle;
+  aigc_deadline_ms_ = 0U;
   aigc_exclusive_ = false;
   aigc_serial_diagnostic_ = false;
   portEXIT_CRITICAL(&aigc_mux_);
@@ -2944,6 +3017,13 @@ void NativeVoiceService::onVoiceState(myai::VoiceState state) {
   serial_event.code = static_cast<uint8_t>(serialVoiceState(state));
   emitSerialDiagnostic(serial_event);
 
+  if (state == myai::VoiceState::Ready || state == myai::VoiceState::Idle ||
+      state == myai::VoiceState::Error) {
+    portENTER_CRITICAL(&aigc_mux_);
+    voice_aigc_action_armed_ = false;
+    portEXIT_CRITICAL(&aigc_mux_);
+  }
+
   bool tutorial_step_spoken = false;
   bool tutorial_interrupted = false;
   onboarding::TutorialStep spoken_step = onboarding::TutorialStep::PressToTalk;
@@ -3001,8 +3081,15 @@ void NativeVoiceService::onVoiceState(myai::VoiceState state) {
 
 void NativeVoiceService::onTranscript(const std::string& text, bool final) {
   if (!final) return;
-  if (text.empty() || storage::LocalChatLog::isBlankAudioArtifact(text))
+  if (text.empty() || storage::LocalChatLog::isBlankAudioArtifact(text)) {
+    portENTER_CRITICAL(&aigc_mux_);
+    voice_aigc_action_armed_ = false;
+    portEXIT_CRITICAL(&aigc_mux_);
     return;
+  }
+  portENTER_CRITICAL(&aigc_mux_);
+  voice_aigc_action_armed_ = explicitImageIntent(text);
+  portEXIT_CRITICAL(&aigc_mux_);
   queueChat(ProductTextKind::AsrFinal, text);
   assistant_text_.clear();
   assistant_finalized_ = false;
@@ -3032,12 +3119,24 @@ void NativeVoiceService::onAssistantText(const std::string& text,
 void NativeVoiceService::onLocalCommand(const std::string& command_name,
                                         const std::string&) {
   (void)command_name;
+  portENTER_CRITICAL(&aigc_mux_);
+  voice_aigc_action_armed_ = false;
+  portEXIT_CRITICAL(&aigc_mux_);
   // The slow Portal owner records the actual outcome. Logging recognition
   // here would create a misleading success row before any device action ran.
 }
 
 void NativeVoiceService::onVoiceAction(const myai::VoiceEvent& action) {
   if (action.kind != "aigc.generate") return;
+  portENTER_CRITICAL(&aigc_mux_);
+  const bool armed = voice_aigc_action_armed_;
+  voice_aigc_action_armed_ = false;
+  portEXIT_CRITICAL(&aigc_mux_);
+  if (!armed) {
+    queueChat(ProductTextKind::AigcState,
+              "aigc.rejected_no_explicit_voice_intent");
+    return;
+  }
   const bool accepted = acceptAigcPrompt(action.prompt);
   if (!accepted) {
     queueChat(ProductTextKind::AigcState, "aigc.rejected_busy_or_invalid");

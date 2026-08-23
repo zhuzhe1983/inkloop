@@ -133,6 +133,8 @@ test("native I2S and C151 codecs preserve the official PaperColor wiring", () =>
   assert.match(i2s, /mode_ != Mode::Idle/);
   assert.match(i2s, /i2s_channel_read/);
   assert.match(i2s, /i2s_channel_write/);
+  assert.match(i2s, /bool EspI2sAudioDevice::playbackDrained\(\) const/);
+  assert.match(i2s, /playback_drain_wait_us_/);
   assert.doesNotMatch(i2s, /xTaskCreate|std::thread|malloc\s*\(|new\s+/);
 
   assert.match(codec, /kEs7210Address = 0x40/);
@@ -148,4 +150,24 @@ test("native I2S and C151 codecs preserve the official PaperColor wiring", () =>
   assert.match(codec, /config\.playback_data = GPIO_NUM_38/);
   assert.doesNotMatch(codec, /M5Unified|Arduino\.h|delay\s*\(/);
   assert.match(cmake, /esp_driver_i2s/);
+  assert.match(cmake, /esp_timer/);
+});
+
+test("local prompts and TTS use scheduler-sized frames and drain DMA tails", () => {
+  const bridgeHeader = readFileSync(
+    join(native, "include/inkloop/esp_cross_core_audio_bridge.hpp"), "utf8");
+  const bridge = readFileSync(
+    join(native, "esp_cross_core_audio_bridge.cpp"), "utf8");
+  const prompt = readFileSync(join(
+    repo, "firmware/inkloop-idf/components/inkloop_product/local_prompt_player.cpp"), "utf8");
+
+  assert.match(bridgeHeader, /kMaximumPlaybackPumpBytes = 1920U/);
+  assert.match(bridgeHeader, /kCapturePumpBytes = 320U/);
+  assert.match(bridge, /size_t playbackPumpBytes/);
+  assert.match(bridge, /\(sample_rate_hz \+ 99U\) \/ 100U/);
+  assert.match(bridge, /device\.playbackDrained\(\)/);
+  assert.match(prompt, /kPlaybackChunkBytes = 320U/);
+  assert.match(prompt, /requestVolumePreview/);
+  assert.match(prompt, /kPreviewToneSamples = 4800U/);
+  assert.match(prompt, /if \(!device\.playbackDrained\(\)\) return ESP_OK/);
 });

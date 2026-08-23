@@ -536,10 +536,21 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
     source.indexOf("void NativeVoiceService::finishAigc"),
   );
   assert.match(aigc, /phase == AigcPhase::Poll/);
-  assert.match(aigc, /due\(nowMs\(\), next_aigc_poll_ms_\)/);
-  assert.match(aigc, /next_aigc_poll_ms_ = nowMs\(\) \+ kAigcPollMs/);
+  assert.match(source, /kAigcTimeoutMs = 3U \* 60U \* 1000U/);
+  assert.match(aigc, /due\(now, aigc_deadline_ms_\)/);
+  assert.match(aigc, /due\(now, next_aigc_poll_ms_\)/);
+  assert.match(aigc, /next_aigc_poll_ms_ = now \+ kAigcPollMs/);
   assert.match(aigc, /AigcAlbumSink[\s\S]*downloadImage/);
   assert.match(aigc, /safeAigcFailureState\(status\)/);
+  assert.match(source, /bool explicitImageIntent\(/);
+  assert.match(
+    source,
+    /onTranscript[\s\S]*voice_aigc_action_armed_ = explicitImageIntent\(text\)/,
+  );
+  assert.match(
+    source,
+    /onVoiceAction[\s\S]*const bool armed = voice_aigc_action_armed_[\s\S]*aigc\.rejected_no_explicit_voice_intent/,
+  );
   const diagnostic = source.slice(
     source.indexOf("std::string safeAigcFailureState"),
     source.indexOf("bool sixDigits"),

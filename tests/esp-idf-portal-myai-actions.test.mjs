@@ -71,7 +71,7 @@ test("volume preview is explicit Voice-lane audio and restores persisted volume"
   assert.match(opcodes, /VoicePreviewVolume = 14/);
   const preview = body(voice, "WorkDisposition NativeVoiceService::handleVolumePreview", "void NativeVoiceService::restoreVolumeAfterPreview");
   assert.match(preview, /setVolumePercent\(envelope\.flags\)/);
-  assert.match(preview, /local_prompts_\.request\(LocalPrompt::DeviceRestored/);
+  assert.match(preview, /local_prompts_\.requestVolumePreview/);
   const restore = body(voice, "void NativeVoiceService::restoreVolumeAfterPreview", "WorkDisposition NativeVoiceService::handleTopButton");
   assert.match(restore, /setVolumePercent\(saved\)/);
   assert.match(restore, /hardware_volume_percent_ = saved/);

@@ -1,5 +1,6 @@
 #include "inkloop/esp_cross_core_audio_bridge.hpp"
 
+#include <algorithm>
 #include <array>
 #include <new>
 
@@ -18,6 +19,18 @@ bool transferAccepted(const PcmTransfer& transfer) {
          transfer.signal == PcmFlowSignal::PauseIngress ||
          transfer.signal == PcmFlowSignal::ResumeIngress ||
          transfer.signal == PcmFlowSignal::Closed;
+}
+
+size_t playbackPumpBytes(uint32_t sample_rate_hz, uint8_t channels) {
+  if (sample_rate_hz < 8000U || sample_rate_hz > 48000U ||
+      (channels != 1U && channels != 2U)) {
+    return 0;
+  }
+  const size_t frames = (sample_rate_hz + 99U) / 100U;
+  const size_t bytes = frames * static_cast<size_t>(channels) *
+      sizeof(int16_t);
+  return std::min(bytes,
+                  EspCrossCoreAudioBridge::kMaximumPlaybackPumpBytes);
 }
 
 }  // namespace
@@ -45,7 +58,7 @@ esp_err_t EspCrossCoreAudioBridge::initialize() {
       playback_storage_, kPlaybackCapacityBytes, kPlaybackLowWatermark,
       kPlaybackHighWatermark, kMaximumWssAudioMessageBytes, capture_storage_,
       kCaptureCapacityBytes, kCaptureLowWatermark, kCaptureHighWatermark,
-      kPumpFrameBytes);
+      kCapturePumpBytes);
   if (!core_ || !core_->valid()) {
     releaseBuffers();
     return ESP_ERR_INVALID_STATE;
@@ -211,10 +224,12 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
   }
   if (action != PlaybackHardwareState::Active) return ESP_OK;
 
-  std::array<uint8_t, kPumpFrameBytes> bytes{};
+  std::array<uint8_t, kMaximumPlaybackPumpBytes> bytes{};
+  const size_t pump_bytes = playbackPumpBytes(sample_rate, channels);
+  if (pump_bytes == 0) return ESP_ERR_INVALID_ARG;
   PcmTransfer transfer;
   portENTER_CRITICAL(&mux_);
-  transfer = core_->popPlayback(bytes.data(), bytes.size());
+  transfer = core_->popPlayback(bytes.data(), pump_bytes);
   portEXIT_CRITICAL(&mux_);
   if (transfer.bytes != 0) {
     const esp_err_t written =
@@ -229,7 +244,7 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
     }
   }
   portENTER_CRITICAL(&mux_);
-  if (core_->playbackComplete() &&
+  if (core_->playbackComplete() && device.playbackDrained() &&
       playback_hardware_ == PlaybackHardwareState::Active)
     playback_hardware_ = PlaybackHardwareState::StopPending;
   portEXIT_CRITICAL(&mux_);
@@ -259,7 +274,7 @@ esp_err_t EspCrossCoreAudioBridge::beginCapture(EspI2sAudioDevice& device) {
 
 esp_err_t EspCrossCoreAudioBridge::captureStep(EspI2sAudioDevice& device,
                                                 uint32_t timeout_ms) {
-  std::array<int16_t, kPumpFrameBytes / sizeof(int16_t)> samples{};
+  std::array<int16_t, kCapturePumpBytes / sizeof(int16_t)> samples{};
   size_t count = 0;
   const esp_err_t read =
       device.readCapture(samples.data(), samples.size(), count, timeout_ms);
@@ -313,7 +328,7 @@ void EspCrossCoreAudioBridge::cancelCapture(EspI2sAudioDevice& device) {
 
 myai::Status EspCrossCoreAudioBridge::pumpCaptureToNetwork(
     myai::MyAiClient& client) {
-  std::array<uint8_t, kPumpFrameBytes> bytes{};
+  std::array<uint8_t, kCapturePumpBytes> bytes{};
   PcmTransfer transfer;
   bool should_stop = false;
   portENTER_CRITICAL(&mux_);
