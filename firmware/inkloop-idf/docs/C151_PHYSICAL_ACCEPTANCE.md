@@ -1,15 +1,18 @@
 # M5 PaperColor C151 physical acceptance
 
-Status: **PENDING — this procedure has not been run for the ESP-IDF migration
-image.** Passing host tests, linking an ESP32-S3 binary or observing the old
-Arduino firmware does not change that status.
+Status: **PARTIAL PHYSICAL EVIDENCE — RELEASE STILL PENDING.** The native
+ESP-IDF beta10 image has retained evidence for standard-boundary flash/readback,
+preserved NVS/LittleFS/TF, boot, saved Wi-Fi, Portal health, deep sleep and one
+timer panel-preserving wake. Those observations do not pass any unchecked row
+below and do not transfer to beta11/beta12 without exact-candidate evidence.
 
 This is the release-blocking procedure for the currently attached,
-user-authorized Download-mode C151. Run it only after the final shared-tree
-tests, clean build and fresh independent acceptance pass. The current unit may
-be the first IDF device after verified whole-flash, NVS, LittleFS and TF backups
-and a compatible flash plan. Do not modify MyAI/AaaS, deploy a server, publish
-a release, erase a chip or format media merely because this document exists.
+user-authorized C151. The device normally deep-sleeps and is not assumed to be
+in Download mode. Run a candidate only after its exact shared-tree tests, clean
+build and fresh independent acceptance pass. Do not interfere with the active
+beta10 endurance/gated-beta11 watcher, modify MyAI/AaaS, deploy a server,
+publish a release, erase a chip or format media merely because this document
+exists.
 
 ## 1. Verdict and evidence contract
 
@@ -55,17 +58,19 @@ For each section retain:
 - before/after hashes or inventories for NVS/LittleFS/TF data;
 - exact failure code and a tracked defect for every non-PASS result.
 
-## 2. Preconditions and safe first flash
+## 2. Preconditions and safe candidate flash
 
-Current digital evidence before the physical run: shared-tree ESP-IDF host
-suite **261/261 PASS**; WS43 Portal/OTA outcome **19/19 PASS** with C151
-clean/full link; WS44 promoter **6/6** and OTA regression **36/36 PASS**; WS46
-real repository-external clean C151 release build and OTA/scaffold **50/50
-PASS**. The operator must still bind those results to the exact source and
+Current digital evidence: main `57ec42b` passed the ESP-IDF host suite
+**265/265**, C151/mock clean builds and independent signed beta11 acceptance.
+The isolated next-candidate branch passed **270/270** plus C151/mock links, but
+it still identifies as beta11 and is therefore not flashable. It must be merged
+only after beta11 smoke, versioned strictly above beta11, rebuilt, signed and
+freshly accepted. The operator must bind every result to the exact source and
 binary selected for flashing.
 
-- [ ] WS43 truthful OTA outcome and WS44 stable channel have delivered their
-  reports; the final shared-tree/fresh-acceptance report is PASS.
+- [ ] the candidate's exact source commit, version, C151 binary hash, signed
+  manifest hash and fresh-acceptance report all match; no unversioned branch
+  build is used.
 - [ ] `node --test tests/esp-idf-*.test.mjs` is PASS on the exact tree and its
   output is retained.
 - [ ] official ESP-IDF v6.0.2 clean C151 and mock-SKU builds are PASS; archive
@@ -105,7 +110,9 @@ The TF backup must use a read-only, explicitly validated card-device or mount
 path and include a byte image plus file inventory/hashes. Never infer a TF
 device from an unresolved variable or broad disk path.
 
-Build and flash only after the preconditions pass:
+Build and flash only after the preconditions pass and no gated watcher owns the
+device. For beta11 use its retained accepted external build, not an arbitrary
+rebuild. For a later candidate, archive the exact clean build before flashing:
 
 ```sh
 cd firmware/inkloop-idf
@@ -183,6 +190,22 @@ admission and first visible/audible acknowledgement.
   cleanly. Preview, delete, render-strategy change and “上屏” work after reload
   without stretching the thumbnail to 600 px CSS height.
 
+After beta11 first-cycle evaluation succeeds, the committed Portal harness may
+be run from the isolated worktree. It prompts for the local password through
+`getpass`; never put the password in argv, environment variables or evidence:
+
+```sh
+python3 scripts/papercolor_portal_physical_acceptance.py \
+  --base-url http://inkloop.local --read-only
+python3 scripts/papercolor_portal_physical_acceptance.py \
+  --base-url http://inkloop.local
+```
+
+The full form temporarily changes volume/brightness/render strategy, uploads
+and displays a generated diagnostic PNG, then must restore the previous
+settings/current image and delete the temporary asset. A cleanup failure is a
+failed acceptance, not a warning.
+
 ## 6. Storage, upgrade data and transactions
 
 Use the verified backups to prepare identifiable legacy tasks, album
@@ -241,6 +264,20 @@ or redacted client diagnostics; do not change MyAI/AaaS server code.
 - [ ] local voice tools report space, delete one image, clear album, change
   volume, change agent/AIGC prompts and request TF format. Destructive actions
   require explicit confirmation and report exact local outcomes.
+
+Only a merged, strictly versioned and freshly accepted beta12-or-newer image
+contains the bounded secondary-USB diagnostic protocol. When public MyAI Voice
+and T2I gateways are available, run its exact four-command harness against the
+explicit secondary serial port:
+
+```sh
+python3 scripts/papercolor_myai_physical_acceptance.py \
+  --port "$INKLOOP_C151_PORT"
+```
+
+The harness proves only the emitted machine events and requires a human check
+of audible quality, correct left/right RGB roles and the final lighthouse
+image. It never prints transcripts, codes, credentials or raw serial lines.
 
 ## 8. Inkloop tasks, album navigation and display
 
