@@ -63,6 +63,8 @@ Set every field to the physical truth:
 An unsupported capability returns the neutral value (`nullptr`,
 `GPIO_NUM_NC`, `false` or `ESP_ERR_NOT_SUPPORTED`) and is declared false/zero.
 Never advertise a capability and then emulate success without hardware.
+The descriptor must pass its shared `constexpr valid()` contract; the
+composition root refuses invalid descriptors before hardware initialization.
 
 ## 3. Mandatory adapter behavior
 

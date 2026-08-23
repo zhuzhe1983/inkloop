@@ -19,9 +19,17 @@ enum class BoardButton : uint8_t {
   Voice,
 };
 
+inline constexpr size_t kMaximumBoardIdBytes = 64U;
+inline constexpr uint8_t kMaximumBoardRgbPixels = 8U;
+
 constexpr uint8_t boardButtonMask(BoardButton button) {
   return static_cast<uint8_t>(1U << static_cast<uint8_t>(button));
 }
+
+inline constexpr uint8_t kKnownBoardButtonMask = static_cast<uint8_t>(
+    boardButtonMask(BoardButton::Previous) |
+    boardButtonMask(BoardButton::Next) |
+    boardButtonMask(BoardButton::Voice));
 
 struct BoardDescriptor {
   const char* id;
@@ -37,6 +45,27 @@ struct BoardDescriptor {
 
   constexpr bool supportsButton(BoardButton button) const {
     return (button_mask & boardButtonMask(button)) != 0U;
+  }
+
+  constexpr bool valid() const {
+    if (!id || width == 0U || height == 0U || palette_colors == 0U ||
+        palette_colors > 16U || rgb_pixels > kMaximumBoardRgbPixels ||
+        (button_mask & static_cast<uint8_t>(~kKnownBoardButtonMask)) != 0U) {
+      return false;
+    }
+    bool previous_hyphen = false;
+    for (size_t index = 0; index < kMaximumBoardIdBytes; ++index) {
+      const char character = id[index];
+      if (character == '\0') return index != 0U && !previous_hyphen;
+      const bool hyphen = character == '-';
+      if (!((character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || hyphen) ||
+          (hyphen && (index == 0U || previous_hyphen))) {
+        return false;
+      }
+      previous_hyphen = hyphen;
+    }
+    return false;
   }
 
   constexpr size_t packed4BppFrameBytes() const {

@@ -299,6 +299,8 @@ class PaperColorBoardAdapter final : public IBoardAdapter {
       static_cast<uint8_t>(boardButtonMask(BoardButton::Previous) |
                            boardButtonMask(BoardButton::Next) |
                            boardButtonMask(BoardButton::Voice))};
+  static_assert(descriptor_.valid(),
+                "PaperColor board descriptor must remain valid");
   mutable M5PM1 pm1_{};
   PaperColorAudioCodec audio_codec_{};
   PaperColorEd2208Display display_{};

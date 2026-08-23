@@ -39,9 +39,7 @@ constexpr std::array<BoardButton, 3> kKnownButtons{{
 
 void exercisePortableBoardConsumer(IBoardAdapter& board) {
   const BoardDescriptor& capabilities = board.descriptor();
-  assert(capabilities.id != nullptr);
-  assert(capabilities.width > 0U && capabilities.height > 0U);
-  assert(capabilities.palette_colors > 0U);
+  assert(capabilities.valid());
   assert(board.initialize() == ESP_OK);
 
   IBoardDisplay* display = board.display();
@@ -101,10 +99,33 @@ void exercisePortableBoardConsumer(IBoardAdapter& board) {
 }
 
 int main() {
+  constexpr BoardDescriptor empty_id{
+      "", 128, 296, 2, false, false, false, false, 0, 0};
+  constexpr BoardDescriptor uppercase_id{
+      "Mock-Minimal", 128, 296, 2, false, false, false, false, 0, 0};
+  constexpr BoardDescriptor bad_separator{
+      "mock--minimal", 128, 296, 2, false, false, false, false, 0, 0};
+  constexpr BoardDescriptor zero_width{
+      "mock-minimal", 0, 296, 2, false, false, false, false, 0, 0};
+  constexpr BoardDescriptor excess_palette{
+      "mock-minimal", 128, 296, 17, false, false, false, false, 0, 0};
+  constexpr BoardDescriptor excess_rgb{
+      "mock-minimal", 128, 296, 2, false, false, false, false, 9, 0};
+  constexpr BoardDescriptor unknown_button{
+      "mock-minimal", 128, 296, 2, false, false, false, false, 0, 0x80};
+  static_assert(!empty_id.valid());
+  static_assert(!uppercase_id.valid());
+  static_assert(!bad_separator.valid());
+  static_assert(!zero_width.valid());
+  static_assert(!excess_palette.valid());
+  static_assert(!excess_rgb.valid());
+  static_assert(!unknown_button.valid());
+
   mock_board_reset();
   IBoardAdapter& board = board_adapter();
   const BoardDescriptor& capabilities = board.descriptor();
 
+  assert(capabilities.valid());
   assert(capabilities.width == 128U);
   assert(capabilities.height == 296U);
   assert(capabilities.palette_colors == 2U);
@@ -271,6 +292,20 @@ test("generic board contract contains no fixed PaperColor hardware facts", () =>
     contract,
     /\b(?:400|600)\b|m5|papercolor|c151|ed2208|pm1|GPIO_NUM_\d+|SPI2_HOST|M5Unified|Arduino/i,
   );
+});
+
+test("composition root rejects an invalid board descriptor before hardware initialization", () => {
+  const contract = readFileSync(
+    join(common, "include/inkloop/board.hpp"), "utf8");
+  const main = readFileSync(appMain, "utf8");
+  assert.match(contract, /constexpr bool valid\(\) const/);
+  assert.match(contract, /kMaximumBoardIdBytes = 64U/);
+  assert.match(contract, /kMaximumBoardRgbPixels = 8U/);
+  assert.match(main, /if \(!board\.valid\(\)\)/);
+  assert.match(main, /failPendingBoot\("board_descriptor"\)/);
+  const reject = main.indexOf("if (!board.valid())");
+  const initialize = main.indexOf("board_initialize()");
+  assert.ok(reject >= 0 && initialize > reject);
 });
 
 test("mock board remains an isolated selectable ESP-IDF component", () => {

@@ -380,7 +380,6 @@ class PortalOtaUpdateBridge final
 
 extern "C" void app_main(void) {
   const inkloop::BoardDescriptor board = inkloop::board_descriptor();
-  ESP_LOGI(kTag, "ESP-IDF scaffold board=%s", board.id);
 
   // Observe a pending image before any storage, board or product work. This
   // starts the bounded rollback deadline at the earliest safe point instead of
@@ -419,6 +418,16 @@ extern "C" void app_main(void) {
     ESP_LOGE(kTag, "pending image failed during %s", stage);
     logOtaObservation(failed);
   };
+
+  if (!board.valid()) {
+    ESP_LOGE(kTag, "board descriptor rejected before hardware initialization");
+    failPendingBoot("board_descriptor");
+    runRecoveryNetwork(recoveryDiagnostic(
+        board, inkloop::recovery::RecoveryReason::BootAuditRefused,
+        inkloop::recovery::RecoveryPhase::BootAudit,
+        inkloop::recovery::RecoveryOutcome::Failed));
+  }
+  ESP_LOGI(kTag, "ESP-IDF scaffold board=%s", board.id);
 
   const esp_err_t topology = inkloop::validate_task_topology();
   if (topology != ESP_OK) {

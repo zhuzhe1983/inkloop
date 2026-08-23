@@ -19,6 +19,7 @@ constexpr BoardDescriptor kDescriptor{
     false,
     0,
     boardButtonMask(BoardButton::Next)};
+static_assert(kDescriptor.valid(), "mock board descriptor must remain valid");
 constexpr BoardRenderStrategyCatalog kRenderStrategyCatalog{
     {{{"official-quality", "官方高质量"},
       {"classic-six-color", "经典六色抖动"},
