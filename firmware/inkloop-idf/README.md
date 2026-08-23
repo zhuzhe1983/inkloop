@@ -17,6 +17,8 @@ gate, fresh independent acceptance and the authorized attached-C151 run in
 [the physical acceptance checklist](docs/C151_PHYSICAL_ACCEPTANCE.md) pass.
 The per-capability split between implemented digital behavior and pending
 physical/live evidence is [the migration matrix](docs/MIGRATION_MATRIX.md).
+The required boundary and gates for another hardware SKU are in
+[the board adapter porting contract](docs/BOARD_ADAPTER_PORTING.md).
 The checked-in OTA URL and public key are intentionally empty, so normal OTA
 is fail-closed until a reviewed external signing/channel configuration exists.
 
