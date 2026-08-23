@@ -90,6 +90,37 @@ class ParserTests(unittest.TestCase):
         oversized = bench.analyze_transcript([b"X" * (bench.MAX_LINE_BYTES + 1)])
         self.assertEqual(check(oversized, "serial_protocol_integrity")["status"], "FAIL")
 
+    def test_native_idf_status_is_strict_and_completes_status_command(self):
+        lines = happy_lines()
+        native = (
+            "INKLOOP_STATUS:runtime=1,wifi=1,storage=1,display_busy=0,"
+            "myai_authorized=1,myai_activation=2,voice_state=1"
+        )
+        lines = [native if line.startswith("INKLOOP_STATUS:") else line
+                 for line in lines]
+        report = bench.analyze_transcript(lines, sent_commands=("status",))
+        self.assertEqual(check(report, "serial_protocol_integrity")["status"], "PASS")
+        self.assertEqual(check(report, "diagnostic_command_response")["status"], "PASS")
+
+        invalid = native.replace("myai_activation=2", "myai_activation=99")
+        failed = bench.analyze_transcript(
+            [invalid if line.startswith("INKLOOP_STATUS:") else line
+             for line in happy_lines()],
+            sent_commands=("status",),
+        )
+        self.assertEqual(check(failed, "serial_protocol_integrity")["status"], "FAIL")
+        self.assertEqual(check(failed, "diagnostic_command_response")["status"], "FAIL")
+
+    def test_idf_sixteen_reset_reasons_are_bounded(self):
+        for raw in range(16):
+            analyzer = bench.BenchAnalyzer()
+            analyzer.consume_line(f"INKLOOP_RESET_REASON:{raw}")
+            self.assertEqual(analyzer.protocol_failures, [])
+            self.assertEqual(analyzer.reset_reasons[-1]["raw"], raw)
+        analyzer = bench.BenchAnalyzer()
+        analyzer.consume_line("INKLOOP_RESET_REASON:16")
+        self.assertIn("invalid_reset_reason", analyzer.protocol_failures)
+
     def test_duplicate_same_code_is_allowed_but_two_distinct_codes_fail(self):
         duplicate = bench.analyze_transcript(happy_lines("654321") + [
             "INKLOOP_PAIR_CODE:654321",
@@ -464,7 +495,8 @@ class ParserTests(unittest.TestCase):
         expected = {
             0: "UNKNOWN", 1: "POWERON", 2: "EXT", 3: "SW", 4: "PANIC",
             5: "INT_WDT", 6: "TASK_WDT", 7: "WDT", 8: "DEEPSLEEP",
-            9: "BROWNOUT", 10: "SDIO",
+            9: "BROWNOUT", 10: "SDIO", 11: "USB", 12: "JTAG",
+            13: "EFUSE", 14: "POWER_GLITCH", 15: "CPU_LOCKUP",
         }
         for raw, kind in expected.items():
             with self.subTest(raw=raw):
@@ -477,7 +509,7 @@ class ParserTests(unittest.TestCase):
                 self.assertEqual(
                     check(report, "serial_protocol_integrity")["status"], "PASS"
                 )
-        for invalid in ("", "-1", "11", "15", "999999999999999999999", "true", "POWERON"):
+        for invalid in ("", "-1", "16", "99", "999999999999999999999", "true", "POWERON"):
             with self.subTest(invalid=invalid):
                 line = "INKLOOP_RESET_REASON" + (f":{invalid}" if invalid else "")
                 report = bench.analyze_transcript([
@@ -491,7 +523,7 @@ class ParserTests(unittest.TestCase):
     def test_startup_chain_requires_exact_order_and_nonempty_supported_values(self):
         replacements = (
             ("INKLOOP_RESET_REASON:1", "INKLOOP_RESET_REASON"),
-            ("INKLOOP_RESET_REASON:1", "INKLOOP_RESET_REASON:11"),
+            ("INKLOOP_RESET_REASON:1", "INKLOOP_RESET_REASON:16"),
             ("INKLOOP_BOOT:0.3.0-bench", "INKLOOP_BOOT"),
             ("INKLOOP_BOARD:28", "INKLOOP_BOARD"),
             ("INKLOOP_BOARD:28", "INKLOOP_BOARD:15"),
@@ -557,7 +589,7 @@ class ParserTests(unittest.TestCase):
             self.assertIn(f"`{command}`", runbook)
         for flag in ("--port", "--timeout", "--report", "--test-audio", "--test-rgb", "--test-display"):
             self.assertIn(flag, help_text)
-        self.assertIn("RESET_REASON:0..10", runbook)
+        self.assertIn("RESET_REASON:0..15", runbook)
         self.assertIn("BOARD:28", runbook)
         self.assertIn("fresh receive epoch", runbook)
         self.assertIn("allow_nan=false", runbook)

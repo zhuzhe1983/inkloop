@@ -91,11 +91,33 @@ struct NativeMyAiOnboardingSnapshot {
   bool authorization_verified = false;
 };
 
+enum class NativeNetworkDiagnosticOperation : uint8_t {
+  Idle = 0,
+  Command = 1,
+  Tick = 2,
+  Initialize = 3,
+  ApplyPrompt = 4,
+  Pairing = 5,
+  Authorization = 6,
+  AigcHandoff = 7,
+  VoiceConnect = 8,
+  VoiceIngress = 9,
+  CaptureUpload = 10,
+  Heartbeat = 11,
+};
+
 struct NativeVoiceSerialDiagnosticSnapshot {
   myai::ActivationState activation_state =
       myai::ActivationState::Unconfigured;
   myai::VoiceState voice_state = myai::VoiceState::Idle;
   bool authorization_verified = false;
+  uint8_t aigc_phase = 0U;
+  bool aigc_admission_pending = false;
+  bool aigc_exclusive = false;
+  bool aigc_serial_diagnostic = false;
+  NativeNetworkDiagnosticOperation network_operation =
+      NativeNetworkDiagnosticOperation::Idle;
+  uint32_t network_operation_age_ms = 0U;
 };
 
 // Cross-core MyAI voice composition. All HTTP/WSS/client methods run on the
@@ -303,6 +325,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   mutable portMUX_TYPE settings_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE chat_snapshot_state_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE maintenance_mux_ = portMUX_INITIALIZER_UNLOCKED;
+  mutable portMUX_TYPE network_diagnostic_mux_ = portMUX_INITIALIZER_UNLOCKED;
   StaticSemaphore_t chat_snapshot_mutex_storage_{};
   SemaphoreHandle_t chat_snapshot_mutex_ = nullptr;
   NativeLocalChatSnapshot chat_snapshot_mailbox_{};
@@ -364,6 +387,9 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool initialized_ = false;
   std::atomic<uint8_t> serial_voice_state_{
       static_cast<uint8_t>(myai::VoiceState::Idle)};
+  uint8_t network_diagnostic_operation_ =
+      static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
+  uint32_t network_diagnostic_started_ms_ = 0U;
 };
 
 }  // namespace inkloop

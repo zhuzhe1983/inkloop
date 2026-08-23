@@ -11,6 +11,10 @@ enum class SerialDiagnosticEventKind : uint8_t {
   Command,
   CommandRejected,
   Status,
+  ResetReason,
+  AigcState,
+  NetworkState,
+  SerialState,
   Album,
   VoiceState,
   VoiceAsrFinal,
@@ -52,6 +56,22 @@ enum SerialDiagnosticStatusFlag : uint8_t {
   StatusStorageReady = 1U << 2U,
   StatusDisplayBusy = 1U << 3U,
   StatusMyAiAuthorized = 1U << 4U,
+};
+
+// Stable, credential-free AIGC execution snapshot. The values describe only
+// Inkloop's local ownership handoff, never a provider response or credential.
+enum class SerialDiagnosticAigcRuntimePhase : uint8_t {
+  Idle = 0,
+  PendingHandoff = 1,
+  Start = 2,
+  Poll = 3,
+  Download = 4,
+};
+
+enum SerialDiagnosticAigcStateFlag : uint8_t {
+  AigcAdmissionPending = 1U << 0U,
+  AigcExclusive = 1U << 1U,
+  AigcSerialDiagnostic = 1U << 2U,
 };
 
 // Fixed POD envelope shared by high-priority owners and the low-priority

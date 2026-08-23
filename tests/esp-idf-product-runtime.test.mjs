@@ -53,6 +53,26 @@ test("voice, AIGC cache and album display are native product owners", () => {
   assert.match(voice, /handleNetworkCommand[\s\S]*beginVoiceTurn[\s\S]*disconnectVoice/);
   assert.match(voice, /onTranscript[\s\S]*if \(!final\) return;[\s\S]*ProductTextKind::AsrFinal/);
   assert.match(voice, /PortalRunAigc[\s\S]*serviceAigc/);
+  assert.match(
+    voice,
+    /MyAiAuthorizationRetryPolicy::mayCheck\(activation_state_\)[\s\S]{0,500}checkAuthorization/,
+  );
+  assert.match(
+    voice,
+    /checkAuthorization\(authorized\)[\s\S]{0,500}MyAiAuthorizationRetryPolicy::nextDeadline\(\s*nowMs\(\)/,
+    "authorization retry deadline must be anchored after synchronous I/O returns",
+  );
+  assert.match(
+    voice,
+    /pollPairing\(bound\)[\s\S]{0,500}if \(bound\)[\s\S]{0,300}next_authorization_check_ms_\s*=\s*nowMs\(\)/,
+    "a newly rebound token must not inherit the old token's refresh deadline",
+  );
+  assert.match(voice, /NativeNetworkDiagnosticOperation::VoiceConnect/);
+  assert.match(voice, /NativeNetworkDiagnosticOperation::AigcHandoff/);
+  assert.match(source, /SerialDiagnosticEventKind::ResetReason/);
+  assert.match(source, /SerialDiagnosticEventKind::AigcState/);
+  assert.match(source, /SerialDiagnosticEventKind::NetworkState/);
+  assert.match(source, /SerialDiagnosticEventKind::SerialState/);
   assert.match(voice, /kAigcPollMs = 5000/);
   assert.match(voice, /AigcAlbumSink[\s\S]*takeCommittedAsset/);
   assert.doesNotMatch(voice, /audio_base64|appendAudio|StorageAppendAudio/);

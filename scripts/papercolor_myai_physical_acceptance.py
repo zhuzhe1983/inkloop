@@ -20,6 +20,21 @@ from typing import Callable
 
 
 EVENT_RE = re.compile(r"^INKLOOP_([A-Z][A-Z0-9_]{0,63})(?::(.*))?$")
+STATUS_RE = re.compile(
+    r"^runtime=([01]),wifi=([01]),storage=([01]),display_busy=([01]),"
+    r"myai_authorized=([01]),myai_activation=([0-6]),voice_state=([0-6])$"
+)
+AIGC_STATE_RE = re.compile(
+    r"^phase=([0-4]),admission_pending=([01]),exclusive=([01]),diagnostic=([01])$"
+)
+NETWORK_STATE_RE = re.compile(
+    r"^operation=([0-9]|1[01]),age_ms=([0-9]{1,10}),queue_depth=([0-9]{1,3})$"
+)
+SERIAL_STATE_RE = re.compile(
+    r"^drops=([0-9]{1,10}),write_failures=([0-9]{1,10})$"
+)
+SAFE_RESET_REASONS = frozenset({0, 1, 2, 3, 8, 11, 12})
+MAX_NETWORK_OPERATION_AGE_MS = 120_000
 SAFE_COMMANDS = frozenset({"status", "album-status", "voice-tap", "aigc-test"})
 MAX_LINE_BYTES = 4096
 MAX_EVENTS = 4096
@@ -122,6 +137,60 @@ def wait_listening(events: SerialEvents, after: int) -> int:
     return event.sequence
 
 
+def require_ready_status(detail: str) -> None:
+    match = STATUS_RE.fullmatch(detail)
+    if not match:
+        raise AcceptanceFailure("native status is malformed")
+    runtime, wifi, storage, _display, authorized, activation, _voice = (
+        int(value) for value in match.groups()
+    )
+    if runtime != 1 or wifi != 1 or storage != 1:
+        raise AcceptanceFailure("runtime, Wi-Fi or storage is not ready")
+    # ActivationState::Bound is the stable public value 2. A stale durable
+    # token or transient Offline state must not be mistaken for authorization.
+    if authorized != 1 or activation != 2:
+        raise AcceptanceFailure("MyAI is not currently Bound and authorized")
+
+
+def require_safe_diagnostics(events: SerialEvents, marker: int) -> None:
+    reset = events.wait("RESET_REASON", None, marker, 8)
+    if re.fullmatch(r"[0-9]{1,2}", reset.detail) is None:
+        raise AcceptanceFailure("reset reason is malformed")
+    if int(reset.detail) not in SAFE_RESET_REASONS:
+        raise AcceptanceFailure("unsafe reset reason observed")
+
+    aigc = events.wait("AIGC_STATE", None, marker, 8)
+    aigc_match = AIGC_STATE_RE.fullmatch(aigc.detail)
+    if not aigc_match:
+        raise AcceptanceFailure("AIGC state is malformed")
+    phase, admission, exclusive, _diagnostic = (
+        int(value) for value in aigc_match.groups()
+    )
+    if phase != 0 or admission != 0 or exclusive != 0:
+        raise AcceptanceFailure("AIGC runtime is not idle before test")
+
+    network = events.wait("NETWORK_STATE", None, marker, 8)
+    network_match = NETWORK_STATE_RE.fullmatch(network.detail)
+    if not network_match:
+        raise AcceptanceFailure("Network state is malformed")
+    operation, age_ms, queue_depth = (
+        int(value) for value in network_match.groups()
+    )
+    if (operation == 0 and age_ms != 0) or (
+            operation != 0 and age_ms > MAX_NETWORK_OPERATION_AGE_MS):
+        raise AcceptanceFailure("Network operation is stale")
+    if queue_depth != 0:
+        raise AcceptanceFailure("Network queue is not drained")
+
+    serial_state = events.wait("SERIAL_STATE", None, marker, 8)
+    serial_match = SERIAL_STATE_RE.fullmatch(serial_state.detail)
+    if not serial_match:
+        raise AcceptanceFailure("serial state is malformed")
+    drops, write_failures = (int(value) for value in serial_match.groups())
+    if drops != 0 or write_failures != 0:
+        raise AcceptanceFailure("serial diagnostics are not trustworthy")
+
+
 def run(args: argparse.Namespace) -> None:
     try:
         import serial  # type: ignore
@@ -133,8 +202,11 @@ def run(args: argparse.Namespace) -> None:
         events.drain(0.5)
 
         marker = events.send("status")
-        events.wait("COMMAND", lambda value: value == "status", marker, 5)
-        events.wait("STATUS", None, marker, 8)
+        command = events.wait(
+            "COMMAND", lambda value: value == "status", marker, 5)
+        status = events.wait("STATUS", None, command.sequence, 8)
+        require_ready_status(status.detail)
+        require_safe_diagnostics(events, command.sequence)
         print("STATUS PASS")
 
         marker = events.send("album-status")
@@ -170,6 +242,13 @@ def run(args: argparse.Namespace) -> None:
         events.wait("VOICE_STATE", lambda value: value == "1", speaking.sequence, 120)
         events.reject_error(marker)
         print("VOICE REMOTE TTS PASS")
+
+        marker = events.send("status")
+        command = events.wait(
+            "COMMAND", lambda value: value == "status", marker, 5)
+        status = events.wait("STATUS", None, command.sequence, 8)
+        require_ready_status(status.detail)
+        require_safe_diagnostics(events, command.sequence)
 
         marker = events.send("aigc-test")
         queued = events.wait(

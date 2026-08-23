@@ -80,6 +80,39 @@ size_t formatSerialDiagnosticEvent(const SerialDiagnosticEvent& event,
           static_cast<unsigned>(event.first),
           static_cast<unsigned>(event.second));
       break;
+    case SerialDiagnosticEventKind::ResetReason:
+      written = std::snprintf(output, capacity,
+                              "INKLOOP_RESET_REASON:%lu\n",
+                              static_cast<unsigned long>(event.first));
+      break;
+    case SerialDiagnosticEventKind::AigcState:
+      if (event.code > static_cast<uint8_t>(
+                           SerialDiagnosticAigcRuntimePhase::Download))
+        return 0U;
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_AIGC_STATE:phase=%u,admission_pending=%u,exclusive=%u,"
+          "diagnostic=%u\n",
+          static_cast<unsigned>(event.code),
+          (event.flags & AigcAdmissionPending) != 0U,
+          (event.flags & AigcExclusive) != 0U,
+          (event.flags & AigcSerialDiagnostic) != 0U);
+      break;
+    case SerialDiagnosticEventKind::NetworkState:
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_NETWORK_STATE:operation=%u,age_ms=%lu,queue_depth=%lu\n",
+          static_cast<unsigned>(event.code),
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second));
+      break;
+    case SerialDiagnosticEventKind::SerialState:
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_SERIAL_STATE:drops=%lu,write_failures=%lu\n",
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second));
+      break;
     case SerialDiagnosticEventKind::Album:
       written = event.flags != 0U
           ? std::snprintf(output, capacity, "INKLOOP_ALBUM:READY:%lu:%lu\n",

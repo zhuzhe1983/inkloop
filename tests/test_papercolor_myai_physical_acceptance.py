@@ -56,6 +56,48 @@ class AcceptanceParserTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.AcceptanceFailure, "AIGC_ERROR"):
             events.reject_error(0)
 
+    def test_native_status_requires_bound_authorized_online_storage(self):
+        MODULE.require_ready_status(
+            "runtime=1,wifi=1,storage=1,display_busy=0,"
+            "myai_authorized=1,myai_activation=2,voice_state=1"
+        )
+        for changed in (
+            "runtime=0,wifi=1,storage=1,display_busy=0,myai_authorized=1,myai_activation=2,voice_state=1",
+            "runtime=1,wifi=0,storage=1,display_busy=0,myai_authorized=1,myai_activation=2,voice_state=1",
+            "runtime=1,wifi=1,storage=1,display_busy=0,myai_authorized=0,myai_activation=5,voice_state=1",
+            "runtime=1,wifi=1,storage=1,display_busy=0,myai_authorized=1,myai_activation=99,voice_state=1",
+        ):
+            with self.subTest(changed=changed), self.assertRaises(MODULE.AcceptanceFailure):
+                MODULE.require_ready_status(changed)
+
+    def test_safe_diagnostic_snapshot_rejects_crash_stalls_and_serial_loss(self):
+        healthy = [
+            "INKLOOP_RESET_REASON:3",
+            "INKLOOP_AIGC_STATE:phase=0,admission_pending=0,exclusive=0,diagnostic=0",
+            "INKLOOP_NETWORK_STATE:operation=8,age_ms=120000,queue_depth=0",
+            "INKLOOP_SERIAL_STATE:drops=0,write_failures=0",
+        ]
+        events = MODULE.SerialEvents(FakeSerial(healthy))
+        events.drain(0.01)
+        MODULE.require_safe_diagnostics(events, 0)
+
+        mutations = (
+            (0, "INKLOOP_RESET_REASON:4"),
+            (1, "INKLOOP_AIGC_STATE:phase=1,admission_pending=0,exclusive=0,diagnostic=0"),
+            (2, "INKLOOP_NETWORK_STATE:operation=8,age_ms=120001,queue_depth=0"),
+            (2, "INKLOOP_NETWORK_STATE:operation=0,age_ms=1,queue_depth=0"),
+            (2, "INKLOOP_NETWORK_STATE:operation=0,age_ms=0,queue_depth=1"),
+            (3, "INKLOOP_SERIAL_STATE:drops=1,write_failures=0"),
+        )
+        for index, replacement in mutations:
+            with self.subTest(replacement=replacement):
+                lines = healthy.copy()
+                lines[index] = replacement
+                failed = MODULE.SerialEvents(FakeSerial(lines))
+                failed.drain(0.01)
+                with self.assertRaises(MODULE.AcceptanceFailure):
+                    MODULE.require_safe_diagnostics(failed, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

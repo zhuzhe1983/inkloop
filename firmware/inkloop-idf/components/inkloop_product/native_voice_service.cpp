@@ -14,6 +14,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "inkloop/board_prompt_policy.hpp"
+#include "inkloop/myai_authorization_retry_policy.hpp"
 #include "inkloop/product_opcodes.hpp"
 #include "inkloop/storage/album_index.hpp"
 
@@ -25,12 +26,44 @@ constexpr uint32_t kResponsiveDeadlineMs = 150;
 constexpr uint32_t kNetworkDeadlineMs = 1000;
 constexpr uint32_t kPairingPollMs = 2000;
 constexpr uint32_t kPairingStartRetryMs = 30000;
-constexpr uint32_t kAuthorizationRefreshMs = 10U * 60U * 1000U;
 constexpr uint32_t kHeartbeatMs = 30000;
 constexpr uint32_t kMinimumReconnectMs = 1000;
 constexpr uint32_t kAigcPollMs = 5000;
 constexpr uint32_t kAigcPromptMaximum = 1024;
 constexpr uint32_t kLocalToolDeadlineMs = 5000;
+
+uint32_t diagnosticNowMs() {
+  return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+class NetworkDiagnosticScope final {
+ public:
+  NetworkDiagnosticScope(portMUX_TYPE& mux, uint8_t& operation,
+                         uint32_t& started_ms,
+                         NativeNetworkDiagnosticOperation next)
+      : mux_(mux), operation_(operation), started_ms_(started_ms) {
+    portENTER_CRITICAL(&mux_);
+    previous_ = operation_;
+    previous_started_ms_ = started_ms_;
+    operation_ = static_cast<uint8_t>(next);
+    started_ms_ = diagnosticNowMs();
+    portEXIT_CRITICAL(&mux_);
+  }
+
+  ~NetworkDiagnosticScope() {
+    portENTER_CRITICAL(&mux_);
+    operation_ = previous_;
+    started_ms_ = previous_started_ms_;
+    portEXIT_CRITICAL(&mux_);
+  }
+
+ private:
+  portMUX_TYPE& mux_;
+  uint8_t& operation_;
+  uint32_t& started_ms_;
+  uint8_t previous_ = 0U;
+  uint32_t previous_started_ms_ = 0U;
+};
 
 bool terminalImageSuccess(const std::string& status) {
   return status == "completed" || status == "complete" ||
@@ -574,6 +607,11 @@ void NativeVoiceService::shutdown() {
   voice_task_state_ = myai::VoiceState::Idle;
   serial_voice_state_.store(static_cast<uint8_t>(myai::VoiceState::Idle),
                             std::memory_order_release);
+  portENTER_CRITICAL(&network_diagnostic_mux_);
+  network_diagnostic_operation_ =
+      static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
+  network_diagnostic_started_ms_ = 0U;
+  portEXIT_CRITICAL(&network_diagnostic_mux_);
   client_initialized_ = false;
   authorization_verified_ = false;
   voice_begin_pending_ = false;
@@ -1335,6 +1373,10 @@ bool NativeVoiceService::handleControlResult(
 
 WorkDisposition NativeVoiceService::handleNetworkCommand(
     const WorkEnvelope& envelope) {
+  NetworkDiagnosticScope operation(network_diagnostic_mux_,
+                                   network_diagnostic_operation_,
+                                   network_diagnostic_started_ms_,
+                                   NativeNetworkDiagnosticOperation::Command);
   if (envelope.kind != EnvelopeKind::Command ||
       envelope.work_class != WorkClass::MyAiNetwork || !client_) {
     portENTER_CRITICAL(&diagnostics_mux_);
@@ -1506,6 +1548,10 @@ bool NativeVoiceService::applyPendingSystemPrompt() {
 
 void NativeVoiceService::networkTick(bool wifi_online) {
   if (!initialized_ || !client_) return;
+  NetworkDiagnosticScope tick_operation(
+      network_diagnostic_mux_, network_diagnostic_operation_,
+      network_diagnostic_started_ms_,
+      NativeNetworkDiagnosticOperation::Tick);
   portENTER_CRITICAL(&aigc_mux_);
   const bool aigc_exclusive = aigc_exclusive_;
   portEXIT_CRITICAL(&aigc_mux_);
@@ -1525,6 +1571,10 @@ void NativeVoiceService::networkTick(bool wifi_online) {
   wifi_was_online_ = true;
   const uint32_t now = nowMs();
   if (!client_initialized_) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::Initialize);
     const myai::Status initialized = client_->initialize();
     client_initialized_ = initialized.ok();
     if (!initialized.ok()) {
@@ -1540,13 +1590,29 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     }
   }
 
-  if (!applyPendingSystemPrompt()) return;
+  {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::ApplyPrompt);
+    if (!applyPendingSystemPrompt()) return;
+  }
 
-  serviceRequestedPairingActions(now);
-  startPairingIfNeeded(now);
+  {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::Pairing);
+    serviceRequestedPairingActions(now);
+    startPairingIfNeeded(now);
+  }
 
   if (activation_state_ == myai::ActivationState::Pairing &&
       due(now, next_pairing_poll_ms_)) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::Pairing);
     bool bound = false;
     const myai::Status polled = client_->pollPairing(bound);
     next_pairing_poll_ms_ = now + kPairingPollMs;
@@ -1556,15 +1622,29 @@ void NativeVoiceService::networkTick(bool wifi_online) {
       ++diagnostics_.network_failures;
       portEXIT_CRITICAL(&diagnostics_mux_);
     }
-    if (bound) authorization_verified_ = false;
+    if (bound) {
+      authorization_verified_ = false;
+      // A successful rebind installs a new token. Do not inherit the former
+      // credential's ten-minute refresh deadline: the new token must receive
+      // its first authorization check on the next Network tick.
+      next_authorization_check_ms_ = nowMs();
+    }
   }
 
-  if (activation_state_ != myai::ActivationState::Bound) return;
-  if (!authorization_verified_ || due(now, next_authorization_check_ms_)) {
+  const bool authorization_due = due(now, next_authorization_check_ms_);
+  if (!MyAiAuthorizationRetryPolicy::mayCheck(activation_state_)) return;
+  if (MyAiAuthorizationRetryPolicy::shouldCheck(
+          activation_state_, authorization_due)) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::Authorization);
     bool authorized = false;
     const myai::Status checked = client_->checkAuthorization(authorized);
     authorization_verified_ = checked.ok() && authorized;
-    next_authorization_check_ms_ = now + kAuthorizationRefreshMs;
+    next_authorization_check_ms_ =
+        MyAiAuthorizationRetryPolicy::nextDeadline(
+            nowMs(), authorization_verified_, checked.retryAfterMs);
     publishOnboarding(nullptr);
     if (!authorization_verified_) return;
   }
@@ -1572,7 +1652,13 @@ void NativeVoiceService::networkTick(bool wifi_online) {
   // A manually submitted or voice-authored image request does not depend on
   // an already-open voice socket. Hand it to the exclusive Portal pipeline
   // before spending this tick reconnecting realtime voice.
-  handoffAigcIfReady();
+  {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::AigcHandoff);
+    handoffAigcIfReady();
+  }
   portENTER_CRITICAL(&aigc_mux_);
   const bool handed_to_aigc = aigc_exclusive_;
   portEXIT_CRITICAL(&aigc_mux_);
@@ -1584,11 +1670,19 @@ void NativeVoiceService::networkTick(bool wifi_online) {
   if (!voice_hardware_available_) return;
 
   if (reconnect_cleanup_pending_) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::VoiceConnect);
     client_->disconnectVoice("native_reconnect_cleanup");
     reconnect_cleanup_pending_ = false;
     return;
   }
   if (!wss_.connected() && due(now, next_voice_reconnect_ms_)) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::VoiceConnect);
     const myai::Status connected = client_->connectVoice();
     if (!connected.ok()) {
       scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
@@ -1604,12 +1698,23 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     portEXIT_CRITICAL(&diagnostics_mux_);
   }
   if (!wss_.connected()) return;
-  const myai::Status ingress = wss_.pollIngress();
+  myai::Status ingress;
+  {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::VoiceIngress);
+    ingress = wss_.pollIngress();
+  }
   if (!ingress.ok()) {
     scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
     return;
   }
   if (audio_bridge_->captureBusy()) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::CaptureUpload);
     const myai::Status pumped = audio_bridge_->pumpCaptureToNetwork(*client_);
     if (!pumped.ok()) {
       scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
@@ -1630,6 +1735,10 @@ void NativeVoiceService::networkTick(bool wifi_online) {
       return;
     }
     heartbeat_audio_deferred_ = false;
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::Heartbeat);
     const myai::Status heartbeat = client_->heartbeatVoice();
     if (!heartbeat.ok()) {
       scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
@@ -1765,8 +1874,12 @@ void NativeVoiceService::handoffAigcIfReady() {
   aigc_exclusive_ = true;
   aigc_phase_ = AigcPhase::Start;
   portEXIT_CRITICAL(&aigc_mux_);
+  // Portal owns HTTP serving, album mutations and Inkloop slow I/O. A valid
+  // generation handoff must survive any already-running slow operation; a
+  // one-second deadline could otherwise expire before serviceAigc() ever
+  // emitted STARTING. Queue capacity remains the bounded backpressure.
   const AdmissionResult admitted = post(
-      WorkClass::Portal, ProductOpcode::PortalRunAigc, 0, kNetworkDeadlineMs);
+      WorkClass::Portal, ProductOpcode::PortalRunAigc, 0, 0);
   if (admitted != AdmissionResult::Admitted) {
     finishAigc(false, "aigc.portal_queue_busy");
   }
@@ -2434,10 +2547,15 @@ myai::LocalTranscriptDecision NativeVoiceService::inspect(
 }
 
 void NativeVoiceService::onActivationState(myai::ActivationState state,
-                                            const myai::Status&) {
+                                            const myai::Status& status) {
   activation_state_ = state;
   if (state == myai::ActivationState::Pairing)
     next_pairing_poll_ms_ = nowMs();
+  if (state == myai::ActivationState::Offline) {
+    next_authorization_check_ms_ =
+        MyAiAuthorizationRetryPolicy::nextDeadline(
+            nowMs(), false, status.retryAfterMs);
+  }
   if (state != myai::ActivationState::Bound) authorization_verified_ = false;
   publishOnboarding(nullptr);
   if (state == myai::ActivationState::Unconfigured ||
@@ -2583,6 +2701,25 @@ NativeVoiceService::serialDiagnosticSnapshot() const {
   output.voice_state = state <= static_cast<uint8_t>(myai::VoiceState::Error)
       ? static_cast<myai::VoiceState>(state)
       : myai::VoiceState::Error;
+  portENTER_CRITICAL(&aigc_mux_);
+  output.aigc_phase = static_cast<uint8_t>(aigc_phase_);
+  output.aigc_admission_pending = aigc_admission_pending_;
+  output.aigc_exclusive = aigc_exclusive_;
+  output.aigc_serial_diagnostic = aigc_serial_diagnostic_;
+  portEXIT_CRITICAL(&aigc_mux_);
+  portENTER_CRITICAL(&network_diagnostic_mux_);
+  const uint8_t operation = network_diagnostic_operation_;
+  const uint32_t operation_started = network_diagnostic_started_ms_;
+  portEXIT_CRITICAL(&network_diagnostic_mux_);
+  output.network_operation = operation <= static_cast<uint8_t>(
+          NativeNetworkDiagnosticOperation::Heartbeat)
+      ? static_cast<NativeNetworkDiagnosticOperation>(operation)
+      : NativeNetworkDiagnosticOperation::Idle;
+  output.network_operation_age_ms =
+      output.network_operation == NativeNetworkDiagnosticOperation::Idle ||
+              operation_started == 0U
+          ? 0U
+          : nowMs() - operation_started;
   return output;
 }
 

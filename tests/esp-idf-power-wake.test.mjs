@@ -470,6 +470,11 @@ test("native wake composition is capability-injected and preserves the panel", (
   );
   assert.match(
     nativeVoice,
+    /handoffAigcIfReady\(\)[\s\S]{0,1800}post\(\s*WorkClass::Portal,\s*ProductOpcode::PortalRunAigc,\s*0,\s*0\)/,
+    "the accepted Network-to-Portal AIGC handoff must also be durable",
+  );
+  assert.match(
+    nativeVoice,
     /acceptAigcPrompt\(std::string prompt,[\s\S]{0,900}aigc_admission_ticket_ == queued_ticket[\s\S]{0,500}aigc_admission_pending_ = false[\s\S]{0,160}aigc_phase_ = AigcPhase::PendingHandoff/,
   );
   assert.match(

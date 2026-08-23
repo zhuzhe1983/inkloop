@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "inkloop/product_opcodes.hpp"
 #include "inkloop/slow_io_arbitration.hpp"
@@ -470,6 +471,34 @@ void EspProductRuntime::handleSerialDiagnosticCommand(
         event.flags |= diagnostics::StatusMyAiAuthorized;
       event.first = static_cast<uint8_t>(voice.activation_state);
       event.second = static_cast<uint8_t>(serialVoiceState(voice.voice_state));
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::ResetReason;
+      event.first = static_cast<uint32_t>(esp_reset_reason());
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::AigcState;
+      event.code = voice.aigc_phase;
+      if (voice.aigc_admission_pending)
+        event.flags |= diagnostics::AigcAdmissionPending;
+      if (voice.aigc_exclusive)
+        event.flags |= diagnostics::AigcExclusive;
+      if (voice.aigc_serial_diagnostic)
+        event.flags |= diagnostics::AigcSerialDiagnostic;
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      const RuntimeTelemetrySnapshot runtime = supervisor_.telemetry();
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::NetworkState;
+      event.code = static_cast<uint8_t>(voice.network_operation);
+      event.first = voice.network_operation_age_ms;
+      event.second = runtime.lanes[taskLaneIndex(TaskLane::Network)].queue_depth;
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      const diagnostics::EspSerialDiagnosticsSnapshot serial =
+          serial_diagnostics_.snapshot();
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::SerialState;
+      event.first = serial.event_queue_drops;
+      event.second = serial.write_failures;
       (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
       return;
     }

@@ -100,6 +100,39 @@ int main() {
          "myai_authorized=1,myai_activation=2,voice_state=1\n");
 
   event = {};
+  event.kind = SerialDiagnosticEventKind::ResetReason;
+  event.first = 8;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) == "INKLOOP_RESET_REASON:8\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::AigcState;
+  event.code = static_cast<uint8_t>(
+      SerialDiagnosticAigcRuntimePhase::PendingHandoff);
+  event.flags = AigcAdmissionPending | AigcSerialDiagnostic;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_AIGC_STATE:phase=1,admission_pending=1,exclusive=0,"
+         "diagnostic=1\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::NetworkState;
+  event.code = 8;
+  event.first = 123456;
+  event.second = 2;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_NETWORK_STATE:operation=8,age_ms=123456,queue_depth=2\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::SerialState;
+  event.first = 3;
+  event.second = 4;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_SERIAL_STATE:drops=3,write_failures=4\n");
+
+  event = {};
   event.kind = SerialDiagnosticEventKind::Album;
   event.flags = 1;
   event.first = 12;

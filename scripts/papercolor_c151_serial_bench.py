@@ -48,6 +48,11 @@ RESET_REASON_KINDS = {
     8: "DEEPSLEEP",
     9: "BROWNOUT",
     10: "SDIO",
+    11: "USB",
+    12: "JTAG",
+    13: "EFUSE",
+    14: "POWER_GLITCH",
+    15: "CPU_LOCKUP",
 }
 CONTROLLED_REBOOT_REASON = 3
 
@@ -78,6 +83,10 @@ HUMAN_CHECKS = {
 }
 
 EVENT_RE = re.compile(r"^INKLOOP_([A-Z][A-Z0-9_]{0,63})(?::(.*))?$")
+NATIVE_STATUS_KEYS = (
+    "runtime", "wifi", "storage", "display_busy", "myai_authorized",
+    "myai_activation", "voice_state",
+)
 HARDWARE_ID_RE = re.compile(r"^M5PC-[0-9A-F]{12}$")
 KNOWN_BOOT_NOISE_RE = re.compile(
     r"^(?:ESP-ROM:|Build:|rst:|Saved PC:|SPIWP:|mode:|load:|entry |waiting for download)",
@@ -188,6 +197,7 @@ class BenchAnalyzer:
     command_events: list[tuple[str, int, int, int]] = field(default_factory=list)
     command_echo_events: list[tuple[str, int, int]] = field(default_factory=list)
     diagnostic_responses: list[tuple[str, int, int, str, str]] = field(default_factory=list)
+    native_status_responses: list[tuple[int, int]] = field(default_factory=list)
     boot_events: list[tuple[int, str]] = field(default_factory=list)
     reset_events: list[tuple[int, int]] = field(default_factory=list)
     board_events: list[int] = field(default_factory=list)
@@ -246,6 +256,9 @@ class BenchAnalyzer:
             return any(
                 response_sequence > echo_sequence and response_epoch == command_epoch
                 for _, response_sequence, response_epoch, _, _ in self.diagnostic_responses
+            ) or any(
+                response_sequence > echo_sequence and response_epoch == command_epoch
+                for response_sequence, response_epoch in self.native_status_responses
             )
         expected = EXPECTED_TEST_ACKS.get(command)
         return bool(expected) and any(
@@ -291,7 +304,14 @@ class BenchAnalyzer:
             name = event_match.group(1)
             value = event_match.group(2) or ""
             payload: Any = value
-            if name in {"STATUS", "DIAG", "DIAGNOSTIC"} or value.lstrip().startswith(("{", "[")):
+            if name == "STATUS" and not value.lstrip().startswith(("{", "[")):
+                try:
+                    payload = parse_native_status(value)
+                except JsonInputRejected as error:
+                    self._protocol_failure(error.args[0] if error.args else "malformed_native_status")
+                    self._record_event(elapsed_ms, "protocol", name, "[MALFORMED STATUS]")
+                    return
+            elif name in {"STATUS", "DIAG", "DIAGNOSTIC"} or value.lstrip().startswith(("{", "[")):
                 try:
                     payload = strict_json_loads(value)
                 except JsonInputRejected as error:
@@ -452,6 +472,10 @@ class BenchAnalyzer:
                 firmware, hardware_id = identity
                 self.diagnostic_responses.append(
                     (name, self.input_sequence, self.rx_epoch, firmware, hardware_id)
+                )
+            elif valid_native_status(payload):
+                self.native_status_responses.append(
+                    (self.input_sequence, self.rx_epoch)
                 )
 
         if isinstance(payload, dict):
@@ -862,7 +886,7 @@ class BenchAnalyzer:
                 echoed_command == command
                 and echo_sequence > command_sequence
                 and echo_epoch == command_epoch
-                and any(
+                and (any(
                     response_sequence > echo_sequence
                     and response_epoch == command_epoch
                     and response_firmware in boot_identity_values
@@ -871,7 +895,12 @@ class BenchAnalyzer:
                         _, response_sequence, response_epoch,
                         response_firmware, response_hardware_id,
                     ) in self.diagnostic_responses
-                )
+                ) or any(
+                    response_sequence > echo_sequence
+                    and response_epoch == command_epoch
+                    for response_sequence, response_epoch
+                    in self.native_status_responses
+                ))
                 for echoed_command, echo_sequence, echo_epoch in self.command_echo_events
             )
             for command, command_sequence, command_epoch in diagnostic_command_events
@@ -933,6 +962,36 @@ def valid_diagnostic_identity(payload: Mapping[str, Any]) -> tuple[str, str] | N
     if HARDWARE_ID_RE.fullmatch(normalized_hardware_id) is None:
         return None
     return firmware.strip(), normalized_hardware_id
+
+
+def valid_native_status(payload: Mapping[str, Any]) -> bool:
+    if tuple(payload.keys()) != NATIVE_STATUS_KEYS:
+        return False
+    bits = ("runtime", "wifi", "storage", "display_busy", "myai_authorized")
+    return (
+        all(isinstance(payload[key], int) and payload[key] in (0, 1) for key in bits)
+        and isinstance(payload["myai_activation"], int)
+        and 0 <= payload["myai_activation"] <= 6
+        and isinstance(payload["voice_state"], int)
+        and 0 <= payload["voice_state"] <= 6
+    )
+
+
+def parse_native_status(text: str) -> dict[str, int]:
+    parts = text.split(",")
+    if len(parts) != len(NATIVE_STATUS_KEYS):
+        raise JsonInputRejected("malformed_native_status")
+    output: dict[str, int] = {}
+    for expected, part in zip(NATIVE_STATUS_KEYS, parts):
+        if "=" not in part:
+            raise JsonInputRejected("malformed_native_status")
+        key, raw = part.split("=", 1)
+        if key != expected or re.fullmatch(r"[0-9]+", raw) is None:
+            raise JsonInputRejected("malformed_native_status")
+        output[key] = int(raw)
+    if not valid_native_status(output):
+        raise JsonInputRejected("invalid_native_status")
+    return output
 
 
 def normalized_label(value: str) -> str:
