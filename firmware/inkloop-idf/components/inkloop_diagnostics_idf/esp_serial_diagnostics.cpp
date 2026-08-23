@@ -1,22 +1,21 @@
 #include "inkloop/diagnostics/esp_serial_diagnostics.hpp"
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include "sdkconfig.h"
+
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
+    CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
+#endif
 
 namespace inkloop::diagnostics {
 namespace {
 
-const char* serialDevicePath() {
-#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
-  return "/dev/secondary";
-#elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
-  return "/dev/usbserjtag";
-#else
-  return nullptr;
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
+    CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+constexpr size_t kUsbRxBufferBytes = 256U;
+constexpr size_t kUsbTxBufferBytes = 1024U;
 #endif
-}
 
 }  // namespace
 
@@ -32,11 +31,22 @@ esp_err_t EspSerialDiagnosticsOwner::configure(
   handler_ = handler;
   handler_context_ = context;
 
-  const char* path = serialDevicePath();
-  if (path) descriptor_ = ::open(path, O_RDWR | O_NONBLOCK);
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
+    CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+  if (!usb_serial_jtag_is_driver_installed()) {
+    usb_serial_jtag_driver_config_t config =
+        USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    config.rx_buffer_size = kUsbRxBufferBytes;
+    config.tx_buffer_size = kUsbTxBufferBytes;
+    if (usb_serial_jtag_driver_install(&config) == ESP_OK)
+      usb_driver_owned_ = true;
+  }
+  transport_available_ = usb_serial_jtag_is_driver_installed();
+  if (transport_available_) usb_serial_jtag_vfs_use_driver();
+#endif
   portENTER_CRITICAL(&mux_);
   diagnostics_ = EspSerialDiagnosticsSnapshot{};
-  diagnostics_.transport_available = descriptor_ >= 0;
+  diagnostics_.transport_available = transport_available_;
   portEXIT_CRITICAL(&mux_);
   return ESP_OK;
 }
@@ -44,10 +54,15 @@ esp_err_t EspSerialDiagnosticsOwner::configure(
 void EspSerialDiagnosticsOwner::shutdown() {
   handler_ = nullptr;
   handler_context_ = nullptr;
-  if (descriptor_ >= 0) {
-    ::close(descriptor_);
-    descriptor_ = -1;
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
+    CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+  if (usb_driver_owned_) {
+    usb_serial_jtag_vfs_use_nonblocking();
+    (void)usb_serial_jtag_driver_uninstall();
   }
+#endif
+  usb_driver_owned_ = false;
+  transport_available_ = false;
   if (event_queue_) {
     xQueueReset(event_queue_);
     vQueueDelete(event_queue_);
@@ -61,7 +76,7 @@ void EspSerialDiagnosticsOwner::shutdown() {
 
 bool EspSerialDiagnosticsOwner::postSerialDiagnosticEvent(
     const SerialDiagnosticEvent& event) {
-  if (!event_queue_ || descriptor_ < 0) return false;
+  if (!event_queue_ || !transport_available_) return false;
   if (xQueueSend(event_queue_, &event, 0) == pdPASS) return true;
   portENTER_CRITICAL(&mux_);
   ++diagnostics_.event_queue_drops;
@@ -97,15 +112,20 @@ void EspSerialDiagnosticsOwner::handleParseResult(
 }
 
 void EspSerialDiagnosticsOwner::drainEvents() {
-  if (!event_queue_ || descriptor_ < 0) return;
+  if (!event_queue_ || !transport_available_) return;
   for (size_t count = 0; count < kEventsPerTick; ++count) {
     SerialDiagnosticEvent event;
     if (xQueueReceive(event_queue_, &event, 0) != pdPASS) break;
     std::array<char, kMaximumFrameBytes> frame{};
     const size_t bytes = formatSerialDiagnosticEvent(
         event, frame.data(), frame.size());
-    if (bytes == 0U || ::write(descriptor_, frame.data(), bytes) !=
-                           static_cast<ssize_t>(bytes)) {
+    bool written = false;
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
+    CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+    written = bytes != 0U && usb_serial_jtag_write_bytes(
+        frame.data(), bytes, 0) == static_cast<int>(bytes);
+#endif
+    if (!written) {
       portENTER_CRITICAL(&mux_);
       ++diagnostics_.write_failures;
       portEXIT_CRITICAL(&mux_);
@@ -114,11 +134,16 @@ void EspSerialDiagnosticsOwner::drainEvents() {
 }
 
 void EspSerialDiagnosticsOwner::service() {
-  if (!event_queue_ || descriptor_ < 0) return;
+  if (!event_queue_ || !transport_available_) return;
   std::array<uint8_t, kReadBytesPerTick> input{};
-  const ssize_t read_bytes = ::read(descriptor_, input.data(), input.size());
+  int read_bytes = 0;
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG || \
+    CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+  read_bytes = usb_serial_jtag_read_bytes(
+      input.data(), static_cast<uint32_t>(input.size()), 0);
+#endif
   if (read_bytes > 0) {
-    for (ssize_t index = 0; index < read_bytes; ++index) {
+    for (int index = 0; index < read_bytes; ++index) {
       handleParseResult(parser_.consume(input[static_cast<size_t>(index)]));
     }
   }

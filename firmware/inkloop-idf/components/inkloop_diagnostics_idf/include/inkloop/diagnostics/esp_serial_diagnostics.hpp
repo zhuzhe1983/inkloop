@@ -62,7 +62,8 @@ class EspSerialDiagnosticsOwner final : public ISerialDiagnosticEventSink {
   QueueHandle_t event_queue_ = nullptr;
   SerialDiagnosticCommandHandler handler_ = nullptr;
   void* handler_context_ = nullptr;
-  int descriptor_ = -1;
+  bool usb_driver_owned_ = false;
+  bool transport_available_ = false;
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   EspSerialDiagnosticsSnapshot diagnostics_{};
 };

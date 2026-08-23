@@ -58,7 +58,7 @@ test("serial event envelope cannot carry text, URLs, credentials, or responses",
   );
 });
 
-test("IDF transport is bounded, optional per SKU, and owns no task", () => {
+test("IDF transport uses the bidirectional USB driver without owning a task", () => {
   const owner = read("inkloop_diagnostics_idf/esp_serial_diagnostics.cpp");
   const ownerHeader = read(
     "inkloop_diagnostics_idf/include/inkloop/diagnostics/esp_serial_diagnostics.hpp",
@@ -66,8 +66,12 @@ test("IDF transport is bounded, optional per SKU, and owns no task", () => {
 
   assert.match(owner, /CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG/);
   assert.match(owner, /CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG/);
-  assert.match(owner, /return nullptr/);
-  assert.match(owner, /O_RDWR \| O_NONBLOCK/);
+  assert.match(owner, /usb_serial_jtag_driver_install/);
+  assert.match(owner, /usb_serial_jtag_vfs_use_driver/);
+  assert.match(owner, /usb_serial_jtag_read_bytes\([\s\S]*?, 0\)/);
+  assert.match(owner, /usb_serial_jtag_write_bytes\([\s\S]*?, 0\)/);
+  assert.match(owner, /usb_serial_jtag_vfs_use_nonblocking/);
+  assert.match(owner, /usb_serial_jtag_driver_uninstall/);
   assert.match(owner, /xQueueSend\(event_queue_, &event, 0\)/);
   assert.match(owner, /xQueueReceive\(event_queue_, &event, 0\)/);
   assert.doesNotMatch(owner + ownerHeader, /xTaskCreate|vTaskDelay|portMAX_DELAY/);
