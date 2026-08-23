@@ -342,6 +342,8 @@ int main() {
   assert(rendered.body.find("visibilitychange") != std::string::npos);
   assert(rendered.body.find("portal.hidden") != std::string::npos);
   assert(rendered.body.find("cadence=5000") != std::string::npos);
+  assert(rendered.body.find("active!=='settings'&&active!=='myai'") !=
+         std::string::npos);
   assert(rendered.body.find("displayTimingSignature") != std::string::npos);
   assert(rendered.body.find("storageCapacitySignature") != std::string::npos);
   assert(rendered.body.find("storageFreeBytes") != std::string::npos);

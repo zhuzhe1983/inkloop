@@ -478,9 +478,18 @@ test("browser requires explicit choice and confirmation with display semantics",
   assert.ok(html);
   assert.match(html, /采用目标画面并完成事务/);
   assert.match(html, /保留上一画面并放弃事务/);
-  assert.match(html, /Current 是已提交版本/);
+  assert.match(html, /Current、Next、Previous 仅是物理槽位名/);
+  assert.match(html, /不保证新旧来源/);
+  assert.match(html, /采用 Current 槽位/);
+  assert.match(html, /采用 Next 槽位/);
+  assert.match(html, /采用 Previous 槽位/);
+  assert.doesNotMatch(
+    html,
+    /Current 是已提交版本|当前已提交|最新待提交|上一回滚/,
+  );
   assert.match(html, /条目：/);
   assert.match(html, /更新时间：/);
+  assert.match(html, /摘要、条目数和文件时间核对差异/);
   assert.match(html, /必须手动选择一项并勾选明确确认/);
   assert.match(
     html,

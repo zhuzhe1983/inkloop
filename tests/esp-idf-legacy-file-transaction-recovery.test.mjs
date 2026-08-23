@@ -269,9 +269,6 @@ static void runPowerCutScenario(
   const std::size_t selected_at =
       legacyFileTransactionSlotIndex(selected_slot);
   const LegacyFileCandidateSummary selected = initial.candidates[selected_at];
-  const LegacyFileCandidateSummary rollback =
-      selected_slot == LegacyFileTransactionSlot::Current
-          ? initial.candidates[2] : initial.candidates[0];
   LegacyFileTransactionChoice choice{target, selected_slot};
   CutObserver recording;
   assert(recovery.resolve(initial, choice, &recording) ==
@@ -303,6 +300,11 @@ static void runPowerCutScenario(
     initial = inspectOk(recovery, target);
     const LegacyFileCandidateSummary retained =
         initial.candidates[selected_at];
+    // seedAll recreates every slot, so mtime-backed identity must come from
+    // this iteration's snapshot rather than the pre-loop fixture.
+    const LegacyFileCandidateSummary rollback =
+        selected_slot == LegacyFileTransactionSlot::Current
+            ? initial.candidates[2] : initial.candidates[0];
     CutObserver observer(cut);
     assert(recovery.resolve(initial, choice, &observer) ==
            LegacyFileTransactionResolveCode::PowerCutSimulated);

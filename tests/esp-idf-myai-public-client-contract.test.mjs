@@ -20,6 +20,7 @@ const harness = String.raw`
 #include "CanonicalJsonCodec.h"
 #include "GatewayProbeContract.h"
 #include "MyAiClient.h"
+#include "inkloop/voice_aigc_handoff_policy.hpp"
 
 using namespace inkloop::myai;
 
@@ -490,43 +491,59 @@ int main() {
     client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
     client.onWebSocketText("{\"type\":\"response.done\",\"payload\":{}}");
     assert(client.voiceState() == VoiceState::Ready);
-    assert(!client.voiceResponseCompletionDue(true));
+    assert(!client.voiceResponseInFlight());
+    assert(!inkloop::voiceBlocksAigcHandoff(
+        client.voiceState(), client.voiceResponseInFlight(), false));
 
-    // A normal adjacent segment arriving inside the post-playback idle grace
-    // cancels fallback completion and remains Speaking.
+    // tts.stop ends only one segment. A provider may spend longer than the
+    // former 1500 ms fallback window preparing its next segment, so silence
+    // cannot make the response Ready or allow the exclusive AIGC handoff.
     client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":24000,\"channels\":1}}");
     client.onWebSocketBinary(downlink, sizeof(downlink));
     client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
     clock.now = 10000;
-    assert(!client.voiceResponseCompletionDue(true));
-    clock.now += 1499;
-    assert(!client.voiceResponseCompletionDue(true));
-    assert(client.completeVoiceResponseAfterTtsStop().code ==
-           ErrorCode::InvalidState);
+    assert(client.voiceState() == VoiceState::Speaking);
+    assert(client.voiceResponseInFlight());
+    assert(inkloop::voiceBlocksAigcHandoff(
+        client.voiceState(), client.voiceResponseInFlight(), false));
+    bool aigcHandoffTriggered = false;
+    clock.now += 1501;
+    if (!inkloop::voiceBlocksAigcHandoff(
+            client.voiceState(), client.voiceResponseInFlight(), false)) {
+      aigcHandoffTriggered = true;
+    }
+    assert(!aigcHandoffTriggered);
+    assert(client.voiceState() == VoiceState::Speaking);
+    assert(client.voiceResponseInFlight());
+
+    // The late adjacent segment still belongs to the same response. It must
+    // play normally even though its tts.start arrived after the old timeout.
     client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":24000,\"channels\":1}}");
     assert(client.voiceState() == VoiceState::Speaking);
-    assert(!client.voiceResponseCompletionDue(true));
+    assert(client.voiceResponseInFlight());
     client.onWebSocketBinary(downlink, sizeof(downlink));
     client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
+    assert(client.voiceResponseInFlight());
     client.onWebSocketText("{\"type\":\"response.done\",\"payload\":{}}");
     assert(client.voiceState() == VoiceState::Ready);
+    assert(!client.voiceResponseInFlight());
+    assert(!inkloop::voiceBlocksAigcHandoff(
+        client.voiceState(), client.voiceResponseInFlight(), false));
 
-    // If response.done never arrives, the Network owner can close Speaking in
-    // bounded time, but the 1.5 s grace starts only once playback is truly idle.
+    // Without response.done, fail closed regardless of elapsed time. The
+    // official protocol uses response.done for completed, failed, or cancelled
+    // turns; cancellation or socket failure is the other terminal path.
     client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":16000,\"channels\":1}}");
     client.onWebSocketBinary(downlink, sizeof(downlink));
     client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
     clock.now = 30000;
-    assert(!client.voiceResponseCompletionDue(false));
-    clock.now = 60000;
-    assert(!client.voiceResponseCompletionDue(false));
-    assert(!client.voiceResponseCompletionDue(true));
-    clock.now += 1499;
-    assert(!client.voiceResponseCompletionDue(true));
-    clock.now += 1;
-    assert(client.voiceResponseCompletionDue(true));
-    assert(client.completeVoiceResponseAfterTtsStop().ok());
+    clock.now += 120000;
+    assert(client.voiceResponseInFlight());
+    assert(inkloop::voiceBlocksAigcHandoff(
+        client.voiceState(), client.voiceResponseInFlight(), false));
+    client.onWebSocketText("{\"type\":\"response.done\",\"payload\":{}}");
     assert(client.voiceState() == VoiceState::Ready);
+    assert(!client.voiceResponseInFlight());
 
     assert(voiceEvents.partialAsr == 1 && voiceEvents.finalAsr == 1);
     assert(voiceEvents.partialAssistant == 1 && voiceEvents.finalAssistant == 1);
@@ -572,7 +589,9 @@ function buildAndRun(sanitized) {
     writeFileSync(source, harness);
     const args = [
       "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
-      "-I", join(myai, "include/inkloop/myai"), source,
+      "-I", join(myai, "include/inkloop/myai"),
+      "-I", join(myai, "include"),
+      "-I", join(product, "include"), source,
       join(myai, "CanonicalJsonCodec.cpp"),
       join(myai, "EndpointPolicy.cpp"),
       join(myai, "GatewayProbeContract.cpp"),
@@ -625,9 +644,11 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
   assert.match(aigc, /next_aigc_poll_ms_ = now \+ kAigcPollMs/);
   assert.match(aigc, /AigcAlbumSink[\s\S]*downloadImage/);
   assert.match(aigc, /safeAigcFailureState\(status\)/);
-  assert.match(source, /voiceResponseCompletionDue\([\s\S]*playbackComplete/);
-  assert.ok(source.indexOf("wss_.pollIngress") <
-            source.indexOf("voiceResponseCompletionDue"));
+  assert.match(source, /voiceBlocksAigcHandoff\([\s\S]*voiceResponseInFlight/);
+  assert.doesNotMatch(
+    source,
+    /voiceResponseCompletionDue|completeVoiceResponseAfterTtsStop/,
+  );
   assert.match(source, /bool explicitImageIntent\(/);
   assert.match(
     source,

@@ -182,6 +182,39 @@ int main() {
   assert(!bridge.playbackBusy());
   assert(device.abortCalls == 1);
 
+  // A provider may pause much longer than the short I2S continuation grace
+  // between two TTS segments in the same response. Once hardware has shut
+  // down, a late tts.start must create a fresh generation and restart I2S
+  // without losing the new PCM.
+  const uint8_t preGap[] = {9, 0, 10, 0};
+  const uint8_t postGap[] = {11, 0, 12, 0};
+  const int beginsBeforeGap = device.beginCalls;
+  assert(bridge.begin(24000, 1).ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.beginCalls == beginsBeforeGap + 1);
+  assert(bridge.write(preGap, sizeof(preGap)).ok());
+  assert(bridge.end().ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  inkloop_test_time_us += 150000;
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(!bridge.playbackBusy());
+
+  inkloop_test_time_us += 2000000;
+  assert(bridge.begin(24000, 1).ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.beginCalls == beginsBeforeGap + 2);
+  assert(bridge.write(postGap, sizeof(postGap)).ok());
+  assert(bridge.end().ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.played.size() >= sizeof(preGap) + sizeof(postGap));
+  const size_t lateBase = device.played.size() - sizeof(postGap);
+  for (size_t i = 0; i < sizeof(postGap); ++i)
+    assert(device.played[lateBase + i] == postGap[i]);
+  bridge.abort();
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(!bridge.playbackBusy());
+
   // A format switch may be accepted once the old ring is empty, but must not
   // end the old I2S run until its final DMA samples have actually drained.
   const uint8_t fourth[] = {7, 0, 8, 0};

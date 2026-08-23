@@ -10,8 +10,6 @@ namespace inkloop {
 namespace myai {
 namespace {
 
-constexpr uint64_t kVoiceTtsCompletionGraceMs = 1500U;
-
 bool successfulHttp(int status) { return status >= 200 && status < 300; }
 
 std::string urlEncode(const std::string& value) {
@@ -167,7 +165,6 @@ MyAiClient::MyAiClient(
       voiceReconnectAttempts_(0), voiceSocketOpen_(false), voiceClosing_(false),
       voiceTtsFrameBytes_(0), voiceTtsCarry_{0, 0, 0, 0},
       voiceTtsCarryBytes_(0), voiceTtsCompletionPending_(false),
-      voiceTtsIdleObserved_(false), voiceTtsIdleSinceMs_(0),
       credentialHealthy_(false), initialized_(false) {}
 
 MyAiClient::~MyAiClient() {
@@ -759,39 +756,12 @@ Status MyAiClient::disconnectVoice(const std::string& reason) {
   return status;
 }
 
-bool MyAiClient::voiceResponseCompletionDue(bool playbackComplete) {
-  if (!voiceSocketOpen_ || voiceState_ != VoiceState::Speaking ||
-      !voiceTtsCompletionPending_) {
-    return false;
-  }
-  if (!playbackComplete) {
-    voiceTtsIdleObserved_ = false;
-    voiceTtsIdleSinceMs_ = 0;
-    return false;
-  }
-  const uint64_t now = clock_.monotonicMs();
-  if (!voiceTtsIdleObserved_) {
-    voiceTtsIdleObserved_ = true;
-    voiceTtsIdleSinceMs_ = now;
-    return false;
-  }
-  return now - voiceTtsIdleSinceMs_ >= kVoiceTtsCompletionGraceMs;
-}
-
-Status MyAiClient::completeVoiceResponseAfterTtsStop() {
-  if (!voiceSocketOpen_)
-    return Status(ErrorCode::InvalidState, 0, "voice socket is not open");
-  if (voiceState_ == VoiceState::Ready) return Status::success();
-  if (voiceState_ != VoiceState::Speaking ||
-      !voiceTtsCompletionPending_ || !voiceTtsIdleObserved_ ||
-      clock_.monotonicMs() - voiceTtsIdleSinceMs_ <
-          kVoiceTtsCompletionGraceMs) {
-    return Status(ErrorCode::InvalidState, 0,
-                  "voice response is not awaiting completion");
-  }
-  resetVoiceTtsTracking();
-  setVoice(VoiceState::Ready);
-  return Status::success();
+bool MyAiClient::voiceResponseInFlight() const {
+  return voiceTtsCompletionPending_ ||
+         voiceState_ == VoiceState::Connecting ||
+         voiceState_ == VoiceState::Listening ||
+         voiceState_ == VoiceState::Thinking ||
+         voiceState_ == VoiceState::Speaking;
 }
 
 Status MyAiClient::comboVoice(const std::string& pcm16Base64,
@@ -1153,8 +1123,6 @@ void MyAiClient::resetVoiceTtsTracking() {
   voiceTtsCarryBytes_ = 0;
   std::memset(voiceTtsCarry_, 0, sizeof(voiceTtsCarry_));
   voiceTtsCompletionPending_ = false;
-  voiceTtsIdleObserved_ = false;
-  voiceTtsIdleSinceMs_ = 0;
 }
 
 void MyAiClient::failVoiceTtsAudio(const Status& status) {
@@ -1219,12 +1187,8 @@ void MyAiClient::onWebSocketText(const std::string& message) {
     }
   } else if (event.type == "llm.delta") {
     events_.onAssistantText(event.text, false);
-    voiceTtsIdleObserved_ = false;
-    voiceTtsIdleSinceMs_ = 0;
   } else if (event.type == "llm.done") {
     events_.onAssistantText(event.text, true);
-    voiceTtsIdleObserved_ = false;
-    voiceTtsIdleSinceMs_ = 0;
   } else if (event.type == "tts.start") {
     // The wire contract has no model/provider discriminator. A declared 16 kHz
     // stream may therefore be genuine and must not be rewritten to Qwen3's
@@ -1256,8 +1220,6 @@ void MyAiClient::onWebSocketText(const std::string& message) {
       events_.onError(status);
     } else {
       voiceTtsCompletionPending_ = true;
-      voiceTtsIdleObserved_ = false;
-      voiceTtsIdleSinceMs_ = 0;
     }
   } else if (event.type == "response.done") {
     // Some compatible gateways omit llm.done but include the final text on

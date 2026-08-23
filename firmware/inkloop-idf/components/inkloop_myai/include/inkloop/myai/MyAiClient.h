@@ -60,12 +60,11 @@ class MyAiClient final : public IWebSocketListener {
   Status requestResponse(const std::string& transcript);
   Status heartbeatVoice();
   Status disconnectVoice(const std::string& reason = "client_disconnect");
-  // Some compatible gateways terminate the final TTS segment without a
-  // response.done event. The Network owner observes whether hardware playback
-  // is complete; the client starts a bounded idle grace only after that point,
-  // so a normal adjacent TTS segment can cancel fallback completion.
-  bool voiceResponseCompletionDue(bool playbackComplete);
-  Status completeVoiceResponseAfterTtsStop();
+  // `tts.stop` terminates only the current streamed TTS segment. It cannot
+  // prove that the whole response is complete because another segment may
+  // arrive after an arbitrary provider-side pause. Keep exclusive product
+  // work blocked until `response.done` (or cancellation/socket failure).
+  bool voiceResponseInFlight() const;
 
   // Bounded degraded path for devices that cannot sustain realtime WebSocket.
   Status comboVoice(const std::string& pcm16Base64, size_t maxResponseBase64Bytes,
@@ -167,8 +166,6 @@ class MyAiClient final : public IWebSocketListener {
   uint8_t voiceTtsCarry_[4];
   size_t voiceTtsCarryBytes_;
   bool voiceTtsCompletionPending_;
-  bool voiceTtsIdleObserved_;
-  uint64_t voiceTtsIdleSinceMs_;
   bool credentialHealthy_;
   bool initialized_;
 };

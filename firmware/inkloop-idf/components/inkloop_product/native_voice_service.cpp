@@ -19,6 +19,7 @@
 #include "inkloop/myai_authorization_retry_policy.hpp"
 #include "inkloop/product_opcodes.hpp"
 #include "inkloop/storage/album_index.hpp"
+#include "inkloop/voice_aigc_handoff_policy.hpp"
 
 namespace inkloop {
 namespace {
@@ -2054,15 +2055,6 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
     return;
   }
-  // MyAiClient is Network-owner-only. Observe hardware completion here after
-  // polling ingress so an already-arrived adjacent tts.start cancels the
-  // fallback before its idle grace can elapse.
-  if (client_->voiceResponseCompletionDue(
-          audio_bridge_->playbackComplete())) {
-    const myai::Status completed =
-        client_->completeVoiceResponseAfterTtsStop();
-    if (!completed.ok()) onError(completed);
-  }
   if (audio_bridge_->captureBusy()) {
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,
@@ -2210,11 +2202,9 @@ void NativeVoiceService::handoffAigcIfReady() {
   portENTER_CRITICAL(&aigc_mux_);
   const bool pending = aigc_phase_ == AigcPhase::PendingHandoff;
   portEXIT_CRITICAL(&aigc_mux_);
-  const bool voice_turn_active =
-      network_voice_state_ == myai::VoiceState::Listening ||
-      network_voice_state_ == myai::VoiceState::Thinking ||
-      network_voice_state_ == myai::VoiceState::Speaking ||
-      voice_begin_pending_;
+  const bool voice_turn_active = voiceBlocksAigcHandoff(
+      network_voice_state_, client_ && client_->voiceResponseInFlight(),
+      voice_begin_pending_);
   if (!pending || !client_ ||
       activation_state_ != myai::ActivationState::Bound ||
       !authorization_verified_ || voice_turn_active ||
