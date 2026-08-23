@@ -425,6 +425,8 @@ esp_err_t NativePortalOwner::shutdown() {
   storage_available_ = true;
   portEXIT_CRITICAL(&activity_mux_);
   restart_refresh_required_ = false;
+  album_refresh_generation_.store(0U, std::memory_order_release);
+  album_refresh_applied_generation_ = 0U;
   next_state_refresh_ms_ = 0U;
   next_album_refresh_ms_ = 0U;
   next_chat_refresh_ms_ = 0U;
@@ -1241,18 +1243,32 @@ void NativePortalOwner::refreshState() {
 }
 
 void NativePortalOwner::refreshAlbum() {
+  (void)tryRefreshAlbum();
+}
+
+bool NativePortalOwner::tryRefreshAlbum() {
   portENTER_CRITICAL(&activity_mux_);
   const bool storage_available = storage_available_;
   portEXIT_CRITICAL(&activity_mux_);
-  if (!storage_available || !album_store_ || album_store_->active()) return;
+  if (!storage_available || !album_store_ || album_store_->active())
+    return false;
   storage::AlbumIndex next;
-  if (!album_store_->readCatalog(next).ok()) return;
+  if (!album_store_->readCatalog(next).ok()) return false;
   if (takeMutex(cache_mutex_)) {
     album_cache_ = std::move(next);
     ++album_revision_;
     album_cache_ready_ = true;
     giveMutex(cache_mutex_);
+    return true;
   }
+  return false;
+}
+
+void NativePortalOwner::requestAlbumRefresh() {
+  // Generation rather than a bool prevents a request racing the Portal read
+  // from being cleared. uint32_t is lock-free on ESP32-S3 and wrap equality is
+  // sufficient because the Portal lane observes requests continuously.
+  album_refresh_generation_.fetch_add(1U, std::memory_order_acq_rel);
 }
 
 void NativePortalOwner::refreshChat() {
@@ -1346,6 +1362,14 @@ void NativePortalOwner::tick(bool wifi_online,
   }
 
   const uint32_t now = nowMs();
+  const uint32_t requested_album_generation =
+      album_refresh_generation_.load(std::memory_order_acquire);
+  if (storage_mutation_allowed &&
+      requested_album_generation != album_refresh_applied_generation_ &&
+      tryRefreshAlbum()) {
+    album_refresh_applied_generation_ = requested_album_generation;
+    next_album_refresh_ms_ = now + kAlbumRefreshMs;
+  }
   const uint32_t accessed = lastAccessMs();
   const bool recently_accessed = accessed != 0U &&
       static_cast<uint32_t>(now - accessed) < kRecentPortalWindowMs;

@@ -522,6 +522,14 @@ WorkDisposition EspProductRuntime::handleControl(
                ? WorkDisposition::Complete
                : WorkDisposition::Busy;
   }
+  // AIGC and Inkloop asset commits occur outside NativePortalOwner. Any
+  // Display result means the persisted album/current selection may have
+  // changed, so invalidate the browser-facing cache before the owning service
+  // consumes the result. This call is atomic only; Portal performs the read.
+  if (envelope.kind == EnvelopeKind::Result &&
+      envelope.work_class == WorkClass::Display) {
+    portal_.requestAlbumRefresh();
+  }
   if (voice_.handleControlResult(envelope))
     return WorkDisposition::Complete;
   if (inkloop_.handleControlResult(envelope))

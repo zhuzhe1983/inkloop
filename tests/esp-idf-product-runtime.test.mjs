@@ -60,3 +60,38 @@ test("voice, AIGC cache and album display are native product owners", () => {
   assert.match(source, /AlbumRefreshStarting[\s\S]*enqueueAlbumOrdinal/);
   assert.match(voice, /VoicePromptRefreshOrdinal[\s\S]*local_prompts_\.requestOrdinal/);
 });
+
+test("Display results invalidate the Portal album cache without Control-lane I/O", () => {
+  const runtime = readFileSync(
+    join(product, "product_runtime.cpp"),
+    "utf8",
+  );
+  const portalHeader = readFileSync(
+    join(product, "include/inkloop/native_portal_owner.hpp"),
+    "utf8",
+  );
+  const portal = readFileSync(
+    join(product, "native_portal_owner.cpp"),
+    "utf8",
+  );
+  const controlAt = runtime.indexOf("WorkDisposition EspProductRuntime::handleControl");
+  const networkAt = runtime.indexOf("WorkDisposition EspProductRuntime::handleNetwork", controlAt);
+  const control = runtime.slice(controlAt, networkAt);
+  assert.match(
+    control,
+    /EnvelopeKind::Result[\s\S]{0,120}WorkClass::Display[\s\S]{0,120}portal_\.requestAlbumRefresh\(\)/,
+  );
+  assert.ok(
+    control.indexOf("portal_.requestAlbumRefresh()") <
+      control.indexOf("voice_.handleControlResult(envelope)"),
+  );
+  assert.match(portalHeader, /std::atomic<uint32_t>\s+album_refresh_generation_/);
+  assert.match(
+    portal,
+    /void NativePortalOwner::requestAlbumRefresh\(\)[\s\S]{0,420}fetch_add\(1U, std::memory_order_acq_rel\)/,
+  );
+  assert.match(
+    portal,
+    /requested_album_generation[\s\S]{0,260}tryRefreshAlbum\(\)[\s\S]{0,160}album_refresh_applied_generation_\s*=\s*requested_album_generation/,
+  );
+});

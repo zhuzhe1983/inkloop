@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -90,6 +91,11 @@ class NativePortalOwner final : public portal::IPortalReadCache,
       const portal::ChatPage& snapshot);
   void tick(bool wifi_online, bool storage_mutation_allowed);
   bool mutationBusy() const;
+  // Cross-lane, allocation-free cache invalidation. Display completion may
+  // follow an AIGC or Inkloop asset commit performed by another Portal-lane
+  // owner; the next admitted Portal tick refreshes the browser-facing album
+  // snapshot without doing filesystem I/O on the caller's lane.
+  void requestAlbumRefresh();
   // Coordinator-only TF maintenance gate. begin atomically rejects new
   // storage-facing HTTP work and succeeds only after the Portal server and
   // every queued/active upload, preview and command are drained. Failure rolls
@@ -201,6 +207,7 @@ class NativePortalOwner final : public portal::IPortalReadCache,
   void finishActiveUpload();
   void refreshState();
   void refreshAlbum();
+  bool tryRefreshAlbum();
   void refreshChat();
   esp_err_t startServer();
   esp_err_t stopServer();
@@ -263,6 +270,8 @@ class NativePortalOwner final : public portal::IPortalReadCache,
   bool storage_maintenance_active_ = false;
   bool storage_available_ = true;
   bool restart_refresh_required_ = false;
+  std::atomic<uint32_t> album_refresh_generation_{0U};
+  uint32_t album_refresh_applied_generation_ = 0U;
   uint32_t next_state_refresh_ms_ = 0;
   uint32_t next_album_refresh_ms_ = 0;
   uint32_t next_chat_refresh_ms_ = 0;
