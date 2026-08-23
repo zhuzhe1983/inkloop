@@ -35,6 +35,7 @@ Use one directory per run. From the repository root:
 
 ```sh
 export INKLOOP_C151_PORT=/dev/cu.usbmodem-REPLACE_ME
+export INKLOOP_C151_DIAG_PORT=/dev/cu.usbmodem-SECONDARY-REPLACE_ME
 export INKLOOP_EVIDENCE_DIR="$PWD/.butler/evidence/c151-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$INKLOOP_EVIDENCE_DIR"
 git rev-parse HEAD >"$INKLOOP_EVIDENCE_DIR/git-head.txt"
@@ -272,12 +273,15 @@ explicit secondary serial port:
 
 ```sh
 python3 scripts/papercolor_myai_physical_acceptance.py \
-  --port "$INKLOOP_C151_PORT"
+  --port "$INKLOOP_C151_DIAG_PORT"
 ```
 
 The harness proves only the emitted machine events and requires a human check
 of audible quality, correct left/right RGB roles and the final lighthouse
-image. It never prints transcripts, codes, credentials or raw serial lines.
+image. `INKLOOP_C151_DIAG_PORT` is the secondary USB Serial/JTAG data interface,
+not the primary boot/monitor console in `INKLOOP_C151_PORT`; both must be
+resolved explicitly after enumeration. The harness never prints transcripts,
+codes, credentials or raw serial lines.
 
 ## 8. Inkloop tasks, album navigation and display
 
