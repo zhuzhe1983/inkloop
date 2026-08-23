@@ -13,8 +13,10 @@ esp_err_t validate_task_topology() {
                 "Inkloop requires an ESP32 dual-core target");
   static_assert(kTaskTopology[0].priority > kTaskTopology[1].priority,
                 "input must preempt voice");
-  static_assert(kTaskTopology[1].priority > kTaskTopology[2].priority,
-                "voice must preempt product control");
+  static_assert(kTaskTopology[0].priority > kTaskTopology[2].priority,
+                "input must preempt button control");
+  static_assert(kTaskTopology[2].priority > kTaskTopology[1].priority,
+                "button control must preempt voice");
   static_assert(kTaskTopology[2].priority > kTaskTopology[3].priority,
                 "LED status must never preempt control");
   static_assert(kTaskTopology[6].priority > kTaskTopology[4].priority &&

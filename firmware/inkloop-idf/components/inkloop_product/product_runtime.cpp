@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "inkloop/product_opcodes.hpp"
+#include "inkloop/slow_io_arbitration.hpp"
 
 namespace inkloop {
 namespace {
@@ -658,15 +659,21 @@ void EspProductRuntime::servicePortal() {
       next_chat_snapshot_ms_ = now + 500U;
     }
   }
-  const bool display_idle = !display_.busy();
-  const bool slow_io_idle = display_idle && !voice_.portalBusy() &&
-                            !inkloop_.busy();
-  portal_.tick(wifi_.online(), slow_io_idle);
-  voice_.portalTick(display_idle && !portal_.mutationBusy() &&
-                    !inkloop_.busy());
+  // Portal, AIGC and Inkloop storage work execute serially on this task.  Let
+  // Portal first drain already-admitted work even while AIGC is active; using
+  // voice_.portalBusy() as this gate created a circular wait where AIGC could
+  // not download until the Portal queue emptied, while Portal was forbidden
+  // from emptying that queue.  Re-sample every owner between stages because a
+  // drained Portal command can enqueue Display work.
+  portal_.tick(
+      wifi_.online(),
+      SlowIoArbitration::portalMayDrain(display_.busy(), inkloop_.busy()));
+  voice_.portalTick(SlowIoArbitration::aigcMayMutate(
+      display_.busy(), portal_.mutationBusy(), inkloop_.busy()));
   inkloop_.portalTick(wifi_.online(),
-                      !voice_.portalBusy() && !display_.busy() &&
-                          !portal_.mutationBusy(),
+                      SlowIoArbitration::inkloopMayRun(
+                          voice_.portalBusy(), display_.busy(),
+                          portal_.mutationBusy()),
                       !power_.deferBackgroundPanel(now), onboarding);
   power_.tick(now);
 }

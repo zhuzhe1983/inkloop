@@ -23,7 +23,10 @@ struct TaskSpec {
 inline constexpr std::array<TaskSpec, 8> kTaskTopology{{
     {"ink-input", 1, 22, 3072, 32, TaskLane::Input},
     {"ink-voice", 1, 20, 12288, 32, TaskLane::Voice},
-    {"ink-control", 1, 18, 8192, 32, TaskLane::Control},
+    // Input only debounces the ISR command; its semantic result is consumed
+    // by Control. Keep Control above Voice so the complete button path, not
+    // just the ISR half, remains the highest-priority interactive operation.
+    {"ink-control", 1, 21, 8192, 32, TaskLane::Control},
     {"ink-led", 1, 8, 3072, 16, TaskLane::Led},
     // Voice transport must preempt image conversion/storage on the slow core;
     // otherwise a long PNG conversion can starve WSS audio ingress.

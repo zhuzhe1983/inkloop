@@ -11,7 +11,7 @@ test("ESP-IDF scaffold keeps responsive priorities above status/background work"
   const expected = [
     ['"ink-input", 1, 22'],
     ['"ink-voice", 1, 20'],
-    ['"ink-control", 1, 18'],
+    ['"ink-control", 1, 21'],
     ['"ink-led", 1, 8'],
     ['"ink-storage", 0, 7'],
     ['"ink-display", 0, 6'],
@@ -22,6 +22,7 @@ test("ESP-IDF scaffold keeps responsive priorities above status/background work"
   ];
   for (const [source] of expected) assert.match(topology, new RegExp(source));
   assert.match(validation, /input must preempt voice/);
+  assert.match(validation, /button control must preempt voice/);
   assert.match(validation, /LED status must never preempt control/);
   assert.match(validation, /Portal must remain the lowest service priority/);
 });
