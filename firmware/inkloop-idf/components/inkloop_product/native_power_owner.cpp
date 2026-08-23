@@ -167,6 +167,14 @@ void NativePowerOwner::tick(uint32_t now_ms) {
     return;
   }
 
+  // A failed sleep rollback is retried on this low-priority owner before any
+  // new sleep attempt. When admission was already frozen it stays frozen until
+  // both board rails/peripherals and Wi-Fi have actually recovered.
+  if (board_restore_needed_ || network_quiesced_ || work_admission_frozen_) {
+    if (!restoreAwakeServices()) return;
+    noteButtonActivity(now_ms);
+  }
+
   refreshBlockers(now_ms);
   const SleepAttemptObservation observation =
       attempts_.poll(now_ms, policy_, *this, deep_sleep_);
@@ -305,14 +313,16 @@ bool NativePowerOwner::restoreAwakeServices() {
       restored = false;
     }
   }
-  // Always reopen the supervisor last. Even when a hardware/network rollback
-  // reported an error, Portal must remain able to retry recovery instead of
-  // becoming permanently frozen in the same boot.
-  if (work_admission_frozen_) {
+  // Reopen the supervisor only after every rollback owner confirms recovery.
+  // The Portal tick itself continues while admission is frozen and retries on
+  // the next bounded tick; Display/Voice/Network commands must not run against
+  // a partially powered board.
+  if (restored && !board_restore_needed_ && !network_quiesced_ &&
+      work_admission_frozen_) {
     supervisor_.thawAdmissionAfterSleepAbort();
     work_admission_frozen_ = false;
   }
-  return restored;
+  return restored && !board_restore_needed_ && !network_quiesced_;
 }
 
 uint64_t NativePowerOwner::nextRequestId() {

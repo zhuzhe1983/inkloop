@@ -62,6 +62,7 @@ class LocalPromptPlayer final {
   size_t tone_sample_offset_ = 0;
   bool tone_active_ = false;
   bool playback_started_ = false;
+  bool startup_feed_complete_ = false;
   bool active_ = false;
   LocalPromptDiagnostics diagnostics_{};
 };

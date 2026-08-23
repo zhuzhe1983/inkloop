@@ -4,14 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { materializeArduinoJson } from "./support/arduinojson-host-dependency.mjs";
 
 const firmwareSource = new URL("../firmware/m5-papercolor/src/", import.meta.url);
-const arduinoJsonSource = new URL(
-  "../firmware/m5-papercolor/.pio/libdeps/m5stack-papercolor/ArduinoJson/src/",
-  import.meta.url,
-);
 
 test("PaperColor firmware primitives execute deterministically under C++11", async () => {
+  const arduinoJson = await materializeArduinoJson();
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "inkloop-papercolor-primitives-"));
   const harnessPath = join(temporaryDirectory, "primitives_test.cpp");
   const executablePath = join(temporaryDirectory, "primitives_test");
@@ -643,8 +641,8 @@ int main() {
       "-Werror",
       "-I",
       decodeURIComponent(firmwareSource.pathname),
-	  "-I",
-	  decodeURIComponent(arduinoJsonSource.pathname),
+      "-I",
+      arduinoJson.includeDirectory,
       harnessPath,
       "-o",
       executablePath,
@@ -654,6 +652,9 @@ int main() {
     const run = spawnSync(executablePath, [], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr || run.stdout);
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    await Promise.all([
+      rm(temporaryDirectory, { recursive: true, force: true }),
+      arduinoJson.cleanup(),
+    ]);
   }
 });

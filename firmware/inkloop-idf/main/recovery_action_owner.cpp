@@ -2,11 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <string>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include "esp_random.h"
 #include "esp_timer.h"
+#include "freertos/task.h"
+#include "inkloop/storage/album_index.hpp"
 #include "inkloop/storage/esp_nvs_upgrade_inventory.hpp"
 #include "inkloop/storage/esp_upgrade_boot_audit.hpp"
 #include "inkloop/storage/persistence_compatibility.hpp"
@@ -18,6 +26,114 @@ namespace inkloop {
 namespace {
 
 constexpr std::uint32_t kRestartResponseGraceMs = 2000U;
+// A maximum custody pass streams the bounded 288-asset union and then hashes
+// the source a second time. Ten minutes can expire between those two passes at
+// the deliberately throttled Recovery rate, so retain a finite but sufficient
+// slow-card window.
+constexpr std::uint32_t kExportSessionLifetimeMs = 30U * 60U * 1000U;
+constexpr std::size_t kExportReadBufferBytes = 4096U;
+
+static_assert(storage::kMaximumAlbumEntries *
+                  recovery::kRecoveryActionCandidateCount ==
+              recovery::kMaximumRecoveryExportAssets);
+static_assert(storage::kMaximumAlbumIndexBytes ==
+              recovery::kMaximumRecoveryExportIndexBytes);
+static_assert(storage::kMaximumAlbumAssetBytes ==
+              recovery::kMaximumRecoveryExportAssetBytes);
+
+template <size_t Size>
+bool constantTimeBytes(const std::array<std::uint8_t, Size>& left,
+                       const std::array<std::uint8_t, Size>& right) {
+  std::uint8_t difference = 0U;
+  for (size_t at = 0U; at < Size; ++at)
+    difference |= static_cast<std::uint8_t>(left[at] ^ right[at]);
+  return difference == 0U;
+}
+
+bool readIndexFile(const std::string& path, std::string& bytes,
+                   std::array<std::uint8_t, 32>& digest,
+                   struct stat& status) {
+  bytes.clear();
+  std::FILE* file = std::fopen(path.c_str(), "rb");
+  if (!file) return false;
+  bool valid = ::fstat(::fileno(file), &status) == 0 &&
+      S_ISREG(status.st_mode) && status.st_size > 0 &&
+      static_cast<std::uint64_t>(status.st_size) <=
+          storage::kMaximumAlbumIndexBytes;
+  if (valid) bytes.resize(static_cast<size_t>(status.st_size));
+  storage::Sha256 hash;
+  size_t offset = 0U;
+  while (valid && offset < bytes.size()) {
+    const size_t count = std::fread(bytes.data() + offset, 1U,
+                                    bytes.size() - offset, file);
+    if (count == 0U || !hash.update(
+            reinterpret_cast<const std::uint8_t*>(bytes.data() + offset),
+            count)) {
+      valid = false;
+      break;
+    }
+    offset += count;
+  }
+  struct stat after {};
+  valid = valid && offset == bytes.size() && !std::ferror(file) &&
+      ::fstat(::fileno(file), &after) == 0 &&
+      after.st_size == status.st_size && after.st_mtime == status.st_mtime &&
+      hash.finish(digest);
+  if (std::fclose(file) != 0) valid = false;
+  if (!valid) {
+    std::fill(bytes.begin(), bytes.end(), '\0');
+    bytes.clear();
+  }
+  return valid;
+}
+
+bool statRegular(const std::string& path, std::uint64_t expected_bytes,
+                 struct stat& status) {
+  return ::stat(path.c_str(), &status) == 0 && S_ISREG(status.st_mode) &&
+      status.st_size >= 0 &&
+      static_cast<std::uint64_t>(status.st_size) == expected_bytes;
+}
+
+bool hashReadOnlyFile(
+    const std::string& path, std::uint64_t expected_bytes,
+    std::int64_t expected_modified,
+    const std::array<std::uint8_t, 32>& expected_digest) {
+  std::FILE* file = std::fopen(path.c_str(), "rb");
+  if (!file) return false;
+  struct stat before {};
+  bool valid = ::fstat(::fileno(file), &before) == 0 &&
+      S_ISREG(before.st_mode) && before.st_size >= 0 &&
+      static_cast<std::uint64_t>(before.st_size) == expected_bytes &&
+      static_cast<std::int64_t>(before.st_mtime) == expected_modified;
+  storage::Sha256 hash;
+  std::array<std::uint8_t, kExportReadBufferBytes> buffer{};
+  std::uint64_t offset = 0U;
+  std::uint32_t chunks = 0U;
+  while (valid && offset < expected_bytes) {
+    const size_t wanted = static_cast<size_t>(std::min<std::uint64_t>(
+        buffer.size(), expected_bytes - offset));
+    const size_t count = std::fread(buffer.data(), 1U, wanted, file);
+    if (count == 0U || !hash.update(buffer.data(), count)) {
+      valid = false;
+      break;
+    }
+    offset += count;
+    // Final verification can cover the maximum 288 assets. Yield regularly
+    // so a large, but still bounded, read-only pass cannot starve the system.
+    if (++chunks % 16U == 0U) vTaskDelay(1U);
+  }
+  struct stat after {};
+  std::array<std::uint8_t, 32> digest{};
+  const int extra = valid ? std::fgetc(file) : 0;
+  valid = valid && offset == expected_bytes && extra == EOF &&
+      std::feof(file) && !std::ferror(file) &&
+      ::fstat(::fileno(file), &after) == 0 &&
+      after.st_size == before.st_size && after.st_mtime == before.st_mtime &&
+      hash.finish(digest) && constantTimeBytes(digest, expected_digest);
+  std::fill(buffer.begin(), buffer.end(), 0U);
+  if (std::fclose(file) != 0) valid = false;
+  return valid;
+}
 
 class HashBuilder final {
  public:
@@ -260,6 +376,32 @@ bool hashFileSnapshot(
 
 }  // namespace
 
+struct EspRecoveryActionOwner::ExportState {
+  struct AssetRecord {
+    recovery::RecoveryExportAsset summary{};
+    std::int64_t modified = 0;
+  };
+
+  bool active = false;
+  std::array<std::uint8_t, recovery::kRecoveryExportSessionBytes> session{};
+  recovery::RecoveryExportSnapshot snapshot{};
+  std::array<AssetRecord, recovery::kMaximumRecoveryExportAssets> assets{};
+  std::array<bool, recovery::kRecoveryActionCandidateCount +
+                       recovery::kMaximumRecoveryExportAssets>
+      verified{};
+  std::array<std::int64_t, recovery::kRecoveryActionCandidateCount>
+      candidate_modified{};
+  std::uint32_t expires_ms = 0U;
+  std::FILE* file = nullptr;
+  std::uint32_t handle = 0U;
+  std::uint32_t item = 0U;
+  std::uint64_t streamed = 0U;
+  std::uint64_t expected_bytes = 0U;
+  std::int64_t opened_modified = 0;
+  std::array<std::uint8_t, 32> expected_digest{};
+  storage::Sha256 stream_hash{};
+};
+
 EspRecoveryActionOwner::EspRecoveryActionOwner(
     storage::EspStorageMountOwner& storage)
     : storage_(storage),
@@ -267,9 +409,16 @@ EspRecoveryActionOwner::EspRecoveryActionOwner(
       files_({storage.taskRoot() ? storage.taskRoot() : "",
               storage.internalRoot() ? storage.internalRoot() : "",
               storage.removableRoot() ? storage.removableRoot() : ""}),
-      mutex_(xSemaphoreCreateMutex()) {}
+      mutex_(xSemaphoreCreateMutex()),
+      export_(new (std::nothrow) ExportState()) {}
 
 EspRecoveryActionOwner::~EspRecoveryActionOwner() {
+  if (mutex_ && lock()) {
+    resetExportLocked();
+    unlock();
+  }
+  delete export_;
+  export_ = nullptr;
   if (mutex_) vSemaphoreDelete(mutex_);
   mutex_ = nullptr;
 }
@@ -280,6 +429,24 @@ bool EspRecoveryActionOwner::lock() {
 
 void EspRecoveryActionOwner::unlock() {
   if (mutex_) xSemaphoreGive(mutex_);
+}
+
+void EspRecoveryActionOwner::resetExportLocked() {
+  if (!export_) return;
+  if (export_->file) std::fclose(export_->file);
+  const std::uint32_t previous_handle = export_->handle;
+  *export_ = ExportState{};
+  // Keep stream handles monotonic across sessions so a delayed request from a
+  // prior authenticated export cannot alias the first stream of a new one.
+  export_->handle = previous_handle;
+}
+
+bool EspRecoveryActionOwner::exportSessionMatches(
+    const std::array<uint8_t, recovery::kRecoveryExportSessionBytes>&
+        session_id) const {
+  return export_ && export_->active &&
+      constantTimeBytes(export_->session, session_id) &&
+      static_cast<std::int32_t>(nowMs() - export_->expires_ms) < 0;
 }
 
 bool EspRecoveryActionOwner::inspectDisplay(
@@ -419,7 +586,16 @@ EspRecoveryActionOwner::resolveRecoveryAction(
     const recovery::RecoveryActionRequest& request) {
   using Result = recovery::RecoveryActionResolveResult;
   if (!ready()) return Result::SourceUnavailable;
+  const bool removable_album =
+      request.domain == recovery::RecoveryActionDomain::Album &&
+      request.backend == recovery::RecoveryActionBackend::Removable;
+  if (removable_album != request.external_backup_confirmed)
+    return Result::InvalidRequest;
   if (!lock()) return Result::Busy;
+  if (export_ && export_->active) {
+    unlock();
+    return Result::Busy;
+  }
   const recovery::RecoveryActionSnapshot* cached =
       findCached(request.domain, request.backend);
   if (!cached || !sameId(cached->inspection_id, request.inspection_id)) {
@@ -469,6 +645,400 @@ EspRecoveryActionOwner::resolveRecoveryAction(
   }
   unlock();
   return result;
+}
+
+recovery::RecoveryExportResult
+EspRecoveryActionOwner::prepareRecoveryExport(
+    const recovery::RecoveryExportExpectedIndexes& expected,
+    recovery::RecoveryExportSnapshot& output) {
+  using Result = recovery::RecoveryExportResult;
+  output = recovery::RecoveryExportSnapshot{};
+  if (!ready()) return Result::SourceUnavailable;
+  if (!lock()) return Result::Busy;
+  if (export_->active &&
+      static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0) {
+    resetExportLocked();
+  }
+  if (export_->active) {
+    unlock();
+    return Result::Busy;
+  }
+  if (constantTimeBytes(expected.digests[0], expected.digests[1]) ||
+      constantTimeBytes(expected.digests[0], expected.digests[2]) ||
+      constantTimeBytes(expected.digests[1], expected.digests[2]) ||
+      std::any_of(expected.digests.begin(), expected.digests.end(),
+                  [](const auto& digest) {
+                    return std::all_of(digest.begin(), digest.end(),
+                                       [](std::uint8_t byte) {
+                                         return byte == 0U;
+                                       });
+                  })) {
+    unlock();
+    return Result::InvalidRequest;
+  }
+  const char* removable = storage_.removableRoot();
+  if (!removable) {
+    unlock();
+    return Result::SourceUnavailable;
+  }
+  resetExportLocked();
+  const std::string album = std::string(removable) + "/inkloop-album";
+  const std::array<const char*, recovery::kRecoveryActionCandidateCount>
+      names{{"index.json", "index.next", "index.prev"}};
+  Result result = Result::Ok;
+  std::uint64_t total = 0U;
+  for (size_t slot = 0U; slot < names.size() && result == Result::Ok;
+       ++slot) {
+    std::string bytes;
+    std::array<std::uint8_t, 32> digest{};
+    struct stat status {};
+    if (!readIndexFile(album + "/" + names[slot], bytes, digest, status)) {
+      result = Result::SourceUnavailable;
+      continue;
+    }
+    if (!constantTimeBytes(digest, expected.digests[slot])) {
+      std::fill(bytes.begin(), bytes.end(), '\0');
+      result = Result::SourceChanged;
+      continue;
+    }
+    storage::AlbumIndex index;
+    if (storage::parseAlbumIndex(bytes, index) !=
+        storage::AlbumIndexCode::Ok) {
+      std::fill(bytes.begin(), bytes.end(), '\0');
+      result = Result::VerificationFailed;
+      continue;
+    }
+    auto& candidate = export_->snapshot.candidates[slot];
+    candidate.byte_count = bytes.size();
+    candidate.digest = digest;
+    candidate.asset_entries = static_cast<std::uint32_t>(index.assets.size());
+    export_->candidate_modified[slot] =
+        static_cast<std::int64_t>(status.st_mtime);
+    if (candidate.byte_count > std::numeric_limits<std::uint64_t>::max() -
+                                   total) {
+      result = Result::VerificationFailed;
+    } else {
+      total += candidate.byte_count;
+    }
+    for (const storage::AlbumIndexAsset& asset : index.assets) {
+      if (result != Result::Ok) break;
+      std::array<std::uint8_t, 32> asset_digest{};
+      if (!decodeDigest(asset.content_sha256, asset_digest)) {
+        result = Result::VerificationFailed;
+        break;
+      }
+      size_t found = export_->snapshot.asset_count;
+      for (size_t at = 0U; at < export_->snapshot.asset_count; ++at) {
+        if (constantTimeBytes(export_->assets[at].summary.digest,
+                              asset_digest)) {
+          found = at;
+          break;
+        }
+      }
+      if (found == export_->snapshot.asset_count) {
+        if (found >= export_->assets.size()) {
+          result = Result::VerificationFailed;
+          break;
+        }
+        auto& record = export_->assets[found];
+        record.summary.byte_count = asset.bytes;
+        record.summary.digest = asset_digest;
+        struct stat asset_status {};
+        if (!statRegular(std::string(removable) + asset.path, asset.bytes,
+                         asset_status)) {
+          result = Result::SourceUnavailable;
+          break;
+        }
+        record.modified = static_cast<std::int64_t>(asset_status.st_mtime);
+        ++export_->snapshot.asset_count;
+        if (asset.bytes > std::numeric_limits<std::uint64_t>::max() - total) {
+          result = Result::VerificationFailed;
+          break;
+        }
+        total += asset.bytes;
+      } else if (export_->assets[found].summary.byte_count != asset.bytes) {
+        result = Result::VerificationFailed;
+        break;
+      }
+      export_->assets[found].summary.candidate_mask |=
+          static_cast<std::uint8_t>(1U << slot);
+    }
+    std::fill(bytes.begin(), bytes.end(), '\0');
+  }
+  if (result != Result::Ok) {
+    resetExportLocked();
+    unlock();
+    return result;
+  }
+  esp_fill_random(export_->session.data(), export_->session.size());
+  bool session_empty = true;
+  for (const std::uint8_t byte : export_->session)
+    session_empty = session_empty && byte == 0U;
+  if (session_empty) export_->session[0] = 1U;
+  export_->snapshot.session_id = export_->session;
+  export_->snapshot.inventory_pages =
+      (export_->snapshot.asset_count +
+       recovery::kRecoveryExportInventoryPageAssets - 1U) /
+      recovery::kRecoveryExportInventoryPageAssets;
+  export_->snapshot.total_bytes = total;
+  export_->expires_ms = nowMs() + kExportSessionLifetimeMs;
+  export_->active = true;
+  output = export_->snapshot;
+  unlock();
+  return Result::Ok;
+}
+
+recovery::RecoveryExportResult
+EspRecoveryActionOwner::readRecoveryExportInventory(
+    const std::array<uint8_t, recovery::kRecoveryExportSessionBytes>&
+        session_id,
+    uint32_t page, recovery::RecoveryExportInventoryPage& output) {
+  using Result = recovery::RecoveryExportResult;
+  output = recovery::RecoveryExportInventoryPage{};
+  if (!ready()) return Result::SourceUnavailable;
+  if (!lock()) return Result::Busy;
+  if (!exportSessionMatches(session_id)) {
+    if (export_->active &&
+        static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0)
+      resetExportLocked();
+    unlock();
+    return Result::SessionStale;
+  }
+  if (page >= export_->snapshot.inventory_pages) {
+    unlock();
+    return Result::InvalidRequest;
+  }
+  const size_t first = page * recovery::kRecoveryExportInventoryPageAssets;
+  const size_t remaining = export_->snapshot.asset_count - first;
+  output.session_id = export_->session;
+  output.page = page;
+  output.asset_offset = first;
+  output.count = static_cast<std::uint8_t>(std::min(
+      remaining, recovery::kRecoveryExportInventoryPageAssets));
+  for (size_t at = 0U; at < output.count; ++at)
+    output.assets[at] = export_->assets[first + at].summary;
+  unlock();
+  return Result::Ok;
+}
+
+recovery::RecoveryExportResult EspRecoveryActionOwner::openRecoveryExport(
+    const recovery::RecoveryExportOpenRequest& request,
+    recovery::RecoveryExportStream& output) {
+  using Result = recovery::RecoveryExportResult;
+  output = recovery::RecoveryExportStream{};
+  if (!ready()) return Result::SourceUnavailable;
+  if (!lock()) return Result::Busy;
+  if (!exportSessionMatches(request.session_id)) {
+    if (export_->active &&
+        static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0)
+      resetExportLocked();
+    unlock();
+    return Result::SessionStale;
+  }
+  if (export_->file) {
+    unlock();
+    return Result::Busy;
+  }
+  const size_t maximum_item = recovery::kRecoveryActionCandidateCount +
+      export_->snapshot.asset_count;
+  if (request.item >= maximum_item) {
+    unlock();
+    return Result::InvalidRequest;
+  }
+  const char* removable = storage_.removableRoot();
+  if (!removable) {
+    unlock();
+    return Result::SourceUnavailable;
+  }
+  std::string path = std::string(removable) + "/inkloop-album/";
+  std::uint64_t expected_bytes = 0U;
+  std::int64_t expected_modified = 0;
+  std::array<std::uint8_t, 32> expected_digest{};
+  if (request.item < recovery::kRecoveryActionCandidateCount) {
+    static constexpr std::array<const char*,
+        recovery::kRecoveryActionCandidateCount> names{{
+            "index.json", "index.next", "index.prev"}};
+    path += names[request.item];
+    expected_bytes = export_->snapshot.candidates[request.item].byte_count;
+    expected_digest = export_->snapshot.candidates[request.item].digest;
+    expected_modified = export_->candidate_modified[request.item];
+  } else {
+    const size_t asset =
+        request.item - recovery::kRecoveryActionCandidateCount;
+    const auto& record = export_->assets[asset];
+    constexpr char hex[] = "0123456789abcdef";
+    std::string name(64U, '0');
+    for (size_t at = 0U; at < record.summary.digest.size(); ++at) {
+      name[at * 2U] = hex[record.summary.digest[at] >> 4U];
+      name[at * 2U + 1U] = hex[record.summary.digest[at] & 0x0fU];
+    }
+    path += name + ".png";
+    expected_bytes = record.summary.byte_count;
+    expected_digest = record.summary.digest;
+    expected_modified = record.modified;
+  }
+  std::FILE* file = std::fopen(path.c_str(), "rb");
+  struct stat status {};
+  if (!file || ::fstat(::fileno(file), &status) != 0 ||
+      !S_ISREG(status.st_mode) || status.st_size < 0 ||
+      static_cast<std::uint64_t>(status.st_size) != expected_bytes ||
+      static_cast<std::int64_t>(status.st_mtime) != expected_modified) {
+    if (file) std::fclose(file);
+    unlock();
+    return Result::SourceChanged;
+  }
+  export_->file = file;
+  export_->item = request.item;
+  export_->streamed = 0U;
+  export_->expected_bytes = expected_bytes;
+  export_->expected_digest = expected_digest;
+  export_->opened_modified = expected_modified;
+  export_->stream_hash = storage::Sha256{};
+  if (++export_->handle == 0U) ++export_->handle;
+  output.handle = export_->handle;
+  output.byte_count = expected_bytes;
+  output.digest = expected_digest;
+  output.item = request.item;
+  unlock();
+  return Result::Ok;
+}
+
+recovery::RecoveryExportResult EspRecoveryActionOwner::readRecoveryExport(
+    uint32_t handle, uint8_t* output, size_t capacity, size_t& bytes_read) {
+  using Result = recovery::RecoveryExportResult;
+  bytes_read = 0U;
+  if (!ready() || !output || capacity == 0U ||
+      capacity > recovery::kMaximumRecoveryExportChunkBytes)
+    return Result::InvalidRequest;
+  if (!lock()) return Result::Busy;
+  if (!export_->active || !export_->file || export_->handle != handle) {
+    unlock();
+    return Result::SessionStale;
+  }
+  if (static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0) {
+    resetExportLocked();
+    unlock();
+    return Result::SessionStale;
+  }
+  if (export_->streamed == export_->expected_bytes) {
+    const int extra = std::fgetc(export_->file);
+    struct stat status {};
+    std::array<std::uint8_t, 32> digest{};
+    const bool valid = extra == EOF && std::feof(export_->file) &&
+        !std::ferror(export_->file) &&
+        ::fstat(::fileno(export_->file), &status) == 0 &&
+        static_cast<std::uint64_t>(status.st_size) ==
+            export_->expected_bytes &&
+        static_cast<std::int64_t>(status.st_mtime) ==
+            export_->opened_modified && export_->stream_hash.finish(digest) &&
+        constantTimeBytes(digest, export_->expected_digest);
+    std::fclose(export_->file);
+    export_->file = nullptr;
+    if (valid) export_->verified[export_->item] = true;
+    unlock();
+    return valid ? Result::Complete : Result::VerificationFailed;
+  }
+  const size_t wanted = static_cast<size_t>(std::min<std::uint64_t>(
+      capacity, export_->expected_bytes - export_->streamed));
+  const size_t count = std::fread(output, 1U, wanted, export_->file);
+  if (count == 0U || !export_->stream_hash.update(output, count)) {
+    std::fclose(export_->file);
+    export_->file = nullptr;
+    unlock();
+    return Result::IoError;
+  }
+  export_->streamed += count;
+  bytes_read = count;
+  unlock();
+  return Result::Ok;
+}
+
+void EspRecoveryActionOwner::closeRecoveryExport(uint32_t handle) {
+  if (!ready() || !lock()) return;
+  if (export_->file && export_->handle == handle) {
+    std::fclose(export_->file);
+    export_->file = nullptr;
+  }
+  unlock();
+}
+
+recovery::RecoveryExportResult
+EspRecoveryActionOwner::finishRecoveryExport(
+    const std::array<uint8_t, recovery::kRecoveryExportSessionBytes>&
+        session_id) {
+  using Result = recovery::RecoveryExportResult;
+  if (!ready()) return Result::SourceUnavailable;
+  if (!lock()) return Result::Busy;
+  if (!exportSessionMatches(session_id)) {
+    if (export_->active &&
+        static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0)
+      resetExportLocked();
+    unlock();
+    return Result::SessionStale;
+  }
+  if (export_->file) {
+    unlock();
+    return Result::Busy;
+  }
+  const size_t item_count = recovery::kRecoveryActionCandidateCount +
+      export_->snapshot.asset_count;
+  for (size_t at = 0U; at < item_count; ++at) {
+    if (!export_->verified[at]) {
+      unlock();
+      return Result::VerificationFailed;
+    }
+  }
+  const char* removable = storage_.removableRoot();
+  if (!removable) {
+    unlock();
+    return Result::SourceUnavailable;
+  }
+  const std::string album = std::string(removable) + "/inkloop-album";
+  const std::array<const char*, recovery::kRecoveryActionCandidateCount>
+      names{{"index.json", "index.next", "index.prev"}};
+  Result result = Result::Complete;
+  for (size_t slot = 0U; slot < names.size() && result == Result::Complete;
+       ++slot) {
+    std::string bytes;
+    std::array<std::uint8_t, 32> digest{};
+    struct stat status {};
+    if (!readIndexFile(album + "/" + names[slot], bytes, digest, status) ||
+        !constantTimeBytes(
+            digest, export_->snapshot.candidates[slot].digest) ||
+        static_cast<std::int64_t>(status.st_mtime) !=
+            export_->candidate_modified[slot]) {
+      result = Result::SourceChanged;
+    }
+    std::fill(bytes.begin(), bytes.end(), '\0');
+  }
+  for (size_t at = 0U;
+       at < export_->snapshot.asset_count && result == Result::Complete;
+       ++at) {
+    const auto& record = export_->assets[at];
+    constexpr char hex[] = "0123456789abcdef";
+    std::string name(64U, '0');
+    for (size_t byte = 0U; byte < record.summary.digest.size(); ++byte) {
+      name[byte * 2U] = hex[record.summary.digest[byte] >> 4U];
+      name[byte * 2U + 1U] = hex[record.summary.digest[byte] & 0x0fU];
+    }
+    if (!hashReadOnlyFile(album + "/" + name + ".png",
+                          record.summary.byte_count, record.modified,
+                          record.summary.digest)) {
+      result = Result::SourceChanged;
+    }
+  }
+  resetExportLocked();
+  unlock();
+  return result;
+}
+
+void EspRecoveryActionOwner::abortRecoveryExport(
+    const std::array<uint8_t, recovery::kRecoveryExportSessionBytes>&
+        session_id) {
+  if (!ready() || !lock()) return;
+  if (export_->active && constantTimeBytes(export_->session, session_id))
+    resetExportLocked();
+  unlock();
 }
 
 bool EspRecoveryActionOwner::postActionAuditClean() const {

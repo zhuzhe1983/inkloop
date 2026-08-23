@@ -412,6 +412,16 @@ test("native wake composition is capability-injected and preserves the panel", (
     join(firmware, "components/inkloop_product/product_runtime.cpp"),
     "utf8",
   );
+  const controlResultStart = nativeVoice.indexOf(
+    "bool NativeVoiceService::handleControlResult(",
+  );
+  const controlResultEnd = nativeVoice.indexOf(
+    "WorkDisposition NativeVoiceService::handleNetworkCommand(",
+    controlResultStart,
+  );
+  assert.notEqual(controlResultStart, -1);
+  assert.notEqual(controlResultEnd, -1);
+  const controlResult = nativeVoice.slice(controlResultStart, controlResultEnd);
 
   assert.match(board, /kPreviousButton\s*=\s*GPIO_NUM_10/);
   assert.match(board, /kNextButton\s*=\s*GPIO_NUM_9/);
@@ -482,12 +492,12 @@ test("native wake composition is capability-injected and preserves the panel", (
     /acceptAigcPrompt\(std::string prompt,[\s\S]{0,900}aigc_admission_ticket_ == queued_ticket[\s\S]{0,500}aigc_admission_pending_ = false[\s\S]{0,160}aigc_phase_ = AigcPhase::PendingHandoff/,
   );
   assert.match(
-    nativeVoice,
-    /handleControlResult[\s\S]{0,2200}NetworkQueueAigc[\s\S]{0,500}disposition != WorkDisposition::Complete[\s\S]{0,180}text_pool_\.release\(envelope\.request_id\)[\s\S]{0,160}cancelQueuedAigcAdmission\(envelope\.request_id\)/,
+    controlResult,
+    /NetworkQueueAigc[\s\S]*disposition != WorkDisposition::Complete[\s\S]*text_pool_\.release\(envelope\.request_id\)[\s\S]*cancelQueuedAigcAdmission\(envelope\.request_id\)/,
   );
   assert.match(
-    nativeVoice,
-    /handleControlResult[\s\S]{0,2600}NetworkQueueAigc[\s\S]{0,700}envelope\.flags == 1U[\s\S]{0,200}SerialDiagnosticEventKind::AigcError/,
+    controlResult,
+    /NetworkQueueAigc[\s\S]*envelope\.flags == 1U[\s\S]*SerialDiagnosticEventKind::AigcError/,
     "a diagnostic request must report terminal admission failure",
   );
   assert.match(
@@ -530,7 +540,11 @@ test("native wake composition is capability-injected and preserves the panel", (
   );
   assert.match(
     nativePower,
-    /restoreAwakeServices\(\)[\s\S]{0,1500}supervisor_\.thawAdmissionAfterSleepAbort\(\)/,
+    /restoreAwakeServices\(\)[\s\S]{0,1500}if \(restored && !board_restore_needed_ && !network_quiesced_[\s\S]{0,300}supervisor_\.thawAdmissionAfterSleepAbort\(\)/,
+  );
+  assert.match(
+    nativePower,
+    /tick\(uint32_t now_ms\)[\s\S]{0,1800}board_restore_needed_ \|\| network_quiesced_ \|\| work_admission_frozen_[\s\S]{0,180}!restoreAwakeServices\(\)/,
   );
   assert.match(
     wakeHeader,

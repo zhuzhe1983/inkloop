@@ -99,6 +99,10 @@ class EspCrossCoreAudioBridge final : public myai::IAudioSink {
   uint8_t playback_channels_ = 0;
   int64_t playback_drained_since_us_ = 0;
   bool playback_restart_after_stop_ = false;
+  // These describe the currently owned I2S source. A queued restart may
+  // already own playback_hardware_generation_ while the old source drains.
+  bool playback_teardown_committed_ = false;
+  bool playback_source_finished_ = false;
   uint32_t capture_generation_ = 0;
   bool capture_stop_sent_ = false;
   CrossCoreAudioDiagnostics diagnostics_{};

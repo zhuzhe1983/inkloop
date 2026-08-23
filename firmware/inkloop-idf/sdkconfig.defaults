@@ -3,6 +3,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Make exact source/toolchain builds byte-reproducible. Build receipts and
+# physical acceptance bind to the binary digest instead of wall-clock time.
+CONFIG_APP_REPRODUCIBLE_BUILD=y
+# CONFIG_APP_COMPILE_TIME_DATE is not set
+# CONFIG_BOOTLOADER_COMPILE_TIME_DATE is not set
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
 # app_main owns the audited boot composition root and the long-lived OTA
 # supervisor. Constructing the native Product graph briefly needs more stack
@@ -10,6 +15,7 @@ CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
 # than allowing a late, corrupt-backtrace reboot loop on physical C151 units.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
 CONFIG_FREERTOS_HZ=1000
+CONFIG_I2S_ISR_IRAM_SAFE=y
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024

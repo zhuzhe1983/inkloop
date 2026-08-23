@@ -117,8 +117,13 @@ test("local ordinal prompts are composable beyond the first three", () => {
   const cmake = readFileSync(join(product, "CMakeLists.txt"), "utf8");
   assert.match(prompt, /ordinal > 99U/);
   assert.match(prompt, /tens > 1U[\s\S]*kTen[\s\S]*ones != 0U/);
-  assert.match(prompt, /kPlaybackChunkBytes = 320U/);
-  assert.match(prompt, /std::min<size_t>\(remaining, kPlaybackChunkBytes\)/);
+  assert.match(prompt, /kPlaybackStartupChunkBytes/);
+  assert.match(prompt, /kPlaybackSteadyChunkBytes/);
+  assert.match(
+    prompt,
+    /startup_feed_complete_\s*\?\s*kPlaybackSteadyChunkBytes\s*:\s*kPlaybackStartupChunkBytes/,
+  );
+  assert.match(prompt, /std::min\(remaining, limit\)/);
   assert.match(prompt, /playbackDrained/);
   assert.match(cmake, /EMBED_FILES[\s\S]*ordinal_digit_nine\.wav[\s\S]*display_refresh_start\.wav/);
 });

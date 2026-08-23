@@ -113,6 +113,7 @@ int main() {
 
 const idfHarness = String.raw`
 #include <cassert>
+#include <cstring>
 #include <cstdint>
 #include <vector>
 
@@ -122,7 +123,139 @@ int64_t inkloop_test_time_us = 1000000;
 
 using namespace inkloop;
 
-int main() {
+void pumpUntilIdle(EspCrossCoreAudioBridge& bridge,
+                   EspI2sAudioDevice& device, size_t maximum_steps) {
+  for (size_t step = 0; step < maximum_steps && bridge.playbackBusy(); ++step) {
+    assert(bridge.servicePlayback(device) == ESP_OK);
+    inkloop_test_time_us += 200000;
+  }
+}
+
+void testShortTailFormatSwitch() {
+  EspCrossCoreAudioBridge bridge;
+  assert(bridge.initialize() == ESP_OK);
+  EspI2sAudioDevice device;
+  device.modelPreload = true;
+  device.preloadTargetBytes = 64;
+
+  const uint8_t oldTail[] = {1, 0, 2, 0};
+  const uint8_t newTail[] = {3, 0, 4, 0};
+  assert(bridge.begin(24000, 1).ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(bridge.write(oldTail, sizeof(oldTail)).ok());
+  assert(bridge.end().ok());
+
+  // Model the exact cross-core interleaving: old PCM has reached a READY I2S
+  // preload buffer, but TX has not started. Network installs a different-rate
+  // generation before the Voice owner reaches its short-tail start check.
+  bool switched = false;
+  device.onWrite = [&]() {
+    if (switched) return;
+    switched = true;
+    assert(bridge.begin(16000, 1).ok());
+    assert(bridge.write(newTail, sizeof(newTail)).ok());
+    assert(bridge.end().ok());
+  };
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  pumpUntilIdle(bridge, device, 12);
+
+  assert(!bridge.playbackBusy());
+  assert(device.preloadedStartCalls >= 2);
+  assert(device.endCalls == 2);
+  assert(device.beginRates == std::vector<uint32_t>({24000, 16000}));
+}
+
+void testNoAudioCompletion(bool one_frame) {
+  EspCrossCoreAudioBridge bridge;
+  assert(bridge.initialize() == ESP_OK);
+  EspI2sAudioDevice device;
+  device.modelPreload = true;
+  device.preloadTargetBytes = 64;
+  device.emulateResamplerPriming = one_frame;
+
+  assert(bridge.begin(16000, 1).ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  if (one_frame) {
+    const uint8_t frame[] = {0x34, 0x12};
+    assert(bridge.write(frame, sizeof(frame)).ok());
+  }
+  assert(bridge.end().ok());
+  pumpUntilIdle(bridge, device, 8);
+
+  assert(!bridge.playbackBusy());
+  assert(bridge.diagnostics().playback_hardware_failures == 0);
+  assert(device.abortCalls == 0);
+  assert(device.endCalls == 1);
+  assert(device.preloadedStartCalls == (one_frame ? 1 : 0));
+}
+
+void testSameFormatRestartAfterSourceFinish() {
+  EspCrossCoreAudioBridge bridge;
+  assert(bridge.initialize() == ESP_OK);
+  EspI2sAudioDevice device;
+  device.modelPreload = true;
+  device.preloadTargetBytes = 64;
+
+  const uint8_t first[] = {1, 0, 2, 0};
+  const uint8_t adjacent[] = {3, 0, 4, 0};
+  assert(bridge.begin(24000, 1).ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(bridge.write(first, sizeof(first)).ok());
+  assert(bridge.end().ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  inkloop_test_time_us += 150000;
+  assert(bridge.servicePlayback(device) == ESP_OK);
+
+  // StopPending now commits the old source finish, but DMA still owns its
+  // tail. A same-format tts.start must get a fresh core generation queued
+  // behind teardown, rather than reactivating the closed source.
+  device.drained = false;
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.finishCalls == 1);
+  assert(device.playbackSourceFinished);
+  assert(bridge.begin(24000, 1).ok());
+  assert(bridge.write(adjacent, sizeof(adjacent)).ok());
+  assert(bridge.end().ok());
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.finishCalls == 1);
+  assert(device.invalidWriteCalls == 0);
+  assert(device.played == std::vector<uint8_t>(first, first + sizeof(first)));
+
+  device.drained = true;
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.endCalls == 1);
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.beginCalls == 2);
+  assert(device.beginRates == std::vector<uint32_t>({24000, 24000}));
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(device.invalidWriteCalls == 0);
+  const std::vector<uint8_t> expected = {1, 0, 2, 0, 3, 0, 4, 0};
+  assert(device.played == expected);
+
+  bridge.abort();
+  assert(bridge.servicePlayback(device) == ESP_OK);
+  assert(!bridge.playbackBusy());
+}
+
+int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "short-tail-format-switch") == 0) {
+    testShortTailFormatSwitch();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "zero-byte") == 0) {
+    testNoAudioCompletion(false);
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "single-frame") == 0) {
+    testNoAudioCompletion(true);
+    return 0;
+  }
+  if (argc == 2 &&
+      std::strcmp(argv[1], "same-format-after-source-finish") == 0) {
+    testSameFormatRestartAfterSourceFinish();
+    return 0;
+  }
+
   EspCrossCoreAudioBridge bridge;
   assert(bridge.initialize() == ESP_OK);
   EspI2sAudioDevice device;
@@ -262,12 +395,12 @@ function buildAndRun(sanitized) {
   }
 }
 
-function buildAndRunIdfAdapter() {
+function buildAndRunIdfAdapter(scenario = "baseline", sanitized = false) {
   const scratch = mkdtempSync(join(tmpdir(), "inkloop-idf-audio-state-"));
   try {
     const stubs = join(scratch, "stubs");
     const source = join(scratch, "adapter.cpp");
-    const binary = join(scratch, "adapter");
+    const binary = join(scratch, sanitized ? "adapter-sanitized" : "adapter");
     const stubFiles = new Map([
       ["freertos/FreeRTOS.h", String.raw`
 #pragma once
@@ -358,21 +491,101 @@ class EspI2sAudioDevice {
   int beginCalls = 0;
   int endCalls = 0;
   int abortCalls = 0;
+  int preloadedStartCalls = 0;
+  int finishCalls = 0;
+  int invalidWriteCalls = 0;
   bool drained = true;
+  bool modelPreload = false;
+  bool playbackOpen = false;
+  bool playbackEnabled = false;
+  bool playbackSourceFinished = false;
+  bool emulateResamplerPriming = false;
+  size_t preloadTargetBytes = 0;
+  size_t preloadedBytes = 0;
+  size_t sourceFrames = 0;
+  uint8_t playbackChannels = 0;
   std::vector<uint8_t> played;
   std::vector<uint32_t> beginRates;
   std::function<void()> onEnd;
-  esp_err_t beginPlayback(uint32_t rate, uint8_t) {
+  std::function<void()> onWrite;
+  esp_err_t beginPlayback(uint32_t rate, uint8_t channels) {
     ++beginCalls;
     beginRates.push_back(rate);
+    if (modelPreload) {
+      if (playbackOpen) return ESP_ERR_INVALID_STATE;
+      playbackOpen = true;
+      playbackEnabled = false;
+      playbackSourceFinished = false;
+      preloadedBytes = 0;
+      sourceFrames = 0;
+      playbackChannels = channels;
+    }
     return ESP_OK;
   }
   esp_err_t writePlayback(const uint8_t* bytes, size_t length, uint32_t) {
+    if (modelPreload) {
+      if (!playbackOpen || playbackChannels == 0 || playbackSourceFinished) {
+        ++invalidWriteCalls;
+        return ESP_ERR_INVALID_STATE;
+      }
+      const size_t sourceFrameBytes = static_cast<size_t>(playbackChannels) * 2U;
+      if (length % sourceFrameBytes != 0) return ESP_ERR_INVALID_SIZE;
+      const size_t frames = length / sourceFrameBytes;
+      size_t produced = frames;
+      if (emulateResamplerPriming && sourceFrames == 0 && produced != 0)
+        --produced;
+      sourceFrames += frames;
+      if (!playbackEnabled) {
+        preloadedBytes += produced * 2U * sizeof(int16_t);
+        if (preloadTargetBytes != 0 && preloadedBytes >= preloadTargetBytes) {
+          playbackEnabled = true;
+          ++preloadedStartCalls;
+        }
+      }
+    }
     played.insert(played.end(), bytes, bytes + length);
+    if (onWrite) onWrite();
     return ESP_OK;
   }
-  bool playbackDrained() const { return drained; }
+  esp_err_t startPreloadedPlayback() {
+    if (!modelPreload) return ESP_OK;
+    if (!playbackOpen) return ESP_ERR_INVALID_STATE;
+    if (playbackEnabled) return ESP_OK;
+    if (preloadedBytes == 0) return ESP_OK;
+    playbackEnabled = true;
+    ++preloadedStartCalls;
+    return ESP_OK;
+  }
+  esp_err_t finishPlaybackSource(uint32_t = 20) {
+    ++finishCalls;
+    if (!modelPreload) return ESP_OK;
+    if (!playbackOpen) return ESP_ERR_INVALID_STATE;
+    if (!playbackSourceFinished) {
+      // The real streaming resampler holds its first source sample until
+      // finish(), then emits a held tail so a one-frame TTS is not discarded.
+      if (emulateResamplerPriming && sourceFrames != 0 && preloadedBytes == 0)
+        preloadedBytes = 2U * sizeof(int16_t);
+      playbackSourceFinished = true;
+    }
+    return startPreloadedPlayback();
+  }
+  bool playbackDrained() const {
+    if (!modelPreload) return drained;
+    if (!playbackOpen) return true;
+    if (!playbackEnabled) return preloadedBytes == 0;
+    return drained;
+  }
   esp_err_t endPlayback() {
+    if (modelPreload) {
+      if (!playbackOpen || !playbackSourceFinished || !playbackDrained())
+        return ESP_ERR_INVALID_STATE;
+      playbackOpen = false;
+      playbackEnabled = false;
+      playbackSourceFinished = false;
+      preloadedBytes = 0;
+      sourceFrames = 0;
+      playbackChannels = 0;
+    }
     ++endCalls;
     if (onEnd) onEnd();
     return ESP_OK;
@@ -383,7 +596,15 @@ class EspI2sAudioDevice {
     return ESP_ERR_TIMEOUT;
   }
   esp_err_t endCapture() { return ESP_OK; }
-  void abort() { ++abortCalls; }
+  void abort() {
+    ++abortCalls;
+    playbackOpen = false;
+    playbackEnabled = false;
+    playbackSourceFinished = false;
+    preloadedBytes = 0;
+    sourceFrames = 0;
+    playbackChannels = 0;
+  }
 };
 }
 `],
@@ -395,15 +616,29 @@ class EspI2sAudioDevice {
       writeFileSync(target, contents);
     }
     writeFileSync(source, idfHarness);
-    execFileSync("c++", [
+    const args = [
       "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
       "-I", stubs, "-I", join(audioIdf, "include"),
       "-I", join(audio, "include"), source,
       join(audioIdf, "esp_cross_core_audio_bridge.cpp"),
       join(audio, "pcm_backpressure.cpp"), join(audio, "audio_flow.cpp"),
       join(audio, "duplex_pcm_bridge.cpp"), "-o", binary,
-    ], { stdio: "pipe" });
-    execFileSync(binary, [], { stdio: "pipe" });
+    ];
+    if (sanitized) args.splice(
+      1, 0, "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+    );
+    execFileSync("c++", args, { stdio: "pipe" });
+    execFileSync(binary, scenario === "baseline" ? [] : [scenario], {
+      encoding: "utf8",
+      env: sanitized
+        ? {
+            ...process.env,
+            ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1",
+            UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1",
+          }
+        : process.env,
+      stdio: "pipe",
+    });
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -421,7 +656,27 @@ test("IDF bridge accepts tts.start across StopPending and Stopping", () => {
   buildAndRunIdfAdapter();
 });
 
-test("native bridge keeps PCM off control queues and gates WSS before reads", () => {
+test("IDF bridge finishes a preloaded short tail before switching format", () => {
+  buildAndRunIdfAdapter("short-tail-format-switch");
+});
+
+test("IDF bridge treats an empty TTS segment as a benign completion", () => {
+  buildAndRunIdfAdapter("zero-byte");
+});
+
+test("IDF bridge treats a one-frame TTS segment as a benign completion", () => {
+  buildAndRunIdfAdapter("single-frame");
+});
+
+test("IDF bridge strictly restarts same-format TTS after source finish", () => {
+  buildAndRunIdfAdapter("same-format-after-source-finish");
+});
+
+test("IDF bridge restart-after-source-finish survives ASan/UBSan", () => {
+  buildAndRunIdfAdapter("same-format-after-source-finish", true);
+});
+
+test("native bridge keeps PCM off control queues and gates WSS data after control reads", () => {
   const header = readFileSync(join(
     audioIdf, "include/inkloop/esp_cross_core_audio_bridge.hpp"), "utf8");
   const source = readFileSync(join(
@@ -438,6 +693,9 @@ test("native bridge keeps PCM off control queues and gates WSS before reads", ()
   assert.match(source, /kPlaybackContinuationGraceUs = 150000/);
   assert.match(source, /PlaybackHardwareState::Stopping/);
   assert.doesNotMatch(source, /WorkEnvelope|xQueueSend|std::vector/);
-  assert.match(wss, /ingressReady_[\s\S]*esp_transport_poll_read/);
-  assert.ok(wss.indexOf("ingressReady_") < wss.indexOf("esp_transport_poll_read"));
+  assert.match(wss, /esp_transport_poll_read[\s\S]*handleControlFrame[\s\S]*ingressDataReady/);
+  const controlDispatch = wss.indexOf(
+    "const Status control = handleControlFrame(");
+  assert.ok(controlDispatch >= 0 && controlDispatch <
+            wss.indexOf("const bool data_ready", controlDispatch));
 });

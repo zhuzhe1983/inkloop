@@ -246,32 +246,59 @@ test("local tool outcomes restore the Arduino offline spoken feedback", () => {
   }
 });
 
-test("MyAI heartbeat yields to capture and playback without moving its deadline", () => {
+test("MyAI heartbeat runs on the low-priority Portal lane while Network keeps audio moving", () => {
   const network = section(
     voice,
     "void NativeVoiceService::networkTick",
     "void NativeVoiceService::startPairingIfNeeded",
   );
-  const dueAt = network.indexOf("due(now, last_heartbeat_ms_ + kHeartbeatMs)");
-  const audioGateAt = network.indexOf(
-    "audio_bridge_->captureBusy() || audio_bridge_->playbackBusy()",
-    dueAt,
-  );
-  const heartbeatAt = network.indexOf("client_->heartbeatVoice()", dueAt);
-  assert.ok(dueAt >= 0 && audioGateAt > dueAt && heartbeatAt > audioGateAt);
+  assert.match(network, /due\(now, last_heartbeat_ms_ \+ kHeartbeatMs\)/);
+  assert.match(network, /scheduleVoiceHeartbeat\(\)/);
+  const completionAt = network.indexOf("consumeVoiceHeartbeatCompletion(now)");
+  assert.ok(completionAt >= 0);
   assert.match(
-    network.slice(audioGateAt, heartbeatAt),
-    /heartbeat_audio_deferred_ = true[\s\S]*heartbeat_audio_deferrals[\s\S]*return;/,
+    network.slice(Math.max(0, completionAt - 300), completionAt + 80),
+    /NativeNetworkDiagnosticOperation::Heartbeat[\s\S]*consumeVoiceHeartbeatCompletion\(now\)/,
   );
+  assert.doesNotMatch(network, /client_->heartbeatVoice\(\)/);
   assert.doesNotMatch(
-    network.slice(audioGateAt, heartbeatAt),
-    /last_heartbeat_ms_\s*=/,
+    network.slice(network.indexOf("scheduleVoiceHeartbeat()")),
+    /captureBusy\(\) \|\| audio_bridge_->playbackBusy\(\)/,
+  );
+  const worker = section(
+    voice,
+    "WorkDisposition NativeVoiceService::performVoiceHeartbeat",
+    "bool NativeVoiceService::consumeVoiceHeartbeatCompletion",
+  );
+  assert.match(worker, /http_\.perform\(work\.request, response\)/);
+  assert.match(worker, /work\.clearRequestSensitive\(\)/);
+  assert.match(worker, /heartbeat_generation_ != envelope\.generation/);
+  assert.match(worker, /heartbeat_correlation_ != envelope\.request_id/);
+  assert.match(
+    worker,
+    /heartbeat_generation_ != generation[\s\S]*heartbeat_correlation_ != correlation/,
+  );
+  const completion = section(
+    voice,
+    "bool NativeVoiceService::consumeVoiceHeartbeatCompletion",
+    "void NativeVoiceService::stageSystemPrompt",
   );
   assert.match(
-    network.slice(heartbeatAt),
-    /heartbeat\.ok\(\)[\s\S]*last_heartbeat_ms_\s*=\s*now/,
+    completion,
+    /VoiceHeartbeatPhase::Queued[\s\S]*VoiceHeartbeatPhase::Running[\s\S]*heartbeat_phase_deadline_ms_[\s\S]*due\(now_ms, heartbeat_phase_deadline_ms_\)/,
   );
-  assert.match(voiceHeader, /heartbeat_audio_deferrals/);
+  assert.match(completion, /heartbeat_generation_ = 0U/);
+  assert.match(completion, /heartbeat_correlation_ = 0U/);
+  assert.match(voice, /kHeartbeatQueuedWatchdogMs = 5000U/);
+  assert.match(voice, /kHeartbeatRunningWatchdogMs = 10000U/);
+  assert.match(voiceHeader, /heartbeat_phase_deadline_ms_/);
+  assert.match(
+    voice,
+    /envelope\.work_class = WorkClass::Portal[\s\S]*PortalRunVoiceHeartbeat[\s\S]*supervisor_\.post\(envelope\)/,
+  );
+  assert.match(voice, /completeVoiceHeartbeat/);
+  assert.match(voiceHeader, /heartbeat_background_submissions/);
+  assert.doesNotMatch(voiceHeader, /heartbeat_audio_deferred_/);
 });
 
 test("production cloud and MyAI requests use the running image version", () => {

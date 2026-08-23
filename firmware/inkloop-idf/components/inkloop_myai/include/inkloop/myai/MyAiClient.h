@@ -5,6 +5,24 @@
 namespace inkloop {
 namespace myai {
 
+// Immutable snapshot handed from the single MyAI owner to a lower-priority
+// ESP-IDF HTTP lane. The worker never touches MyAiClient state; completion is
+// correlated back on the owner before it may update activation/session state.
+struct VoiceHeartbeatWork {
+  HttpRequest request;
+  std::string sessionId;
+  std::string gatewayId;
+
+  bool valid() const {
+    return !request.url.empty() && !sessionId.empty() && !gatewayId.empty();
+  }
+  bool correlationValid() const {
+    return !sessionId.empty() && !gatewayId.empty();
+  }
+  void clearRequestSensitive();
+  void clearSensitive();
+};
+
 struct ClientConfig {
   std::string installationFingerprint;
   // Canonical public-contract MAC (AA:BB:CC:DD:EE:FF). It is deliberately
@@ -59,6 +77,13 @@ class MyAiClient final : public IWebSocketListener {
   Status endVoiceTurn();
   Status requestResponse(const std::string& transcript);
   Status heartbeatVoice();
+  // ESP-IDF may execute this prepared HTTP exchange on its low-priority
+  // Portal lane while the Network lane keeps WSS audio moving. Both methods
+  // themselves remain owner-only; no worker may call any other client API.
+  Status prepareVoiceHeartbeat(VoiceHeartbeatWork& work) const;
+  Status completeVoiceHeartbeat(const VoiceHeartbeatWork& work,
+                                const Status& transportStatus,
+                                const HttpResponse& response);
   Status disconnectVoice(const std::string& reason = "client_disconnect");
   // `tts.stop` terminates only the current streamed TTS segment. It cannot
   // prove that the whole response is complete because another segment may

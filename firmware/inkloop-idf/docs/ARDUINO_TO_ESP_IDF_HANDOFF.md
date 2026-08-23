@@ -34,14 +34,20 @@ than solve these ownership and scheduling failures.
 
 ## 2. Current device safety state
 
-Current update (2026-08-24): source is now `0.4.0-beta.28`. The final digital
-gate is 403/403 repository tests, lint with zero errors, and clean official
-ESP-IDF v6.0.2 C151/mock links. The C151 application SHA-256 is
-`cd9498e006693b7b3ea61c143dbd230f61873f9f1a0d41a5dff020327f14091a`.
-beta28 has not been flashed, signed or promoted. The authorized C151 still
-runs beta27 from app1 and has only a Recovery-path physical pass because three
-valid divergent TF album indexes require an explicit operator choice. app0
-beta25 remains the retained rollback image.
+Current update (2026-08-24): source remediation is now `0.4.0-beta.29`. The
+worktree passes 424/424 repository tests and lint with zero errors/19 warnings.
+The exact beta28 independent gate failed on five findings: no read-only TF
+asset export, unsafe generic dual-slot flash guidance, non-reproducible build
+identity, fail-open admission after wake rollback failure, and an undeclared
+ignored ArduinoJson host dependency. Beta29 remediates all five, adds bounded
+low-priority MyAI lease heartbeats plus WSS Pong supervision, and adds remote
+Recovery logical export. That HTTP path uses the current writable SDSPI/FAT
+mount and cannot replace mandatory pre-flash offline whole-card custody.
+Exact-commit reproducible C151/mock receipts and a
+fresh independent beta29 gate remain pending; beta29 has not been flashed,
+signed or promoted. The authorized C151 retains beta27 in app1 and beta25 in
+app0 because three valid divergent TF album indexes still require an explicit
+operator choice.
 
 Historical retained evidence: the authorized C151 previously ran the native
 ESP-IDF `0.4.0-beta.11` image from
@@ -175,6 +181,13 @@ PSRAM queue filled. The IDF implementation must use true backpressure:
 6. buffer depth, underruns, overruns and first-audio latency are observable;
 7. input/voice control queues never share the PCM data queue.
 
+PaperColor C151 is a fixed physical-output exception: ES8311 TX runs at
+44.1 kHz stereo. Local/MyAI PCM stays in its declared 8--48 kHz source format
+and passes through the allocation-free streaming resampler. TX is preloaded for
+60 ms before enable, retains roughly 93 ms of DMA lead, and waits for the tail
+to drain before disabling the codec. This avoids the earlier 16 kHz clock
+mismatch and 10 ms zero-fill gaps heard in the local “已恢复” prompt.
+
 Changing the volume in WebUI sends a short local preview command to the voice
 task; it does not run in an HTTP handler.
 
@@ -265,19 +278,19 @@ the existing unit.
 | Pinned ESP-IDF project and compatible partitions | **Digitally implemented.** `.idf-version`, `tools/build.sh`, dual OTA slots and the compatible 16 MiB layout are tested by `esp-idf-scaffold.test.mjs`. | Re-run clean C151 and mock-SKU builds after final integration. |
 | Bounded queues, owner lifecycle and telemetry | **Digitally implemented.** `inkloop_runtime` and Product lifecycle/fault tests cover the graph. | Measure latency, stack/heap/PSRAM, watchdog and overload on C151. |
 | Native C151 hardware adapters | **Digitally implemented and target-linked.** PM1, RGB, buttons, I2S, SD and ED2208 contain no Arduino dependency. | Run electrical, audio, LED, key, storage and panel checks. |
-| Persistence and upgrade safety | **Digitally implemented with an explicit Recovery gate.** read-only boot audit, compatibility, fault-tested transaction recovery and typed Recovery choices are composed. | Run real legacy-media and every power-cut/rollback case; no automatic choice. |
+| Persistence and upgrade safety | **Digitally implemented with an explicit Recovery gate.** read-only boot audit, compatibility, fault-tested transaction recovery, typed Recovery choices and authenticated three-index/asset logical export are composed. | Before any candidate write, capture an offline whole-card TF image; the writable SDSPI/FAT-mounted HTTP exporter is only additional logical evidence. Then run real legacy-media and every power-cut/rollback case; no automatic choice. |
 | Inkloop task/album delivery | **Digitally implemented.** binding, 30 s/event sync, tasks, frame storage, display and correlated ack are Product-owned. | Run public Inkloop schedule/delete/offline/reconnect scenarios. |
-| MyAI voice/AIGC | **Digitally implemented.** public pairing/token/gateway/WSS/audio/AIGC flow, local final-text history and 30 s deferred heartbeat are composed. | Run public MyAI pairing, voice, 60 s TTS, cancellation and AIGC end to end. |
+| MyAI voice/AIGC | **Digitally implemented.** public pairing/token/gateway/WSS/audio/AIGC flow, local final-text history, low-priority 30 s lease heartbeat and exact WSS Ping/Pong timeout are composed. | Run public MyAI pairing, voice, 60 s TTS, heartbeat/Pong failure, cancellation and AIGC end to end. |
 | Portal/settings/local tools | **Digitally implemented.** native authenticated Portal, upload/preview, settings, volume preview, local tools and confirmed TF maintenance are Product-owned. | Run a real browser against IP/mDNS and all storage/confirmation flows. |
 | Render/display/stable-screen behavior | **Digitally implemented.** official/classic/reflectance/solid strategies, journaled display, one-second page settle and panel-preserving wake are composed. | Compare physical quality/timing and power-cut behavior. |
 | Recovery and OTA | **Digitally verified through WS46.** signed HTTPS/Ed25519 staging, boot health, truthful accepted/offline Portal UX plus bounded post-reboot outcome, two-phase quiesce, Recovery teardown fault handling and immutable per-SKU promotion exist. WS43 targeted 19/19 and C151 clean/full link PASS; WS44 promoter 6/6 and OTA regression 36/36 PASS; WS46 real clean release build and OTA/scaffold 50/50 PASS. | Configure/deploy the reviewed public-key channel and execute live signed update/rollback. |
-| Authorized attached C151 | **Physical tranche started.** beta10 standard-boundary flash/readback, preserved NVS/LittleFS/TF, boot, saved Wi-Fi, Portal health, deep sleep and timer panel-preserving wake have retained evidence. The 100-cycle observer and gated beta11 flash/first-cycle evaluator are still running. | Finish beta11 smoke, then authenticated Portal, three-key/LED/audio/display/TF, MyAI Voice/AIGC, signed OTA/rollback/power-cut and the remaining `C151_PHYSICAL_ACCEPTANCE.md` rows. A failed backup or evaluator blocks every later flash. |
+| Authorized attached C151 | **Physical tranche remains Recovery-only and staging is BLOCKED.** beta27 is selected in app1 and beta25 remains in app0. Two byte-identical current 16 MiB internal-flash reads plus NVS/LittleFS/slot custody are retained. No deliberate TF mutation was requested, but writable FAT mounting is not proof of unchanged TF bytes. | Capture/hash an offline whole-card TF image before any candidate write. Then pass the fresh beta29 gate, stage only the proven inactive slot with readback, use the HTTP logical export for additional selection evidence, make the explicit slot choice, and run Product acceptance. |
 
 ## 12. Acceptance gates before the next candidate and release
 
 The executable procedure and required evidence bundle are in
-[C151_PHYSICAL_ACCEPTANCE.md](C151_PHYSICAL_ACCEPTANCE.md). Some boot, Wi-Fi,
-Portal-health, deep-sleep and timer-wake evidence exists for beta10; every item
+[C151_PHYSICAL_ACCEPTANCE.md](C151_PHYSICAL_ACCEPTANCE.md). Historical boot,
+Wi-Fi, Portal-health, deep-sleep and timer-wake evidence exists; every item
 below remains **PENDING physical/live** unless its retained evidence bundle
 explicitly records a passing result for the exact candidate. This list is a
 release gate, not an inference from host tests.

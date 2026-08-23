@@ -3,19 +3,30 @@
 Status: **PARTIAL PHYSICAL EVIDENCE — RELEASE STILL PENDING.** beta27 has a
 retained inactive-app1 readback/boot and Recovery-path pass with app0 beta25
 preserved. It does not have a Product pass: three valid divergent TF album
-indexes remain behind an explicit operator choice. `0.4.0-beta.28` is the
-current digital candidate (403/403 tests, lint zero errors, clean C151/mock
-links, C151 SHA-256
-`cd9498e006693b7b3ea61c143dbd230f61873f9f1a0d41a5dff020327f14091a`)
-and has not been flashed. No older physical observation transfers to beta28.
+indexes remain behind an explicit operator choice. `0.4.0-beta.29` is the
+current remediation worktree (424/424 tests, lint zero errors/19 warnings).
+The exact beta28 independent gate failed; beta29 repairs its five findings, but
+still requires exact-commit reproducible C151/mock artifacts and a fresh
+independent gate before staging. It has not been flashed. No older physical
+observation transfers to beta29.
+
+Current internal-flash custody before beta29: two 16 MiB reads are byte-identical
+with SHA-256
+`25d169e66cc334fe219de0220cca2920d0aae8c8747d33dde3af87bd9196f76d`.
+They preserve beta25 app0, selected beta27 app1, otadata, NVS and LittleFS. The
+device was left in ROM bootloader after the reads; no deliberate device or TF
+mutation command was issued. This does not establish TF byte custody: the
+existing firmware mounts TF writable through `esp_vfs_fat_sdspi_mount`, and no
+offline whole-card image has yet been captured. Physical beta29 staging is
+therefore **BLOCKED** until that image and its hash are verified.
 
 This is the release-blocking procedure for the currently attached,
-user-authorized C151. The device normally deep-sleeps and is not assumed to be
-in Download mode. Run a candidate only after its exact shared-tree tests, clean
-build and fresh independent acceptance pass. Do not interfere with the active
-beta10 endurance/gated-beta11 watcher, modify MyAI/AaaS, deploy a server,
-publish a release, erase a chip, resolve a TF candidate or format media merely because this document
-exists.
+user-authorized C151. The unit is currently in Download mode, but future runs
+must re-enumerate and verify it rather than assume that state. Run a candidate
+only after its exact shared-tree tests, clean build and fresh independent
+acceptance pass. Do not modify MyAI/AaaS, deploy a server, publish a release,
+erase a chip, resolve a TF candidate or format media merely because this
+document exists.
 
 ## 1. Verdict and evidence contract
 
@@ -64,11 +75,12 @@ For each section retain:
 
 ## 2. Preconditions and safe candidate flash
 
-Current digital evidence: beta28 passes the complete repository suite 403/403,
-lint with zero errors, and clean official ESP-IDF v6.0.2 C151/mock builds. The
-operator must still bind every result to the exact committed source, binary,
-fresh independent gate and physical run selected for flashing. A beta27
-Recovery pass is not beta28 Product evidence.
+Current digital evidence: the beta29 worktree passes the complete repository
+suite 452/452 and lint with zero errors/19 warnings. Exact-commit reproducible
+official ESP-IDF v6.0.2 C151/mock artifacts and the fresh independent beta29
+gate remain pending. The operator must bind every result to the exact committed
+source, binary, gate and physical run selected for staging. A beta27 Recovery
+pass is not beta29 Product evidence.
 
 - [ ] the candidate's exact source commit, version, C151 binary hash, signed
   manifest hash and fresh-acceptance report all match; no unversioned branch
@@ -80,9 +92,10 @@ Recovery pass is not beta28 Product evidence.
 - [ ] the target is the currently attached, explicitly authorized Download-mode
   C151; record its MAC, flash size, board revision and TF-card identity.
 - [ ] read and hash the full 16 MiB flash, NVS and LittleFS before any write.
-  Independently back up and hash the TF card. Verify every output is nonempty
-  and readable; if any required backup/read fails, mark `BLOCKED` and do not
-  flash.
+  Power down, remove the TF card, capture and hash an offline whole-card byte
+  image before any candidate write. Verify every output is nonempty and
+  readable; if any required backup/read fails or the whole-card image is
+  absent, mark `BLOCKED` and do not flash.
 - [ ] review the partition table against the backup. The normal migration
   flash must not include `erase-flash`, an automatic NVS erase, LittleFS
   format or TF format.
@@ -108,27 +121,47 @@ shasum -a 256 "$INKLOOP_EVIDENCE_DIR"/*-before.bin \
   >"$INKLOOP_EVIDENCE_DIR/preflash-sha256.txt"
 ```
 
-The TF backup must use a read-only, explicitly validated card-device or mount
-path and include a byte image plus file inventory/hashes. Never infer a TF
-device from an unresolved variable or broad disk path.
+The mandatory pre-flash TF backup must be an offline whole-card byte image from
+an explicitly validated card device, captured after powering down and removing
+the card. Never infer a TF device from an unresolved variable or broad disk
+path. A beta29 HTTP export cannot satisfy this gate because current
+`esp_vfs_fat_sdspi_mount` usage mounts FAT writable. For divergent album slots,
+follow [TF_ALBUM_RECOVERY_EXPORT.md](TF_ALBUM_RECOVERY_EXPORT.md): after the
+whole-card custody exists, its logical exporter may additionally retain all
+three candidate indexes and the referenced-asset union for selection. A
+`manifest.json` with `complete: true` is logical export evidence only.
 
-Build and flash only after the preconditions pass and no gated watcher owns the
-device. For beta11 use its retained accepted external build, not an arbitrary
-rebuild. For a later candidate, archive the exact clean build before flashing:
+Build only after the preconditions pass and no gated watcher owns the device.
+Use only the exact freshly accepted external build selected by the gate, not an
+arbitrary rebuild, and archive it before staging:
 
 ```sh
 cd firmware/inkloop-idf
 IDF_PATH=/Users/zhuzhe/.espressif/frameworks/esp-idf-v6.0.2 ./tools/build.sh --clean
 . /Users/zhuzhe/.espressif/frameworks/esp-idf-v6.0.2/export.sh
-idf.py -p "$INKLOOP_C151_PORT" flash
 idf.py -p "$INKLOOP_C151_PORT" monitor
 ```
 
-`idf.py flash` must show the exact accepted images/offsets. Do not substitute
-`erase-flash`. Save the full monitor output from reset through stable normal or
-Recovery mode. If the boot loops, reports an ambiguous audit without the
-expected Recovery path, formats media, shows a terminal black panel or emits a
-secret, stop and mark `FAIL`.
+Do **not** run the generic `idf.py flash` target on an installed dual-slot
+device. Its normal flash arguments write `app0 @ 0x10000` and the initial OTA
+selector at `0xe000`; that can overwrite the retained rollback application and
+reset the currently reviewed selector. `erase-flash` is also forbidden.
+
+Candidate staging needs a fresh independent gate tied to the exact binary and
+the just-read physical state. That gate must identify the running and inactive
+slots, retain the running image as rollback, authorize only the inactive app
+range, verify a full readback hash, and use either the product's signed
+inactive-slot OTA path or one reviewed selector update. If the active slot,
+selector sequence/state, partition table, internal backup hashes, offline TF
+whole-card hash or target image hash differs from the gate, stop before the
+first write. Factory flashing of a
+verified blank board is a separate procedure and is not evidence for this
+installed unit.
+
+Save the full monitor output from reset through stable normal or Recovery mode.
+If the boot loops, reports an ambiguous audit without the expected Recovery
+path, formats media, shows a terminal black panel or emits a secret, stop and
+mark `FAIL`.
 
 ## 3. Boot, identity and scheduling baseline
 
@@ -192,8 +225,9 @@ admission and first visible/audible acknowledgement.
   cleanly. Preview, delete, render-strategy change and “上屏” work after reload
   without stretching the thumbnail to 600 px CSS height.
 
-After beta11 first-cycle evaluation succeeds, the committed Portal harness may
-be run from the isolated worktree. It prompts for the local password through
+After the exact candidate boots Product and its first-cycle evaluation
+succeeds, the committed Portal harness may be run from the isolated worktree.
+It prompts for the local password through
 `getpass`; never put the password in argv, environment variables or evidence:
 
 ```sh
@@ -254,8 +288,12 @@ or redacted client diagnostics; do not change MyAI/AaaS server code.
   partial ASR or `blank_audio` and survives reboot/rotation.
 - [ ] a 60-second TTS stream has zero input-ring overrun, playback underrun and
   audible corruption. Cancel completes ≤100 ms and flushes only its generation.
-- [ ] 30-second heartbeat is deferred throughout capture/active TTS and sent
-  after audio becomes idle without losing the session.
+- [ ] the 30-second lease heartbeat is prepared by Network ownership and runs
+  as bounded low-priority Portal-lane HTTP while capture/WSS/TTS remains
+  responsive; stale session/gateway completions are rejected.
+- [ ] credential-free WSS Ping receives its exact Pong within the bounded
+  timeout; a missing/mismatched Pong closes with reconnect semantics without
+  starving capture or playback.
 - [ ] Portal manual image text and a voice image request use the saved agent
   and AIGC prompt templates. No AIGC status request occurs while idle; active
   polls are spaced 5 seconds until terminal state.
@@ -393,7 +431,7 @@ key into firmware, repository or evidence.
 
 | Gate | Result | Evidence path / defect |
 |---|---|---|
-| Digital final gate and clean builds | PASS (WS43/44/46; shared suite 261/261) | Bind exact flash artifact/hash before device write. |
+| Digital final gate and clean builds | PENDING (beta29 worktree 452/452; lint 0 errors/19 warnings) | Produce exact-commit reproducible C151/mock artifacts and pass a fresh independent beta29 gate before any write. |
 | First flash, boot and identity | PENDING | |
 | Input latency and LEDs | PENDING | |
 | Wi-Fi and Portal | PENDING | |

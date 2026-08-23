@@ -123,7 +123,12 @@ struct Owner final : IRecoveryActionOwner {
     auto& removable = output.snapshots[3];
     removable.domain = RecoveryActionDomain::Album;
     removable.backend = RecoveryActionBackend::Removable;
-    removable.state = RecoveryActionState::Disabled;
+    removable.state = RecoveryActionState::ChoiceRequired;
+    candidate(removable.candidates[0], 0x41U, 401U, true);
+    candidate(removable.candidates[1], 0x42U, 402U, true);
+    candidate(removable.candidates[2], 0x43U, 403U, true);
+    bytes(0xa4U, removable.inspection_id);
+    removable.valid_candidates = 3U;
 
     if (invalid_mode == 1U) output.count = 5U;
     if (invalid_mode == 2U) {
@@ -156,6 +161,10 @@ struct Owner final : IRecoveryActionOwner {
     } else if (request.domain == RecoveryActionDomain::Album &&
                request.backend == RecoveryActionBackend::Internal) {
       expected = 0xa3U;
+    } else if (request.domain == RecoveryActionDomain::Album &&
+               request.backend == RecoveryActionBackend::Removable &&
+               request.external_backup_confirmed) {
+      expected = 0xa4U;
     } else {
       return RecoveryActionResolveResult::InvalidRequest;
     }
@@ -210,9 +219,15 @@ RecoveryRequest authorized(std::string method, std::string path,
 
 std::string body(const std::string& domain, const std::string& backend,
                  const std::string& choice, const std::string& snapshot,
-                 const std::string& confirm = "resolve") {
+                 const std::string& confirm = "resolve",
+                 const std::string& backup = "") {
+  const std::string backup_value = backup.empty()
+      ? (domain == "album" && backend == "removable"
+             ? "verified_external" : "not_required")
+      : backup;
   return "domain=" + domain + "&backend=" + backend + "&choice=" + choice +
-         "&snapshot=" + snapshot + "&confirm=" + confirm;
+         "&snapshot=" + snapshot + "&backup=" + backup_value +
+         "&confirm=" + confirm;
 }
 
 RecoveryResponse post(RecoveryPortalCore& portal, const std::string& cookie,
@@ -319,18 +334,24 @@ int main() {
   assert(portal.handle(mutation).status == 413);
   assert(owner.resolve_calls == resolves_before);
 
-  const std::array<std::string, 10> invalid_bodies{{
+  const std::array<std::string, 13> invalid_bodies{{
       body("display", "none", "next", hex(0xa1U)),
       body("display", "internal", "current", hex(0xa1U)),
       body("tasks", "removable", "current", hex(0xa2U)),
       body("album", "none", "current", hex(0xa3U)),
       body("display", "none", "current", hex(0xa1U), "yes"),
       "choice=current&domain=display&backend=none&snapshot=" + hex(0xa1U) +
-          "&confirm=resolve",
+          "&backup=not_required&confirm=resolve",
       exact + "&extra=x",
       body("display", "none", "current", std::string(64U, 'A')),
       body("delete", "none", "current", hex(0xa1U)),
       body("display", "none", "target", hex(0xa1U)),
+      body("display", "none", "current", hex(0xa1U), "resolve",
+           "verified_external"),
+      body("album", "removable", "current", hex(0xa4U), "resolve",
+           "not_required"),
+      "domain=album&backend=removable&choice=current&snapshot=" +
+          hex(0xa4U) + "&confirm=resolve",
   }};
   for (const std::string& invalid : invalid_bodies) {
     assert(post(portal, cookie, invalid).status == 422);
@@ -380,6 +401,7 @@ int main() {
   assert(owner.last.domain == RecoveryActionDomain::Display);
   assert(owner.last.backend == RecoveryActionBackend::None);
   assert(owner.last.choice == RecoveryActionChoice::Current);
+  assert(!owner.last.external_backup_confirmed);
   for (uint8_t value : owner.last.inspection_id) assert(value == 0xa1U);
 
   success = post(
@@ -393,6 +415,15 @@ int main() {
   assert(owner.last.domain == RecoveryActionDomain::Album);
   assert(owner.last.backend == RecoveryActionBackend::Internal);
   assert(owner.last.choice == RecoveryActionChoice::Previous);
+  assert(!owner.last.external_backup_confirmed);
+
+  success = post(portal, cookie,
+                 body("album", "removable", "next", hex(0xa4U)));
+  assert(success.status == 200);
+  assert(owner.last.domain == RecoveryActionDomain::Album);
+  assert(owner.last.backend == RecoveryActionBackend::Removable);
+  assert(owner.last.choice == RecoveryActionChoice::Next);
+  assert(owner.last.external_backup_confirmed);
 
   // Repeat login remains valid after reads and mutations.
   assert(!authenticate(portal).empty());
@@ -469,6 +500,8 @@ test("recovery action interface is fixed, storage-independent and closed", () =>
   assert.match(source, /request\.content_length != request\.body\.size\(\)/);
   assert.match(source, /request\.origin\.empty\(\)/);
   assert.match(source, /confirm != "resolve"/);
+  assert.match(source, /backup == "verified_external"/);
+  assert.match(source, /backup == "not_required"/);
   assert.match(source, /RecoveryActionDomain::Display[\s\S]*RecoveryActionChoice::Next/);
 });
 
@@ -491,6 +524,10 @@ test("browser requires explicit choice and confirmation with display semantics",
   assert.match(html, /更新时间：/);
   assert.match(html, /摘要、条目数和文件时间核对差异/);
   assert.match(html, /必须手动选择一项并勾选明确确认/);
+  assert.match(html, /只读外部导出/);
+  assert.match(html, /backup-confirmed/);
+  assert.match(html, /verified_external/);
+  assert.match(html, /not_required/);
   assert.match(
     html,
     /radio\.disabled=.*recoverable.*choice_required/,

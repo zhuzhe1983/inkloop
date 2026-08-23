@@ -116,6 +116,7 @@ struct Http final : IHttpTransport {
   int pairingErrorStatus = 0;
   std::string pairingErrorCode;
   std::string pairingErrorMessage;
+  std::string aigcStatusPromptId = "prompt-1";
 
   explicit Http(HttpMode value) : mode(value) {}
 
@@ -161,6 +162,15 @@ struct Http final : IHttpTransport {
       ++disconnects;
       assert(authorization != request.headers.end());
       response.body = "{}";
+    } else if (request.url.find("/client/sessions/heartbeat") !=
+               std::string::npos) {
+      assert(mode == HttpMode::Voice);
+      assert(authorization != request.headers.end());
+      assert(request.body.find("\"session_id\":\"session-1\"") !=
+             std::string::npos);
+      assert(request.body.find("\"gateway_id\":\"fast\"") !=
+             std::string::npos);
+      response.body = "{\"session\":{\"status\":\"active\"}}";
     } else if (request.url.find("/client/sessions") != std::string::npos) {
       assert(request.body.find("\"app_id\":\"inkloop\"") !=
              std::string::npos);
@@ -207,6 +217,13 @@ struct Http final : IHttpTransport {
       } else {
         response.body = "{\"prompt_id\":\"prompt-1\",\"status\":\"queued\"}";
       }
+    } else if (request.url.find("/gateway/v1/aigc/status") !=
+               std::string::npos) {
+      ++business;
+      response.body = "{\"prompt_id\":\"" + aigcStatusPromptId +
+          "\",\"status\":\"complete\",\"outputs\":[{"
+          "\"node_id\":\"9\",\"filename\":\"paper.png\","
+          "\"subfolder\":\"\",\"type\":\"output\"}]}";
     } else {
       assert(false && "unexpected HTTP route");
     }
@@ -274,8 +291,10 @@ struct WebSocket final : IWebSocketTransport {
 };
 
 struct Output final : IAigcOutputTransport {
+  int calls = 0;
   Status postAndDecodeBase64(const HttpRequest&, size_t, size_t, IImageSink&,
                              AigcOutputMetadata&) override {
+    ++calls;
     return Status(ErrorCode::InvalidState);
   }
 };
@@ -449,6 +468,27 @@ int main() {
   assert(confirmed !=
          inkloop::voiceAigcRequestFingerprint("请生成一张图片"));
   assert(inkloop::voiceAigcRequestFingerprint("") == 0U);
+  const auto explicit_intent = inkloop::nextVoiceAigcIntentCorrelation(
+      {}, false, "请生成一张东方明珠图片");
+  assert(explicit_intent.armed);
+  assert(explicit_intent.explicit_request ==
+         inkloop::voiceAigcRequestFingerprint("请生成一张东方明珠图片"));
+  const auto short_confirmation =
+      inkloop::nextVoiceAigcIntentCorrelation(
+          explicit_intent, true, "好的");
+  assert(short_confirmation.armed);
+  assert(short_confirmation.explicit_request ==
+         explicit_intent.explicit_request);
+  assert(short_confirmation.latest_utterance == confirmed);
+  assert(inkloop::voiceAigcIntentCorrelationMatches(
+      short_confirmation, explicit_intent.explicit_request));
+  assert(inkloop::voiceAigcIntentCorrelationMatches(
+      short_confirmation, confirmed));
+  assert(!inkloop::voiceAigcIntentCorrelationMatches(
+      short_confirmation,
+      inkloop::voiceAigcRequestFingerprint("请生成另一张图片")));
+  assert(!inkloop::nextVoiceAigcIntentCorrelation(
+      short_confirmation, true, "不用了").armed);
   Security security;
   Clock clock;
   Probes probes;
@@ -484,8 +524,15 @@ int main() {
     AigcGenerateResponse generated;
     assert(client.startImage(request, generated).ok());
     assert(generated.promptId == "prompt-1");
+    http.aigcStatusPromptId = "prompt-other";
+    AigcStatusResponse mismatched;
+    const Status mismatch = client.pollImage(generated.promptId, mismatched);
+    assert(mismatch.code == ErrorCode::Protocol);
+    assert(mismatched.promptId.empty() && mismatched.status.empty() &&
+           mismatched.outputs.empty());
+    assert(output.calls == 0);
     assert(http.preferences == 0);
-    assert(http.business == 1);
+    assert(http.business == 2);
     assert(client.disconnectImage().ok() && http.disconnects == 1);
   }
 
@@ -506,6 +553,22 @@ int main() {
     assert(socket.text[0].find("\"provider_profile_id\":\"voice-profile\"") !=
            std::string::npos);
     client.onWebSocketText("{\"type\":\"session.ready\",\"payload\":{}}");
+    VoiceHeartbeatWork heartbeat;
+    assert(client.prepareVoiceHeartbeat(heartbeat).ok());
+    assert(heartbeat.valid());
+    assert(heartbeat.request.timeoutMs == 5000U);
+    assert(heartbeat.request.maxResponseBytes == 4096U);
+    assert(heartbeat.request.headers.at("Authorization") ==
+           "Bearer device-secret");
+    HttpResponse heartbeatResponse;
+    const Status heartbeatTransport =
+        http.perform(heartbeat.request, heartbeatResponse);
+    heartbeat.clearRequestSensitive();
+    assert(!heartbeat.valid() && heartbeat.correlationValid());
+    assert(client.completeVoiceHeartbeat(
+        heartbeat, heartbeatTransport, heartbeatResponse).ok());
+    heartbeat.clearSensitive();
+    assert(!heartbeat.correlationValid());
     assert(client.beginVoiceTurn("turn-1").ok());
     const uint8_t uplink[] = {1, 0, 2, 0};
     assert(client.sendPcm16(uplink, sizeof(uplink)).ok());
@@ -690,7 +753,10 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
     source.indexOf("void NativeVoiceService::finishAigc"),
   );
   assert.match(aigc, /phase == AigcPhase::Poll/);
-  assert.match(source, /kAigcTimeoutMs = 3U \* 60U \* 1000U/);
+  assert.match(
+    source,
+    /kAigcTimeoutMs = 5U \* 60U \* 1000U \+ 30U \* 1000U/,
+  );
   assert.match(aigc, /due\(now, aigc_deadline_ms_\)/);
   assert.match(aigc, /due\(now, next_aigc_poll_ms_\)/);
   assert.match(aigc, /next_aigc_poll_ms_ = now \+ kAigcPollMs/);
@@ -701,10 +767,10 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
     source,
     /voiceResponseCompletionDue|completeVoiceResponseAfterTtsStop/,
   );
-  assert.match(source, /nextVoiceAigcIntentArmed\(/);
+  assert.match(source, /nextVoiceAigcIntentCorrelation\(/);
   assert.match(
     source,
-    /onTranscript[\s\S]*voice_aigc_action_deadline_ms_[\s\S]*nextVoiceAigcIntentArmed/,
+    /onTranscript[\s\S]*voice_aigc_action_deadline_ms_[\s\S]*nextVoiceAigcIntentCorrelation/,
   );
   assert.match(
     source,
@@ -712,8 +778,19 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
   );
   assert.match(
     source,
-    /onVoiceAction[\s\S]*voiceAigcRequestFingerprint\(action\.originalRequest\)[\s\S]*aigc\.rejected_mismatched_voice_request/,
+    /onVoiceAction[\s\S]*voiceAigcRequestFingerprint\(action\.originalRequest\)[\s\S]*voiceAigcIntentCorrelationMatches[\s\S]*aigc\.rejected_mismatched_voice_request/,
   );
   assert.match(source, /sanitizeDiagnosticDetail\(status\.detail\)/);
   assert.doesNotMatch(source, /detail=status\.detail|status\.detail\.c_str\(\)/);
+  assert.match(source, /PortalRunVoiceHeartbeat/);
+  assert.match(source, /scheduleVoiceHeartbeat\(\)/);
+  assert.match(source, /performVoiceHeartbeat\(envelope\)/);
+  assert.match(source, /completeVoiceHeartbeat/);
+  assert.doesNotMatch(
+    source.slice(
+      source.indexOf("void NativeVoiceService::networkTick"),
+      source.indexOf("void NativeVoiceService::startPairingIfNeeded"),
+    ),
+    /client_->heartbeatVoice\(\)/,
+  );
 });

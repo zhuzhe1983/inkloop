@@ -43,6 +43,9 @@ enum class ProductOpcode : uint16_t {
   PortalRunAigc = 400,
   PortalRunLocalTool = 401,
   PortalConfirmLocalTool = 402,
+  // Prepared by the sole MyAI Network owner and executed as a credential-
+  // bounded HTTP snapshot on the lower-priority Portal lane.
+  PortalRunVoiceHeartbeat = 403,
   DisplayAlbumOrdinal = 500,
   AlbumRefreshStarting = 501,
   // Identical display path with a credential-free completion event for the

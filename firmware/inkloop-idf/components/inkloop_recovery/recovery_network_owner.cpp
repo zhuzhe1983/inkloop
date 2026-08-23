@@ -83,8 +83,9 @@ std::array<char, 16> readyAddress(const EspWifiStationSnapshot& wifi) {
 
 RecoveryNetworkModeOwner::RecoveryNetworkModeOwner(
     const IRecoveryDiagnosticCache& cache,
-    IRecoveryActionOwner* action_owner)
-    : cache_(cache), action_owner_(action_owner) {}
+    IRecoveryActionOwner* action_owner,
+    IRecoveryExportOwner* export_owner)
+    : cache_(cache), action_owner_(action_owner), export_owner_(export_owner) {}
 
 RecoveryNetworkModeOwner::~RecoveryNetworkModeOwner() {
   esp_err_t status = ESP_FAIL;
@@ -153,7 +154,8 @@ esp_err_t RecoveryNetworkModeOwner::startForAddress(
   }
 
   std::unique_ptr<RecoveryPortalCore> next_core(
-      new (std::nothrow) RecoveryPortalCore(access, cache_, action_owner_));
+      new (std::nothrow) RecoveryPortalCore(
+          access, cache_, action_owner_, export_owner_));
   scrubAccess(access);
   if (!next_core) return ESP_ERR_NO_MEM;
   if (!next_core->ready()) return ESP_ERR_INVALID_STATE;

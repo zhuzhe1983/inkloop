@@ -18,6 +18,7 @@ test("recovery action composition exposes only fixed typed domains and binds ful
   assert.match(ownerSource, /RecoveryActionBackend::Internal/);
   assert.match(ownerSource, /RecoveryActionBackend::Removable/);
   assert.match(ownerSource, /request\.choice != recovery::RecoveryActionChoice::Next/);
+  assert.match(ownerSource, /removable_album != request\.external_backup_confirmed/);
   assert.match(ownerSource, /LegacyDisplayResolutionChoice::Target/);
   assert.match(ownerSource, /LegacyDisplayResolutionChoice::Previous/);
   assert.match(ownerSource, /hash\.text\(journal\.task_frame_url\)/);
@@ -43,5 +44,5 @@ test("only audit-refusal branches receive the mutation owner", () => {
   assert.equal(storageActionCalls.length, 2);
   assert.match(appMain, /upgrade state needs explicit recovery; refusing all writers/);
   assert.match(appMain, /selected removable backend needs explicit recovery/);
-  assert.match(appMain, /RecoveryNetworkModeOwner recovery\(\s*cache, actions\.get\(\)\)/);
+  assert.match(appMain, /RecoveryNetworkModeOwner recovery\(\s*cache, actions\.get\(\),\s*actions\.get\(\)\)/);
 });

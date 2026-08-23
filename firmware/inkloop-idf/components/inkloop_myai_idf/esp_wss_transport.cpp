@@ -32,8 +32,17 @@ constexpr size_t kMaximumHeaderValueBytes = 2048;
 constexpr size_t kMaximumHeaderBlockBytes = 3072;
 constexpr size_t kMaximumOutboundTextBytes = 12U * 1024U;
 constexpr size_t kMaximumOutboundAudioBytes = 12U * 1024U;
+constexpr size_t kMaximumControlFrameBytes = 125U;
 constexpr int kConnectTimeoutMs = 15000;
 constexpr int kSendTimeoutMs = 250;
+// pollIngress() shares a cooperative owner with latency-sensitive controls.
+// Ten milliseconds is long enough for an already-readable TLS record tail,
+// while remaining below the 20 ms physical-button acceptance budget.
+constexpr uint64_t kIngressReadBudgetMs = 10U;
+// A healthy voice owner drains the 12 KiB admission headroom in well under a
+// second even at the minimum supported PCM rate. Five seconds distinguishes a
+// stuck local consumer from a delayed network Pong without conflating them.
+constexpr uint64_t kIngressBackpressureTimeoutMs = 5000U;
 
 uint64_t monotonicMs() {
   return static_cast<uint64_t>(esp_timer_get_time()) / 1000ULL;
@@ -102,11 +111,34 @@ Status buildHeaderBlock(const std::map<std::string, std::string>& headers,
   return Status::success();
 }
 
+uint32_t decodePingToken(const uint8_t* bytes, size_t length) {
+  if (!bytes || length != 4U) return 0U;
+  return (static_cast<uint32_t>(bytes[0]) << 24U) |
+         (static_cast<uint32_t>(bytes[1]) << 16U) |
+         (static_cast<uint32_t>(bytes[2]) << 8U) |
+         static_cast<uint32_t>(bytes[3]);
+}
+
+std::array<uint8_t, 4> encodePingToken(uint32_t token) {
+  return {{static_cast<uint8_t>(token >> 24U),
+           static_cast<uint8_t>(token >> 16U),
+           static_cast<uint8_t>(token >> 8U),
+           static_cast<uint8_t>(token)}};
+}
+
 }  // namespace
 
 EspWssTransport::EspWssTransport(EspEndpointSecurity& endpointSecurity)
     : endpointSecurity_(endpointSecurity), network_(nullptr), websocket_(nullptr),
       listener_(nullptr), port_(443), currentFrameOffset_(0),
+      deferredDataLength_(0), deferredFramePayloadBytes_(0),
+      deferredFrameOffset_(0), deferredOpcode_(0), deferredFinalFrame_(false),
+      deferredDataPending_(false),
+      ingressBackpressureStartedMs_(0), ingressBackpressureActive_(false),
+      ingressBackpressureFrameDrained_(false),
+      postBackpressureControlGrace_(false),
+      episodeControlGraceUsed_(false),
+      pendingPongBackpressureRebaseUsed_(false),
       connected_(false), ingressReady_(nullptr),
       ingressReadyContext_(nullptr) {}
 
@@ -143,7 +175,10 @@ Status EspWssTransport::configure(
   config.ws_path = path_.c_str();
   config.user_agent = "inkloop-esp-idf/1";
   config.headers = headerBlock_.empty() ? nullptr : headerBlock_.c_str();
-  config.propagate_control_frames = false;
+  // ESP-IDF otherwise consumes Pong internally without exposing whether our
+  // own Ping was acknowledged. Explicit propagation lets the cooperative
+  // owner enforce a bounded missing-Pong deadline without another task.
+  config.propagate_control_frames = true;
   if (esp_transport_ws_set_config(websocket_, &config) != ESP_OK) {
     releaseTransport();
     return transportError("MyAI WSS configuration failed");
@@ -235,71 +270,140 @@ Status EspWssTransport::serviceKeepAlive() {
     return Status(ErrorCode::InvalidState, 0, "MyAI WSS is not open");
   }
   const uint64_t now_ms = monotonicMs();
+  if (keep_alive_.pongTimedOut(now_ms)) {
+    notifyClosed(1006, "keepalive_pong_timeout");
+    return transportError("MyAI WSS keepalive Pong timed out");
+  }
   if (!keep_alive_.pingDue(now_ms)) return Status::success();
-  // A one-byte, credential-free payload avoids SDK-specific zero-length frame
-  // handling while remaining a valid RFC 6455 control frame. The transport
-  // consumes Pong/control frames internally (`propagate_control_frames=false`).
-  const uint8_t payload = 0U;
+  const uint32_t token = keep_alive_.nextPingToken();
+  if (token == 0U) {
+    notifyClosed(1006, "keepalive_state_failed");
+    return transportError("MyAI WSS keepalive state failed");
+  }
+  // This per-connection sequence is credential-free. Requiring the same four
+  // bytes in Pong prevents unrelated/unsolicited Pong traffic from extending
+  // a dead connection indefinitely.
+  const std::array<uint8_t, 4> payload = encodePingToken(token);
   const int sent = esp_transport_ws_send_raw(
       websocket_, static_cast<ws_transport_opcodes_t>(
                       WS_TRANSPORT_OPCODES_FIN | WS_TRANSPORT_OPCODES_PING),
-      reinterpret_cast<const char*>(&payload), 1, kSendTimeoutMs);
-  if (sent != 1) {
+      reinterpret_cast<const char*>(payload.data()),
+      static_cast<int>(payload.size()), kSendTimeoutMs);
+  if (sent != static_cast<int>(payload.size())) {
     notifyClosed(1006, "keepalive_ping_failed");
     return transportError("MyAI WSS keepalive ping failed");
   }
-  keep_alive_.notePingSent(now_ms);
+  keep_alive_.notePingSent(now_ms, token);
+  pendingPongBackpressureRebaseUsed_ = false;
   return Status::success();
 }
 
-Status EspWssTransport::pollIngress() {
-  if (!connected_ || !websocket_ || !listener_) {
-    return Status(ErrorCode::InvalidState, 0, "MyAI WSS is not open");
+Status EspWssTransport::pauseForIngressBackpressure(
+    bool allow_pong_grace) {
+  const uint64_t now_ms = monotonicMs();
+  if (!ingressBackpressureActive_) {
+    ingressBackpressureActive_ = true;
+    ingressBackpressureStartedMs_ = now_ms;
+    episodeControlGraceUsed_ = false;
   }
-  const Status keep_alive = serviceKeepAlive();
-  if (!keep_alive.ok()) return keep_alive;
-  // Backpressure is evaluated before touching the socket. The existing
-  // partially assembled frame may continue only when one maximum legal audio
-  // message fits in the playback bridge; this prevents callback-side loss.
-  if (ingressReady_ && !ingressReady_(ingressReadyContext_)) {
-    return Status::success();
+  ingressBackpressureFrameDrained_ = false;
+  if (allow_pong_grace && keep_alive_.awaitingPong() &&
+      !episodeControlGraceUsed_) {
+    postBackpressureControlGrace_ = true;
   }
-  const int readable = esp_transport_poll_read(websocket_, 0);
-  if (readable == 0) return Status::success();
-  if (readable < 0) {
-    notifyClosed(1006, "transport_poll_failed");
-    return transportError("MyAI WSS poll failed");
+  if (now_ms < ingressBackpressureStartedMs_ ||
+      now_ms - ingressBackpressureStartedMs_ >=
+          kIngressBackpressureTimeoutMs) {
+    notifyClosed(1006, "ingress_backpressure_timeout");
+    return transportError("MyAI WSS ingress backpressure timed out");
   }
+  return Status::success();
+}
 
-  std::array<uint8_t, 2048> chunk{};
-  const int received = esp_transport_read(
-      websocket_, reinterpret_cast<char*>(chunk.data()),
-      static_cast<int>(chunk.size()), 0);
-  if (received < 0) {
-    notifyClosed(1006, "transport_read_failed");
-    return transportError("MyAI WSS read failed");
+Status EspWssTransport::serviceKeepAliveAfterIngress() {
+  return serviceKeepAlive();
+}
+
+void EspWssTransport::noteIngressBackpressureFrameDrained() {
+  if (!ingressBackpressureActive_) return;
+  ingressBackpressureFrameDrained_ = true;
+  if (keep_alive_.awaitingPong() && postBackpressureControlGrace_ &&
+      !pendingPongBackpressureRebaseUsed_) {
+    keep_alive_.rebase(monotonicMs());
+    pendingPongBackpressureRebaseUsed_ = true;
   }
-  const uint8_t opcode = static_cast<uint8_t>(
-      esp_transport_ws_get_read_opcode(websocket_) & 0x0fU);
-  if (received == 0) {
-    if (opcode == WS_TRANSPORT_OPCODES_CLOSE) {
-      notifyClosed(1000, "server_closed");
+}
+
+void EspWssTransport::finishIngressBackpressureEpisode() {
+  ingressBackpressureStartedMs_ = 0;
+  ingressBackpressureActive_ = false;
+  ingressBackpressureFrameDrained_ = false;
+  episodeControlGraceUsed_ = false;
+}
+
+Status EspWssTransport::handleControlFrame(
+    uint8_t opcode, bool final_frame, const uint8_t* bytes, size_t length,
+    size_t frame_payload_bytes) {
+  if (!final_frame || frame_payload_bytes > kMaximumControlFrameBytes ||
+      length != frame_payload_bytes) {
+    notifyClosed(1002, "invalid_control_frame");
+    return Status(ErrorCode::Protocol, 0,
+                  "invalid MyAI WSS control frame");
+  }
+  if (opcode == WS_TRANSPORT_OPCODES_PING) {
+    const int sent = esp_transport_ws_send_raw(
+        websocket_, static_cast<ws_transport_opcodes_t>(
+                        WS_TRANSPORT_OPCODES_FIN | WS_TRANSPORT_OPCODES_PONG),
+        reinterpret_cast<const char*>(bytes), static_cast<int>(length),
+        kSendTimeoutMs);
+    if (sent != static_cast<int>(length)) {
+      notifyClosed(1006, "keepalive_pong_send_failed");
+      return transportError("MyAI WSS Pong send failed");
     }
     return Status::success();
   }
-  const int payload = esp_transport_ws_get_read_payload_len(websocket_);
-  if (payload <= 0) {
-    notifyClosed(1002, "invalid_frame_length");
-    return Status(ErrorCode::Protocol, 0,
-                  "invalid MyAI WSS frame length");
+  if (opcode == WS_TRANSPORT_OPCODES_PONG) {
+    // RFC 6455 permits unsolicited Pong. Ignore it unless it acknowledges the
+    // exact credential-free token currently outstanding.
+    if (keep_alive_.notePong(decodePingToken(bytes, length))) {
+      pendingPongBackpressureRebaseUsed_ = false;
+    }
+    return Status::success();
   }
+  if (opcode == WS_TRANSPORT_OPCODES_CLOSE) {
+    uint16_t close_code = 1000U;
+    if (!detail::decodeValidWssClosePayload(bytes, length, close_code)) {
+      notifyClosed(1002, "invalid_close_frame");
+      return Status(ErrorCode::Protocol, 0,
+                    "invalid MyAI WSS close frame");
+    }
+    (void)esp_transport_ws_send_raw(
+        websocket_, static_cast<ws_transport_opcodes_t>(
+                        WS_TRANSPORT_OPCODES_FIN | WS_TRANSPORT_OPCODES_CLOSE),
+        reinterpret_cast<const char*>(bytes), static_cast<int>(length),
+        kSendTimeoutMs);
+    notifyClosed(close_code, "server_closed");
+    return Status::success();
+  }
+  notifyClosed(1002, "unsupported_control_frame");
+  return Status(ErrorCode::Protocol, 0,
+                "unsupported MyAI WSS control frame");
+}
+
+bool EspWssTransport::ingressDataReady() const {
+  return !ingressReady_ || ingressReady_(ingressReadyContext_);
+}
+
+Status EspWssTransport::consumeDataChunk(
+    uint8_t opcode, bool final_frame, size_t frame_payload_bytes,
+    size_t frame_offset, const uint8_t* bytes, size_t length) {
   WssIngressChunk input;
   input.opcode = opcode;
-  input.finalFrame = esp_transport_ws_get_fin_flag(websocket_);
-  input.framePayloadBytes = static_cast<size_t>(payload);
-  input.frameOffset = currentFrameOffset_;
-  input.bytes = chunk.data();
-  input.length = static_cast<size_t>(received);
+  input.finalFrame = final_frame;
+  input.framePayloadBytes = frame_payload_bytes;
+  input.frameOffset = frame_offset;
+  input.bytes = bytes;
+  input.length = length;
   bool complete = false;
   WssCompletedMessage message;
   Status status = ingress_.append(input, complete, message);
@@ -308,10 +412,8 @@ Status EspWssTransport::pollIngress() {
                  "invalid_ingress_frame");
     return status;
   }
-  currentFrameOffset_ += static_cast<size_t>(received);
-  if (currentFrameOffset_ == static_cast<size_t>(payload)) {
-    currentFrameOffset_ = 0;
-  }
+  currentFrameOffset_ = frame_offset + length;
+  if (currentFrameOffset_ == frame_payload_bytes) currentFrameOffset_ = 0;
   if (!complete || !listener_) return Status::success();
   if (message.kind == WssMessageKind::Text) {
     listener_->onWebSocketText(std::string(
@@ -320,6 +422,168 @@ Status EspWssTransport::pollIngress() {
     listener_->onWebSocketBinary(message.bytes, message.length);
   }
   return Status::success();
+}
+
+Status EspWssTransport::pollIngress() {
+  if (!connected_ || !websocket_ || !listener_) {
+    return Status(ErrorCode::InvalidState, 0, "MyAI WSS is not open");
+  }
+
+  // Once a data chunk has been identified, retain it until playback can
+  // accept the corresponding message. Keepalive is suspended while local
+  // backpressure owns a started frame: a valid Pong may already be queued
+  // behind bytes that RFC 6455 forbids it from interleaving with.
+  if (deferredDataPending_) {
+    if (!ingressDataReady()) return pauseForIngressBackpressure(true);
+    deferredDataPending_ = false;
+    const Status consumed = consumeDataChunk(
+        deferredOpcode_, deferredFinalFrame_, deferredFramePayloadBytes_,
+        deferredFrameOffset_, deferredDataChunk_.data(), deferredDataLength_);
+    if (!consumed.ok() || !connected_) return consumed;
+    if (currentFrameOffset_ != 0U) return consumed;
+    noteIngressBackpressureFrameDrained();
+    if (postBackpressureControlGrace_) return consumed;
+    finishIngressBackpressureEpisode();
+    return serviceKeepAliveAfterIngress();
+  }
+  // A control frame cannot interleave inside a data-frame payload. Pausing a
+  // known continuation therefore cannot expose a queued Pong until that frame
+  // is drained. The independent local watchdog bounds a permanently closed
+  // gate without misreporting the failure as a missing Pong.
+  if (currentFrameOffset_ != 0U && !ingressDataReady()) {
+    return pauseForIngressBackpressure(true);
+  }
+
+  // Drain one already-buffered frame/chunk before enforcing the Pong deadline.
+  // After backpressure reaches a frame boundary this is the sole grace read;
+  // a continuous sequence of new data frames cannot postpone timeout again.
+  const int readable = esp_transport_poll_read(websocket_, 0);
+  if (readable == 0) {
+    if (ingressBackpressureActive_ &&
+        !ingressBackpressureFrameDrained_)
+      return pauseForIngressBackpressure(true);
+    if (postBackpressureControlGrace_) {
+      postBackpressureControlGrace_ = false;
+      episodeControlGraceUsed_ = true;
+    }
+    if (ingressBackpressureActive_) finishIngressBackpressureEpisode();
+    return serviceKeepAliveAfterIngress();
+  }
+  if (readable < 0) {
+    notifyClosed(1006, "transport_poll_failed");
+    return transportError("MyAI WSS poll failed");
+  }
+
+  const bool frame_boundary_before_read = currentFrameOffset_ == 0U;
+  std::array<uint8_t, 2048> chunk{};
+  const uint64_t read_deadline_ms = monotonicMs() + kIngressReadBudgetMs;
+  const int read_timeout_ms = detail::remainingWssReadTimeoutMs(
+      monotonicMs(), read_deadline_ms);
+  if (read_timeout_ms <= 0) {
+    if (ingressBackpressureActive_ &&
+        !ingressBackpressureFrameDrained_)
+      return pauseForIngressBackpressure(true);
+    if (postBackpressureControlGrace_) {
+      postBackpressureControlGrace_ = false;
+      episodeControlGraceUsed_ = true;
+    }
+    if (ingressBackpressureActive_) finishIngressBackpressureEpisode();
+    return serviceKeepAliveAfterIngress();
+  }
+  const int received = esp_transport_read(
+      websocket_, reinterpret_cast<char*>(chunk.data()),
+      static_cast<int>(chunk.size()), read_timeout_ms);
+  if (received < 0) {
+    notifyClosed(1006, "transport_read_failed");
+    return transportError("MyAI WSS read failed");
+  }
+  const uint8_t opcode = static_cast<uint8_t>(
+      esp_transport_ws_get_read_opcode(websocket_) & 0x0fU);
+  const bool final_frame = esp_transport_ws_get_fin_flag(websocket_);
+  const int payload = esp_transport_ws_get_read_payload_len(websocket_);
+  if (opcode == WS_TRANSPORT_OPCODES_CLOSE ||
+      opcode == WS_TRANSPORT_OPCODES_PING ||
+      opcode == WS_TRANSPORT_OPCODES_PONG) {
+    const bool grace_read = postBackpressureControlGrace_;
+    const Status control = handleControlFrame(
+        opcode, final_frame, chunk.data(), static_cast<size_t>(received),
+        payload < 0 ? std::numeric_limits<size_t>::max()
+                    : static_cast<size_t>(payload));
+    if (grace_read) {
+      postBackpressureControlGrace_ = false;
+      episodeControlGraceUsed_ = true;
+    }
+    if (!control.ok() || !connected_) return control;
+    if (ingressBackpressureActive_) finishIngressBackpressureEpisode();
+    return serviceKeepAliveAfterIngress();
+  }
+  if (received == 0) {
+    if (ingressBackpressureActive_ &&
+        !ingressBackpressureFrameDrained_)
+      return pauseForIngressBackpressure(true);
+    if (postBackpressureControlGrace_) {
+      postBackpressureControlGrace_ = false;
+      episodeControlGraceUsed_ = true;
+    }
+    if (ingressBackpressureActive_) finishIngressBackpressureEpisode();
+    return serviceKeepAliveAfterIngress();
+  }
+  if (payload <= 0) {
+    notifyClosed(1002, "invalid_frame_length");
+    return Status(ErrorCode::Protocol, 0,
+                  "invalid MyAI WSS frame length");
+  }
+  const bool grace_data_frame =
+      frame_boundary_before_read && postBackpressureControlGrace_;
+  const bool data_ready =
+      !frame_boundary_before_read || ingressDataReady();
+  if (!data_ready) {
+    if (grace_data_frame) {
+      postBackpressureControlGrace_ = false;
+      episodeControlGraceUsed_ = true;
+    }
+    deferredOpcode_ = opcode;
+    deferredFinalFrame_ = final_frame;
+    deferredFramePayloadBytes_ = static_cast<size_t>(payload);
+    deferredFrameOffset_ = currentFrameOffset_;
+    deferredDataLength_ = static_cast<size_t>(received);
+    std::memcpy(deferredDataChunk_.data(), chunk.data(), deferredDataLength_);
+    deferredDataPending_ = true;
+    return pauseForIngressBackpressure(!grace_data_frame);
+  }
+  if (grace_data_frame) {
+    postBackpressureControlGrace_ = false;
+    episodeControlGraceUsed_ = true;
+  }
+  if (grace_data_frame) {
+    ingressBackpressureFrameDrained_ = false;
+  } else if (frame_boundary_before_read &&
+             ingressBackpressureFrameDrained_) {
+    finishIngressBackpressureEpisode();
+  }
+
+  const bool draining_backpressured_frame = ingressBackpressureActive_;
+  if (!draining_backpressured_frame) {
+    const Status keep_alive = serviceKeepAliveAfterIngress();
+    if (!keep_alive.ok()) return keep_alive;
+  }
+  const Status consumed = consumeDataChunk(
+      opcode, final_frame, static_cast<size_t>(payload), currentFrameOffset_,
+      chunk.data(), static_cast<size_t>(received));
+  if (!consumed.ok() || !connected_) return consumed;
+  if (ingressBackpressureActive_ && currentFrameOffset_ == 0U) {
+    noteIngressBackpressureFrameDrained();
+  }
+  if (ingressBackpressureActive_ && ingressBackpressureFrameDrained_ &&
+      !postBackpressureControlGrace_) {
+    finishIngressBackpressureEpisode();
+    return serviceKeepAliveAfterIngress();
+  }
+  if (ingressBackpressureActive_ || postBackpressureControlGrace_ ||
+      !draining_backpressured_frame) {
+    return consumed;
+  }
+  return serviceKeepAliveAfterIngress();
 }
 
 void EspWssTransport::close(uint16_t code, const std::string& reason) {
@@ -352,6 +616,18 @@ void EspWssTransport::releaseTransport() {
   connected_ = false;
   keep_alive_.stop();
   currentFrameOffset_ = 0;
+  deferredDataLength_ = 0;
+  deferredFramePayloadBytes_ = 0;
+  deferredFrameOffset_ = 0;
+  deferredOpcode_ = 0;
+  deferredFinalFrame_ = false;
+  deferredDataPending_ = false;
+  ingressBackpressureStartedMs_ = 0;
+  ingressBackpressureActive_ = false;
+  ingressBackpressureFrameDrained_ = false;
+  postBackpressureControlGrace_ = false;
+  episodeControlGraceUsed_ = false;
+  pendingPongBackpressureRebaseUsed_ = false;
   ingress_.reset();
   if (websocket_) {
     (void)esp_transport_close(websocket_);

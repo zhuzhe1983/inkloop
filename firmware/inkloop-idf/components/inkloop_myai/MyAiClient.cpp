@@ -10,6 +10,9 @@ namespace inkloop {
 namespace myai {
 namespace {
 
+constexpr uint32_t kBackgroundHeartbeatTimeoutMs = 5000U;
+constexpr size_t kHeartbeatMaximumResponseBytes = 4096U;
+
 bool successfulHttp(int status) { return status >= 200 && status < 300; }
 
 std::string urlEncode(const std::string& value) {
@@ -147,6 +150,19 @@ bool validCredentialSnapshot(const CredentialSnapshot& snapshot) {
 }
 
 }  // namespace
+
+void VoiceHeartbeatWork::clearRequestSensitive() {
+  for (auto& header : request.headers) scrubString(header.second);
+  request.headers.clear();
+  scrubString(request.body);
+  request = HttpRequest();
+}
+
+void VoiceHeartbeatWork::clearSensitive() {
+  clearRequestSensitive();
+  sessionId.clear();
+  gatewayId.clear();
+}
 
 MyAiClient::MyAiClient(
     const ClientConfig& config, IHttpTransport& http,
@@ -756,6 +772,48 @@ Status MyAiClient::heartbeatVoice() {
                  response, RequestKind::CenterAuthenticated);
 }
 
+Status MyAiClient::prepareVoiceHeartbeat(VoiceHeartbeatWork& work) const {
+  work.clearSensitive();
+  if (!voiceSocketOpen_ || !voiceLease_.valid()) {
+    return Status(ErrorCode::InvalidState, 0, "no active voice lease");
+  }
+  const uint32_t active = static_cast<uint32_t>(
+      (clock_.monotonicMs() - voiceLease_.startedAtMs) / 1000U);
+  work.request = centerRequest(
+      "POST", "/api/v1/client/sessions/heartbeat",
+      codec_.heartbeatBody(voiceLease_, active), true);
+  work.request.timeoutMs = kBackgroundHeartbeatTimeoutMs;
+  work.request.maxResponseBytes = kHeartbeatMaximumResponseBytes;
+  work.sessionId = voiceLease_.sessionId;
+  work.gatewayId = voiceLease_.gatewayId;
+  return work.valid()
+      ? Status::success()
+      : Status(ErrorCode::InvalidState, 0,
+               "incomplete voice heartbeat snapshot");
+}
+
+Status MyAiClient::completeVoiceHeartbeat(
+    const VoiceHeartbeatWork& work, const Status& transportStatus,
+    const HttpResponse& response) {
+  if (!work.correlationValid() || !voiceSocketOpen_ || !voiceLease_.valid() ||
+      voiceLease_.sessionId != work.sessionId ||
+      voiceLease_.gatewayId != work.gatewayId) {
+    return Status(ErrorCode::InvalidState, 0,
+                  "stale voice heartbeat completion");
+  }
+  if (!transportStatus.ok()) {
+    Status mapped(ErrorCode::Transport, 0, "MyAI transport unavailable",
+                  reconnectDelayMs(0));
+    setActivation(ActivationState::Offline, mapped);
+    events_.onError(mapped);
+    return mapped;
+  }
+  if (successfulHttp(response.status)) return Status::success();
+  Status status = classifyHttp(response, RequestKind::CenterAuthenticated);
+  if (status.code != ErrorCode::Storage) events_.onError(status);
+  return status;
+}
+
 Status MyAiClient::disconnectVoice(const std::string& reason) {
   if (voiceSocketOpen_) {
     voiceClosing_ = true;
@@ -848,7 +906,13 @@ Status MyAiClient::pollImage(const std::string& promptId,
                                    credentials_.deviceId,
                                    wireMacAddress(), promptId)),
                            response, RequestKind::GatewayBusiness);
-  if (status.ok()) status = codec_.parseAigcStatus(response.body, statusResponse);
+  AigcStatusResponse parsed;
+  if (status.ok()) status = codec_.parseAigcStatus(response.body, parsed);
+  if (status.ok() && parsed.promptId != promptId) {
+    status = Status(ErrorCode::Protocol, 0,
+                    "AIGC status prompt_id mismatch");
+  }
+  statusResponse = status.ok() ? std::move(parsed) : AigcStatusResponse();
   if (!status.ok() || terminalImageFailure(statusResponse.status)) {
     if (status.ok())
       status = Status(ErrorCode::Protocol, 422,

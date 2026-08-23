@@ -128,8 +128,11 @@ test("native I2S and C151 codecs preserve the official PaperColor wiring", () =>
   assert.match(i2s, /I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG/);
   assert.match(i2s, /I2S_STD_SLOT_LEFT/);
   assert.match(i2s, /I2S_STD_SLOT_BOTH/);
-  assert.match(i2s, /kMonoExpansionSamples = 512/);
-  assert.match(i2s, /volume_percent_ \/ 100/);
+  assert.match(i2s, /StreamingStereoResampler/);
+  assert.match(i2s, /i2s_channel_preload_data/);
+  assert.match(i2s, /kPlaybackPreloadMilliseconds = 60U/);
+  assert.match(i2s, /kMaximumBlockingWriteMilliseconds = 20U/);
+  assert.match(i2s, /playback_dma_fits_write_timeout/);
   assert.match(i2s, /mode_ != Mode::Idle/);
   assert.match(i2s, /i2s_channel_read/);
   assert.match(i2s, /i2s_channel_write/);
@@ -148,9 +151,25 @@ test("native I2S and C151 codecs preserve the official PaperColor wiring", () =>
   assert.match(codec, /config\.word_select = GPIO_NUM_41/);
   assert.match(codec, /config\.capture_data = GPIO_NUM_39/);
   assert.match(codec, /config\.playback_data = GPIO_NUM_38/);
-  assert.doesNotMatch(codec, /M5Unified|Arduino\.h|delay\s*\(/);
+  assert.match(codec, /config\.playback_sample_rate_hz = 44100/);
+  assert.match(codec, /config\.playback_dma_frame_count = 512/);
+  assert.match(codec, /config\.playback_dma_descriptor_count = 8/);
+  assert.doesNotMatch(
+    codec, /#include\s*[<"](?:M5Unified|Arduino\.h)|(?:^|\W)delay\s*\(/m);
   assert.match(cmake, /esp_driver_i2s/);
   assert.match(cmake, /esp_timer/);
+});
+
+test("generic playback DMA descriptor cannot outlast its bounded write", () => {
+  const header = readFileSync(
+    join(native, "include/inkloop/esp_i2s_audio.hpp"), "utf8");
+  const i2s = readFileSync(join(native, "esp_i2s_audio.cpp"), "utf8");
+
+  assert.match(header, /playback_dma_frame_count = 160/);
+  assert.match(
+    i2s,
+    /playback_dma_frame_count\) \* 1000ULL[\s\S]*minimum_output_rate_hz[\s\S]*kMaximumBlockingWriteMilliseconds/,
+  );
 });
 
 test("local prompts and TTS use scheduler-sized frames and drain DMA tails", () => {
@@ -168,8 +187,32 @@ test("local prompts and TTS use scheduler-sized frames and drain DMA tails", () 
   assert.match(bridge, /device\.playbackDrained\(\)/);
   assert.match(bridge, /core_->resumePlayback/);
   assert.match(bridge, /playback_drained_since_us_/);
-  assert.match(prompt, /kPlaybackChunkBytes = 320U/);
+  assert.match(prompt, /kPlaybackStartupChunkBytes/);
+  assert.match(prompt, /kPlaybackSteadyChunkBytes/);
   assert.match(prompt, /requestVolumePreview/);
-  assert.match(prompt, /kPreviewToneSamples = 4800U/);
+  assert.match(prompt, /kPreviewToneSteadySamples/);
   assert.match(prompt, /if \(!device\.playbackDrained\(\)\) return ESP_OK/);
+});
+
+test("local prompt steady-state feed is bounded to one 10 ms Voice tick", () => {
+  const prompt = readFileSync(join(
+    repo, "firmware/inkloop-idf/components/inkloop_product/local_prompt_player.cpp"),
+  "utf8");
+  const match = prompt.match(
+    /constexpr size_t kPlaybackSteadyChunkBytes\s*=\s*(\d+)U/,
+  );
+  assert.ok(match, "local prompt must declare a steady-state feed bound");
+  const steadyBytes = Number(match[1]);
+  const pcm16MonoBytesPer10ms = 16000 * 2 / 100;
+  assert.ok(
+    steadyBytes <= pcm16MonoBytesPer10ms,
+    `one Voice tick submitted ${steadyBytes} bytes; maximum is ` +
+      `${pcm16MonoBytesPer10ms} bytes (10 ms at 16 kHz mono PCM16)`,
+  );
+  assert.match(
+    prompt,
+    /startup_feed_complete_\s*\?\s*kPlaybackSteadyChunkBytes\s*:\s*kPlaybackStartupChunkBytes/,
+  );
+  assert.match(prompt, /startup_feed_complete_\s*=\s*true/);
+  assert.doesNotMatch(prompt, /kPlaybackSteadyChunkBytes\s*=\s*2880U/);
 });

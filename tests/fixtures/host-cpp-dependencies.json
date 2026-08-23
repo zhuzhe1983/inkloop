@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "arduinoJson": {
+    "version": "7.4.3",
+    "tagCommit": "77771d3c07668e01d8f52acb03910c1110bb373f",
+    "upstreamUrl": "https://github.com/bblanchon/ArduinoJson/releases/tag/v7.4.3",
+    "archive": "tests/vendor/arduinojson-7.4.3-src.tar.gz",
+    "archiveBytes": 60406,
+    "archiveSha256": "2b4eb3accb35d2b2b9f688b4f52aeef0cb489236e441a0a77ae1a0e0dc56a739",
+    "sourceFiles": 141,
+    "libraryJsonSha256": "45c8072598d097cf03031ee4f3230031105329903e022a2abd15b1c56157c770",
+    "license": "MIT",
+    "licenseSha256": "4a7ee9c96b28cbf30c5bf7c2d211a0ef57179f0328e68ad7b7fa7d754b7da1a2"
+  }
+}

@@ -182,8 +182,16 @@ EspI2sAudioConfig papercolor_audio_config() {
   config.capture_data = GPIO_NUM_39;
   config.playback_data = GPIO_NUM_38;
   config.capture_sample_rate_hz = 16000;
+  // M5Unified's official PaperColor profile drives the ES8311 at 44.1 kHz
+  // stereo. MyAI/local PCM remains 8..48 kHz and is streamed through the
+  // allocation-free resampler in EspI2sAudioDevice.
+  config.playback_sample_rate_hz = 44100;
   config.dma_frame_count = 320;
   config.dma_descriptor_count = 6;
+  // Keep RX latency bounded while giving TX ~93 ms of hardware lead at the
+  // fixed 44.1 kHz PaperColor speaker clock.
+  config.playback_dma_frame_count = 512;
+  config.playback_dma_descriptor_count = 8;
   return config;
 }
 

@@ -8,13 +8,17 @@ Status: the native Product graph now composes the C151 board, bounded dual-core
 runtime, Wi-Fi/Portal, storage, display, Inkloop, MyAI voice/AIGC, settings,
 power, Recovery and signed-OTA owners without an Arduino compatibility layer.
 Host fault matrices and official ESP-IDF v6.0.2 C151/mock links prove the
-digital composition. The current source candidate is `0.4.0-beta.28`: the
-repository suite passes 403/403, lint has zero errors, and clean C151/mock
-builds pass. Its C151 application SHA-256 is
-`cd9498e006693b7b3ea61c143dbd230f61873f9f1a0d41a5dff020327f14091a`.
-It has not been flashed or promoted. The attached device currently has only a
-beta27 Recovery-path physical pass; Product Voice/AIGC/album/display evidence
-is still blocked by an unresolved, operator-gated TF transaction conflict.
+digital composition. The current remediation worktree is `0.4.0-beta.29`: the
+repository suite passes 452/452 and lint has zero errors (19 warnings). The
+exact beta28 independent gate failed on TF export, flash custody, build
+reproducibility, failed-wake admission and an undeclared host dependency;
+beta29 contains remediations for those findings. Development defaults now
+remove time/path inputs, and new candidate hashes must come from the two-build
+check below. A clean exact-commit reproducibility receipt and fresh independent
+beta29 gate are still required. Beta29 has not been flashed or promoted. The
+attached device currently has only a beta27 Recovery-path physical pass;
+Product Voice/AIGC/album/display evidence remains behind an explicit,
+operator-gated TF transaction choice.
 
 Do not treat this tree as release-ready until the exact candidate's all-tree
 gate, fresh independent acceptance and the authorized attached-C151 run in
@@ -62,6 +66,27 @@ Select another board without changing service code:
 idf.py -DINKLOOP_BOARD=my_new_board reconfigure
 ```
 
+### Verify byte-reproducible C151 and mock builds
+
+`sdkconfig.defaults` enables ESP-IDF's reproducible-build mode and explicitly
+disables application and bootloader compile-time dates. The verifier performs
+two fresh C151 builds and two fresh mock-minimal builds in four isolated build
+directories, checks every generated sdkconfig/cache, and rejects either target
+when its two application sizes or SHA-256 digests differ.
+
+Use a new repository-external evidence path and the pinned ESP-IDF revision:
+
+```sh
+proof_parent="$(mktemp -d /tmp/inkloop-repro.XXXXXX)"
+IDF_PATH=/absolute/path/to/esp-idf-v6.0.2 \
+  ./tools/verify_reproducible_builds.sh "$proof_parent/evidence"
+```
+
+The output root must not exist before invocation. After the normal build
+transcript, a successful run prints the stable C151/mock application sizes and
+hashes plus the retained evidence root. This is a host build proof; it neither
+flashes a device nor upgrades digital evidence to physical acceptance.
+
 ## Non-negotiable scheduling order
 
 1. GPIO input capture
@@ -90,3 +115,10 @@ runtime:
 Neither tool prints credentials, pairing codes, transcripts or raw responses.
 Their machine verdicts do not replace the checklist's human audio/RGB/panel
 observations.
+
+Recovery mode also supports an authenticated, bounded logical export of all
+three divergent TF album indexes and the union of their referenced assets. See
+[`docs/TF_ALBUM_RECOVERY_EXPORT.md`](docs/TF_ALBUM_RECOVERY_EXPORT.md). A
+complete export never selects a slot, but it is not pre-flash physical custody:
+the current SDSPI/FAT mount is writable. An offline whole-card image is
+mandatory before any candidate device write.

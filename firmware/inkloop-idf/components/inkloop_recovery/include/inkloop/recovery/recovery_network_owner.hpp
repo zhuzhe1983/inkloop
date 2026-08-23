@@ -30,7 +30,8 @@ class RecoveryNetworkModeOwner final {
  public:
   explicit RecoveryNetworkModeOwner(
       const IRecoveryDiagnosticCache& cache,
-      IRecoveryActionOwner* action_owner = nullptr);
+      IRecoveryActionOwner* action_owner = nullptr,
+      IRecoveryExportOwner* export_owner = nullptr);
   ~RecoveryNetworkModeOwner();
 
   RecoveryNetworkModeOwner(const RecoveryNetworkModeOwner&) = delete;
@@ -56,6 +57,7 @@ class RecoveryNetworkModeOwner final {
 
   const IRecoveryDiagnosticCache& cache_;
   IRecoveryActionOwner* action_owner_ = nullptr;
+  IRecoveryExportOwner* export_owner_ = nullptr;
   std::unique_ptr<EspWifiStationOwner> wifi_;
   std::unique_ptr<RecoveryPortalCore> core_;
   std::unique_ptr<EspRecoveryServer> server_;

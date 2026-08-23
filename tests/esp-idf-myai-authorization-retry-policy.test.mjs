@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,7 +26,7 @@ int main() {
   assert(MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::Offline));
   assert(!MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::Unconfigured));
   assert(!MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::Pairing));
-  assert(!MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::PaymentRequired));
+  assert(MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::PaymentRequired));
   assert(!MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::RecoveryRequired));
   assert(!MyAiAuthorizationRetryPolicy::mayCheck(ActivationState::Error));
 
@@ -38,19 +38,29 @@ int main() {
       ActivationState::Bound, true));
   assert(!MyAiAuthorizationRetryPolicy::shouldCheck(
       ActivationState::Bound, false));
+  assert(MyAiAuthorizationRetryPolicy::shouldCheck(
+      ActivationState::PaymentRequired, true));
+  assert(!MyAiAuthorizationRetryPolicy::shouldCheck(
+      ActivationState::PaymentRequired, false));
 
   assert(MyAiAuthorizationRetryPolicy::nextDelay(false, 0) == 5000U);
   assert(MyAiAuthorizationRetryPolicy::nextDelay(false, 1200U) == 5000U);
   assert(MyAiAuthorizationRetryPolicy::nextDelay(false, 9000U) == 9000U);
   assert(MyAiAuthorizationRetryPolicy::nextDelay(true, 0) == 600000U);
+  assert(MyAiAuthorizationRetryPolicy::nextDelayForState(
+      ActivationState::PaymentRequired, false, 0U) == 60000U);
+  assert(MyAiAuthorizationRetryPolicy::nextDelayForState(
+      ActivationState::PaymentRequired, false, 90000U) == 90000U);
   // A request that started at zero but completed after a 30-second transport
   // timeout must still wait five seconds after completion before retrying.
   assert(MyAiAuthorizationRetryPolicy::nextDeadline(
-      30000U, false, 0U) == 35000U);
+      30000U, ActivationState::Offline, false, 0U) == 35000U);
   assert(MyAiAuthorizationRetryPolicy::nextDeadline(
-      30000U, false, 9000U) == 39000U);
+      30000U, ActivationState::Offline, false, 9000U) == 39000U);
   assert(MyAiAuthorizationRetryPolicy::nextDeadline(
-      0xfffffff0U, false, 5000U) == 0x00001378U);
+      0xfffffff0U, ActivationState::Offline, false, 5000U) == 0x00001378U);
+  assert(MyAiAuthorizationRetryPolicy::nextDeadline(
+      30000U, ActivationState::PaymentRequired, false, 0U) == 90000U);
   return 0;
 }
 `);
@@ -65,4 +75,17 @@ int main() {
     rmSync(scratch, { recursive: true, force: true });
   }
   assert.ok(true);
+});
+
+test("repeated inactive refreshes do not flood the responsive Voice queue", () => {
+  const source = readFileSync(join(
+    product, "native_voice_service.cpp"), "utf8");
+  assert.match(
+    source,
+    /const bool activation_state_changed =\s*!activation_state_observed_ \|\| activation_state_ != state;/,
+  );
+  assert.match(
+    source,
+    /if \(activation_state_changed\) postVoiceState\(myai::VoiceState::Error\)/,
+  );
 });

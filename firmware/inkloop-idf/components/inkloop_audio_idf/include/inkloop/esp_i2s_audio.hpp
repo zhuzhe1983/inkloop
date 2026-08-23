@@ -5,6 +5,7 @@
 
 #include "driver/i2s_std.h"
 #include "esp_err.h"
+#include "inkloop/streaming_stereo_resampler.hpp"
 
 namespace inkloop {
 
@@ -26,8 +27,15 @@ struct EspI2sAudioConfig {
   gpio_num_t capture_data = GPIO_NUM_NC;
   gpio_num_t playback_data = GPIO_NUM_NC;
   uint32_t capture_sample_rate_hz = 16000;
+  // Zero follows the incoming PCM rate. Boards with a fixed codec clock set
+  // this explicitly and the voice owner resamples without allocating.
+  uint32_t playback_sample_rate_hz = 0;
   uint16_t dma_frame_count = 320;
   uint8_t dma_descriptor_count = 6;
+  // At the minimum supported 8 kHz rate this is one 20 ms descriptor, which
+  // matches the bounded write timeout used by the Voice owner.
+  uint16_t playback_dma_frame_count = 160;
+  uint8_t playback_dma_descriptor_count = 6;
 };
 
 struct EspI2sAudioDiagnostics {
@@ -37,9 +45,12 @@ struct EspI2sAudioDiagnostics {
   uint32_t playback_timeouts = 0;
   uint32_t capture_failures = 0;
   uint32_t playback_failures = 0;
+  uint32_t playback_preload_starts = 0;
   uint32_t forced_aborts = 0;
   size_t captured_bytes = 0;
   size_t played_source_bytes = 0;
+  size_t played_output_frames = 0;
+  size_t peak_preloaded_bytes = 0;
 };
 
 // Native half-duplex I2S standard-mode owner. It creates no task and owns no
@@ -65,6 +76,14 @@ class EspI2sAudioDevice final {
   esp_err_t beginPlayback(uint32_t sample_rate_hz, uint8_t channels);
   esp_err_t writePlayback(const uint8_t* pcm16, size_t length,
                           uint32_t timeout_ms = 20);
+  // Starts already-converted preload without closing the source stream. This
+  // lets adjacent same-format TTS segments resume during the grace window.
+  // An empty prepared stream is a successful no-op.
+  esp_err_t startPreloadedPlayback();
+  // Closes the source resampler, emits its held final interval, and starts any
+  // remaining preload. Idempotent; callers use this immediately before final
+  // drain/teardown, never at a resumable TTS segment boundary.
+  esp_err_t finishPlaybackSource(uint32_t timeout_ms = 20);
   // The IDF TX write call completes when PCM has entered DMA, not when the
   // final sample has reached the codec.  Keep the channel alive until one
   // complete DMA ring has elapsed so short prompts and TTS tails are not cut.
@@ -77,7 +96,11 @@ class EspI2sAudioDevice final {
 
   Mode mode() const { return mode_; }
   uint32_t playbackSampleRateHz() const { return playback_sample_rate_hz_; }
+  uint32_t playbackOutputRateHz() const {
+    return playback_output_rate_hz_;
+  }
   uint8_t playbackChannels() const { return playback_channels_; }
+  bool playbackRunning() const { return playback_channel_enabled_; }
   const EspI2sAudioDiagnostics& diagnostics() const { return diagnostics_; }
 
  private:
@@ -86,6 +109,9 @@ class EspI2sAudioDevice final {
   esp_err_t createPlaybackChannel(uint32_t sample_rate_hz);
   esp_err_t releaseCaptureChannel(bool deactivate_codec);
   esp_err_t releasePlaybackChannel(bool deactivate_codec);
+  esp_err_t enablePlaybackChannel();
+  esp_err_t writeOutput(const StereoPcm16Frame* frames, size_t frame_count,
+                        uint32_t timeout_ms);
   esp_err_t writeAll(const void* bytes, size_t length, uint32_t timeout_ms);
 
   EspI2sAudioConfig config_;
@@ -94,10 +120,17 @@ class EspI2sAudioDevice final {
   i2s_chan_handle_t playback_channel_ = nullptr;
   Mode mode_ = Mode::Idle;
   uint32_t playback_sample_rate_hz_ = 0;
+  uint32_t playback_output_rate_hz_ = 0;
   uint8_t playback_channels_ = 0;
+  bool playback_channel_enabled_ = false;
+  bool playback_codec_active_ = false;
+  bool playback_source_finished_ = false;
+  size_t playback_preloaded_bytes_ = 0;
+  size_t playback_preload_target_bytes_ = 0;
   int64_t playback_last_write_us_ = 0;
   uint32_t playback_drain_wait_us_ = 0;
   uint8_t volume_percent_ = 60;
+  StreamingStereoResampler playback_resampler_{};
   EspI2sAudioDiagnostics diagnostics_{};
 };
 

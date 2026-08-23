@@ -309,7 +309,7 @@ class PortalOtaUpdateBridge final
     if (!actions || !actions->ready()) actions.reset();
   }
   inkloop::recovery::RecoveryNetworkModeOwner recovery(
-      cache, actions.get());
+      cache, actions.get(), actions.get());
   bool initialized = false;
   uint32_t next_log_ms = 0U;
   for (;;) {

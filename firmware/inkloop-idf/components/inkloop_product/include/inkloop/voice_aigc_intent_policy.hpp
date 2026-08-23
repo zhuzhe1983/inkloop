@@ -130,4 +130,46 @@ inline uint64_t voiceAigcRequestFingerprint(const std::string& text) {
   return fingerprint == 0U ? 1U : fingerprint;
 }
 
+// Center may attach action.execute.original_request to either the original
+// explicit image request or the latest short confirmation (for example
+// “好的”). Keep both bounded fingerprints while the same one-shot authority
+// window is open. A new explicit request replaces the pair; a rejection,
+// unrelated utterance or expired window clears it.
+struct VoiceAigcIntentCorrelation {
+  bool armed = false;
+  uint64_t explicit_request = 0U;
+  uint64_t latest_utterance = 0U;
+};
+
+inline VoiceAigcIntentCorrelation nextVoiceAigcIntentCorrelation(
+    const VoiceAigcIntentCorrelation& current,
+    bool confirmation_window_open, const std::string& transcript) {
+  VoiceAigcIntentCorrelation output;
+  if (voiceAigcExplicitRejection(transcript)) return output;
+  const uint64_t fingerprint = voiceAigcRequestFingerprint(transcript);
+  if (fingerprint == 0U) return output;
+  if (voiceAigcExplicitIntent(transcript)) {
+    output.armed = true;
+    output.explicit_request = fingerprint;
+    output.latest_utterance = fingerprint;
+    return output;
+  }
+  if (current.armed && confirmation_window_open &&
+      current.explicit_request != 0U &&
+      voiceAigcShortConfirmation(transcript)) {
+    output.armed = true;
+    output.explicit_request = current.explicit_request;
+    output.latest_utterance = fingerprint;
+  }
+  return output;
+}
+
+inline bool voiceAigcIntentCorrelationMatches(
+    const VoiceAigcIntentCorrelation& correlation,
+    uint64_t action_request_fingerprint) {
+  return correlation.armed && action_request_fingerprint != 0U &&
+      (action_request_fingerprint == correlation.explicit_request ||
+       action_request_fingerprint == correlation.latest_utterance);
+}
+
 }  // namespace inkloop

@@ -41,7 +41,7 @@ struct NativeVoiceDiagnostics {
   uint32_t chat_read_failures = 0;
   uint32_t chat_snapshot_drops = 0;
   uint32_t reconnects = 0;
-  uint32_t heartbeat_audio_deferrals = 0;
+  uint32_t heartbeat_background_submissions = 0;
 };
 
 inline constexpr size_t kNativeLocalChatPageItems = 24U;
@@ -270,6 +270,11 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   void reconcileVoiceState(myai::VoiceState state);
   void failVoiceHardware();
   void scheduleReconnect(uint32_t delay_ms);
+  myai::Status scheduleVoiceHeartbeat();
+  WorkDisposition performVoiceHeartbeat(const WorkEnvelope& envelope);
+  bool consumeVoiceHeartbeatCompletion(uint32_t now_ms);
+  bool voiceHeartbeatActive() const;
+  void clearVoiceHeartbeatMailbox();
   void stageSystemPrompt(const std::string& prompt);
   bool applyPendingSystemPrompt();
   void publishOnboarding(const myai::PairingView* pairing);
@@ -360,7 +365,23 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   mutable portMUX_TYPE tutorial_mux_ = portMUX_INITIALIZER_UNLOCKED;
   StaticSemaphore_t chat_snapshot_mutex_storage_{};
   SemaphoreHandle_t chat_snapshot_mutex_ = nullptr;
+  StaticSemaphore_t heartbeat_mutex_storage_{};
+  mutable SemaphoreHandle_t heartbeat_mutex_ = nullptr;
   NativeLocalChatSnapshot chat_snapshot_mailbox_{};
+  enum class VoiceHeartbeatPhase : uint8_t {
+    Idle,
+    Queued,
+    Running,
+    Complete,
+  };
+  VoiceHeartbeatPhase heartbeat_phase_ = VoiceHeartbeatPhase::Idle;
+  uint64_t heartbeat_generation_counter_ = 0U;
+  uint64_t heartbeat_generation_ = 0U;
+  uint64_t heartbeat_correlation_ = 0U;
+  uint32_t heartbeat_phase_deadline_ms_ = 0U;
+  myai::VoiceHeartbeatWork heartbeat_work_{};
+  myai::HttpResponse heartbeat_response_{};
+  myai::Status heartbeat_transport_status_{};
   NativeVoiceDiagnostics diagnostics_{};
   NativeMyAiOnboardingSnapshot onboarding_{};
   NativeMyAiErrorSnapshot myai_error_{};
@@ -371,6 +392,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   uint32_t next_authorization_check_ms_ = 0;
   uint32_t next_voice_reconnect_ms_ = 0;
   uint32_t last_heartbeat_ms_ = 0;
+  uint32_t next_heartbeat_attempt_ms_ = 0;
   uint32_t next_aigc_poll_ms_ = 0;
   uint32_t aigc_deadline_ms_ = 0;
   uint32_t next_tutorial_retry_ms_ = 0;
@@ -391,6 +413,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   myai::AigcStatusResponse aigc_status_{};
   myai::ActivationState activation_state_ =
       myai::ActivationState::Unconfigured;
+  bool activation_state_observed_ = false;
   myai::VoiceState network_voice_state_ = myai::VoiceState::Idle;
   myai::VoiceState voice_task_state_ = myai::VoiceState::Idle;
   bool client_initialized_ = false;
@@ -399,14 +422,16 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   bool assistant_finalized_ = false;
   bool ready_deferred_for_audio_ = false;
   bool reconnect_cleanup_pending_ = false;
-  bool heartbeat_audio_deferred_ = false;
   bool aigc_exclusive_ = false;
   bool aigc_serial_diagnostic_ = false;
   // A gateway AIGC action is accepted only for the current, explicit user
   // utterance. System-authored tutorial response.create calls never arm it.
   bool voice_aigc_action_armed_ = false;
   uint32_t voice_aigc_action_deadline_ms_ = 0U;
+  // Preserve both the original explicit request and a later short
+  // confirmation because Center may echo either one in action.execute.
   uint64_t voice_aigc_request_fingerprint_ = 0U;
+  uint64_t voice_aigc_latest_utterance_fingerprint_ = 0U;
   bool wifi_was_online_ = false;
   bool local_confirmation_pending_ = false;
   bool local_confirmation_format_pending_ = false;

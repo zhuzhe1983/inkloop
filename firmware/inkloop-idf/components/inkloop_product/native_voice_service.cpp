@@ -31,13 +31,15 @@ constexpr uint32_t kNetworkDeadlineMs = 1000;
 constexpr uint32_t kPairingPollMs = 2000;
 constexpr uint32_t kPairingStartRetryMs = 30000;
 constexpr uint32_t kHeartbeatMs = 30000;
+constexpr uint32_t kHeartbeatQueueRetryMs = 1000;
+constexpr uint32_t kHeartbeatQueuedWatchdogMs = 5000U;
+constexpr uint32_t kHeartbeatRunningWatchdogMs = 10000U;
 constexpr uint32_t kMinimumReconnectMs = 1000;
 constexpr uint32_t kAigcPollMs = 5000;
-// Match the maintained MyAI Flutter client: a gateway image job gets a
-// bounded three-minute window.  Without this boundary an orphaned `pending`
-// job keeps the AIGC/storage ownership lane and opens a new TLS connection
-// every five seconds forever.
-constexpr uint32_t kAigcTimeoutMs = 3U * 60U * 1000U;
+// Center permits a detached LocalAI image job to run for five minutes. Keep a
+// 30-second transport margin so a valid late terminal result can still be
+// downloaded, while retaining a finite owner deadline for orphaned jobs.
+constexpr uint32_t kAigcTimeoutMs = 5U * 60U * 1000U + 30U * 1000U;
 constexpr uint32_t kAigcPromptMaximum = 1024;
 constexpr uint32_t kVoiceAigcConfirmationWindowMs = 90000U;
 constexpr uint32_t kLocalToolDeadlineMs = 5000;
@@ -285,6 +287,16 @@ std::string tutorialPrompt(onboarding::TutorialStep step,
   prompt += lesson;
   prompt += "\"";
   return prompt;
+}
+
+void scrubHttpResponse(myai::HttpResponse& response) {
+  std::fill(response.body.begin(), response.body.end(), '\0');
+  response.body.clear();
+  for (auto& header : response.headers) {
+    std::fill(header.second.begin(), header.second.end(), '\0');
+    header.second.clear();
+  }
+  response = myai::HttpResponse();
 }
 
 }  // namespace
@@ -571,7 +583,19 @@ esp_err_t NativeVoiceService::initialize() {
   }
   chat_snapshot_mutex_ =
       xSemaphoreCreateMutexStatic(&chat_snapshot_mutex_storage_);
-  if (!chat_snapshot_mutex_) return ESP_ERR_NO_MEM;
+  heartbeat_mutex_ =
+      xSemaphoreCreateMutexStatic(&heartbeat_mutex_storage_);
+  if (!chat_snapshot_mutex_ || !heartbeat_mutex_) {
+    if (chat_snapshot_mutex_) {
+      vSemaphoreDelete(chat_snapshot_mutex_);
+      chat_snapshot_mutex_ = nullptr;
+    }
+    if (heartbeat_mutex_) {
+      vSemaphoreDelete(heartbeat_mutex_);
+      heartbeat_mutex_ = nullptr;
+    }
+    return ESP_ERR_NO_MEM;
+  }
   if (voice_hardware_available_) {
     audio_device_.reset(
         new (std::nothrow) EspI2sAudioDevice(board_.audioConfig(), *codec));
@@ -652,6 +676,7 @@ void NativeVoiceService::shutdown() {
     audio_device_->abort();
   }
   if (audio_bridge_) audio_bridge_->abort();
+  clearVoiceHeartbeatMailbox();
   client_.reset();
   wss_.close(1001U, "runtime_shutdown");
   wss_.setIngressReadyGate(nullptr, nullptr);
@@ -663,6 +688,10 @@ void NativeVoiceService::shutdown() {
   if (chat_snapshot_mutex_) {
     vSemaphoreDelete(chat_snapshot_mutex_);
     chat_snapshot_mutex_ = nullptr;
+  }
+  if (heartbeat_mutex_) {
+    vSemaphoreDelete(heartbeat_mutex_);
+    heartbeat_mutex_ = nullptr;
   }
   local_prompts_ = LocalPromptPlayer();
   text_pool_.clear();
@@ -693,6 +722,7 @@ void NativeVoiceService::shutdown() {
   voice_aigc_action_armed_ = false;
   voice_aigc_action_deadline_ms_ = 0U;
   voice_aigc_request_fingerprint_ = 0U;
+  voice_aigc_latest_utterance_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   portENTER_CRITICAL(&onboarding_mux_);
   onboarding_ = NativeMyAiOnboardingSnapshot{};
@@ -725,6 +755,7 @@ void NativeVoiceService::shutdown() {
   next_authorization_check_ms_ = 0U;
   next_voice_reconnect_ms_ = 0U;
   last_heartbeat_ms_ = 0U;
+  next_heartbeat_attempt_ms_ = 0U;
   next_aigc_poll_ms_ = 0U;
   next_tutorial_retry_ms_ = 0U;
   tutorial_response_deadline_ms_ = 0U;
@@ -744,7 +775,6 @@ void NativeVoiceService::shutdown() {
   assistant_finalized_ = false;
   ready_deferred_for_audio_ = false;
   reconnect_cleanup_pending_ = false;
-  heartbeat_audio_deferred_ = false;
   wifi_was_online_ = false;
   system_prompt_pending_ = false;
   volume_preview_active_ = false;
@@ -1500,7 +1530,9 @@ bool NativeVoiceService::handleControlResult(
        envelope.opcode ==
            productOpcode(ProductOpcode::PortalRunLocalTool) ||
        envelope.opcode ==
-           productOpcode(ProductOpcode::PortalConfirmLocalTool)))
+           productOpcode(ProductOpcode::PortalConfirmLocalTool) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::PortalRunVoiceHeartbeat)))
     return true;
   if (envelope.work_class != WorkClass::MyAiNetwork) return false;
   if (envelope.opcode == productOpcode(ProductOpcode::NetworkVoiceBegin)) {
@@ -1674,6 +1706,193 @@ void NativeVoiceService::scheduleReconnect(uint32_t delay_ms) {
   reconnect_cleanup_pending_ = true;
 }
 
+bool NativeVoiceService::voiceHeartbeatActive() const {
+  if (!heartbeat_mutex_) return false;
+  if (xSemaphoreTake(heartbeat_mutex_, 0) != pdTRUE) return true;
+  const bool active = heartbeat_phase_ != VoiceHeartbeatPhase::Idle;
+  xSemaphoreGive(heartbeat_mutex_);
+  return active;
+}
+
+void NativeVoiceService::clearVoiceHeartbeatMailbox() {
+  if (!heartbeat_mutex_ ||
+      xSemaphoreTake(heartbeat_mutex_, portMAX_DELAY) != pdTRUE) {
+    return;
+  }
+  heartbeat_work_.clearSensitive();
+  scrubHttpResponse(heartbeat_response_);
+  heartbeat_transport_status_ = myai::Status();
+  heartbeat_phase_ = VoiceHeartbeatPhase::Idle;
+  heartbeat_generation_ = 0U;
+  heartbeat_correlation_ = 0U;
+  heartbeat_phase_deadline_ms_ = 0U;
+  xSemaphoreGive(heartbeat_mutex_);
+}
+
+myai::Status NativeVoiceService::scheduleVoiceHeartbeat() {
+  if (!client_ || !client_initialized_ || !heartbeat_mutex_) {
+    return myai::Status(myai::ErrorCode::InvalidState, 0,
+                        "voice heartbeat owner is unavailable");
+  }
+  myai::VoiceHeartbeatWork prepared;
+  myai::Status status = client_->prepareVoiceHeartbeat(prepared);
+  if (!status.ok()) return status;
+  if (xSemaphoreTake(heartbeat_mutex_, portMAX_DELAY) != pdTRUE) {
+    prepared.clearSensitive();
+    return myai::Status(myai::ErrorCode::InvalidState, 0,
+                        "voice heartbeat mailbox is unavailable");
+  }
+  if (heartbeat_phase_ != VoiceHeartbeatPhase::Idle) {
+    xSemaphoreGive(heartbeat_mutex_);
+    prepared.clearSensitive();
+    return myai::Status(myai::ErrorCode::InvalidState, 0,
+                        "voice heartbeat is already active");
+  }
+  uint64_t generation = ++heartbeat_generation_counter_;
+  if (generation == 0U) generation = ++heartbeat_generation_counter_;
+  const uint64_t correlation = nextRequestId();
+  heartbeat_work_ = std::move(prepared);
+  heartbeat_transport_status_ = myai::Status();
+  scrubHttpResponse(heartbeat_response_);
+  heartbeat_phase_ = VoiceHeartbeatPhase::Queued;
+  heartbeat_generation_ = generation;
+  heartbeat_correlation_ = correlation;
+  heartbeat_phase_deadline_ms_ = nowMs() + kHeartbeatQueuedWatchdogMs;
+  xSemaphoreGive(heartbeat_mutex_);
+
+  WorkEnvelope envelope{};
+  envelope.generation = generation;
+  envelope.request_id = correlation;
+  envelope.deadline_ms = nowMs() + kHeartbeatQueuedWatchdogMs;
+  envelope.opcode = productOpcode(ProductOpcode::PortalRunVoiceHeartbeat);
+  envelope.work_class = WorkClass::Portal;
+  envelope.kind = EnvelopeKind::Command;
+  envelope.disposition = WorkDisposition::Accepted;
+  const AdmissionResult admitted = supervisor_.post(envelope);
+  if (admitted != AdmissionResult::Admitted) {
+    clearVoiceHeartbeatMailbox();
+    return myai::Status(myai::ErrorCode::Transport, 0,
+                        "voice heartbeat worker queue is busy",
+                        kHeartbeatQueueRetryMs);
+  }
+  portENTER_CRITICAL(&diagnostics_mux_);
+  ++diagnostics_.heartbeat_background_submissions;
+  portEXIT_CRITICAL(&diagnostics_mux_);
+  return myai::Status::success();
+}
+
+WorkDisposition NativeVoiceService::performVoiceHeartbeat(
+    const WorkEnvelope& envelope) {
+  if (!heartbeat_mutex_ ||
+      xSemaphoreTake(heartbeat_mutex_, portMAX_DELAY) != pdTRUE) {
+    return WorkDisposition::Failed;
+  }
+  if (heartbeat_phase_ != VoiceHeartbeatPhase::Queued ||
+      heartbeat_generation_ != envelope.generation ||
+      heartbeat_correlation_ != envelope.request_id ||
+      !heartbeat_work_.valid()) {
+    xSemaphoreGive(heartbeat_mutex_);
+    return WorkDisposition::Cancelled;
+  }
+  const uint64_t generation = heartbeat_generation_;
+  const uint64_t correlation = heartbeat_correlation_;
+  myai::VoiceHeartbeatWork work = std::move(heartbeat_work_);
+  heartbeat_phase_ = VoiceHeartbeatPhase::Running;
+  heartbeat_phase_deadline_ms_ = nowMs() + kHeartbeatRunningWatchdogMs;
+  xSemaphoreGive(heartbeat_mutex_);
+
+  myai::HttpResponse response;
+  const myai::Status transport = http_.perform(work.request, response);
+  work.clearRequestSensitive();
+
+  if (xSemaphoreTake(heartbeat_mutex_, portMAX_DELAY) != pdTRUE) {
+    work.clearSensitive();
+    scrubHttpResponse(response);
+    return WorkDisposition::Failed;
+  }
+  if (heartbeat_phase_ != VoiceHeartbeatPhase::Running ||
+      heartbeat_generation_ != generation ||
+      heartbeat_correlation_ != correlation) {
+    xSemaphoreGive(heartbeat_mutex_);
+    work.clearSensitive();
+    scrubHttpResponse(response);
+    return WorkDisposition::Cancelled;
+  }
+  heartbeat_work_ = std::move(work);
+  heartbeat_response_ = std::move(response);
+  heartbeat_transport_status_ = transport;
+  heartbeat_phase_ = VoiceHeartbeatPhase::Complete;
+  heartbeat_phase_deadline_ms_ = 0U;
+  xSemaphoreGive(heartbeat_mutex_);
+  return WorkDisposition::Complete;
+}
+
+bool NativeVoiceService::consumeVoiceHeartbeatCompletion(uint32_t now_ms) {
+  if (!heartbeat_mutex_) return true;
+  myai::VoiceHeartbeatWork work;
+  myai::HttpResponse response;
+  myai::Status transport;
+  if (xSemaphoreTake(heartbeat_mutex_, 0) != pdTRUE) return true;
+  if ((heartbeat_phase_ == VoiceHeartbeatPhase::Queued ||
+       heartbeat_phase_ == VoiceHeartbeatPhase::Running) &&
+      heartbeat_phase_deadline_ms_ != 0U &&
+      due(now_ms, heartbeat_phase_deadline_ms_)) {
+    const bool queued = heartbeat_phase_ == VoiceHeartbeatPhase::Queued;
+    heartbeat_work_.clearSensitive();
+    scrubHttpResponse(heartbeat_response_);
+    heartbeat_transport_status_ = myai::Status();
+    heartbeat_phase_ = VoiceHeartbeatPhase::Idle;
+    heartbeat_generation_ = 0U;
+    heartbeat_correlation_ = 0U;
+    heartbeat_phase_deadline_ms_ = 0U;
+    xSemaphoreGive(heartbeat_mutex_);
+    const myai::Status timeout(
+        myai::ErrorCode::Transport, 0,
+        queued ? "voice heartbeat queue watchdog expired"
+               : "voice heartbeat worker watchdog expired",
+        kHeartbeatQueueRetryMs);
+    portENTER_CRITICAL(&diagnostics_mux_);
+    ++diagnostics_.network_failures;
+    portEXIT_CRITICAL(&diagnostics_mux_);
+    onError(timeout);
+    next_heartbeat_attempt_ms_ = now_ms + kHeartbeatQueueRetryMs;
+    scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
+    return false;
+  }
+  if (heartbeat_phase_ != VoiceHeartbeatPhase::Complete) {
+    xSemaphoreGive(heartbeat_mutex_);
+    return true;
+  }
+  work = std::move(heartbeat_work_);
+  response = std::move(heartbeat_response_);
+  transport = heartbeat_transport_status_;
+  heartbeat_transport_status_ = myai::Status();
+  heartbeat_phase_ = VoiceHeartbeatPhase::Idle;
+  heartbeat_generation_ = 0U;
+  heartbeat_correlation_ = 0U;
+  heartbeat_phase_deadline_ms_ = 0U;
+  xSemaphoreGive(heartbeat_mutex_);
+
+  const myai::Status completed = client_->completeVoiceHeartbeat(
+      work, transport, response);
+  work.clearSensitive();
+  scrubHttpResponse(response);
+  if (completed.ok()) {
+    last_heartbeat_ms_ = now_ms;
+    next_heartbeat_attempt_ms_ = now_ms + kHeartbeatMs;
+    return true;
+  }
+  // The voice lease may have been deliberately replaced while the lower
+  // priority request was in flight. That stale completion owns no current
+  // state and must not tear the new session down.
+  if (completed.code == myai::ErrorCode::InvalidState) return true;
+  portENTER_CRITICAL(&diagnostics_mux_);
+  ++diagnostics_.network_failures;
+  portEXIT_CRITICAL(&diagnostics_mux_);
+  scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
+  return false;
+}
+
 void NativeVoiceService::stageSystemPrompt(const std::string& prompt) {
   if (!local_tools::LocalCommandParser::validStoredPrompt(prompt)) return;
   portENTER_CRITICAL(&settings_mux_);
@@ -1800,6 +2019,7 @@ void NativeVoiceService::serviceTutorial(uint32_t now_ms) {
   voice_aigc_action_armed_ = false;
   voice_aigc_action_deadline_ms_ = 0U;
   voice_aigc_request_fingerprint_ = 0U;
+  voice_aigc_latest_utterance_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
 
   noteVoiceTurnActive(true);
@@ -1837,6 +2057,14 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     wifi_was_online_ = wifi_online;
     return;
   }
+  const uint32_t now = nowMs();
+  if (client_initialized_) {
+    NetworkDiagnosticScope operation(
+        network_diagnostic_mux_, network_diagnostic_operation_,
+        network_diagnostic_started_ms_,
+        NativeNetworkDiagnosticOperation::Heartbeat);
+    if (!consumeVoiceHeartbeatCompletion(now)) return;
+  }
   if (!wifi_online) {
     if (wifi_was_online_ && client_initialized_) {
       client_->disconnectVoice("wifi_offline");
@@ -1847,7 +2075,6 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     return;
   }
   wifi_was_online_ = true;
-  const uint32_t now = nowMs();
   if (!client_initialized_) {
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,
@@ -1912,7 +2139,8 @@ void NativeVoiceService::networkTick(bool wifi_online) {
   const bool authorization_due = due(now, next_authorization_check_ms_);
   if (!MyAiAuthorizationRetryPolicy::mayCheck(activation_state_)) return;
   if (MyAiAuthorizationRetryPolicy::shouldCheck(
-          activation_state_, authorization_due)) {
+          activation_state_, authorization_due) &&
+      !voiceHeartbeatActive()) {
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,
         network_diagnostic_started_ms_,
@@ -1922,7 +2150,8 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     authorization_verified_ = checked.ok() && authorized;
     next_authorization_check_ms_ =
         MyAiAuthorizationRetryPolicy::nextDeadline(
-            nowMs(), authorization_verified_, checked.retryAfterMs);
+            nowMs(), activation_state_, authorization_verified_,
+            checked.retryAfterMs);
     publishOnboarding(nullptr);
     if (!authorization_verified_) return;
   }
@@ -1934,7 +2163,7 @@ void NativeVoiceService::networkTick(bool wifi_online) {
   // A manually submitted or voice-authored image request does not depend on
   // an already-open voice socket. Hand it to the exclusive Portal pipeline
   // before spending this tick reconnecting realtime voice.
-  {
+  if (!voiceHeartbeatActive()) {
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,
         network_diagnostic_started_ms_,
@@ -1952,6 +2181,7 @@ void NativeVoiceService::networkTick(bool wifi_online) {
   if (!voice_hardware_available_) return;
 
   if (reconnect_cleanup_pending_) {
+    if (voiceHeartbeatActive()) return;
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,
         network_diagnostic_started_ms_,
@@ -1974,7 +2204,7 @@ void NativeVoiceService::networkTick(bool wifi_online) {
       return;
     }
     last_heartbeat_ms_ = now;
-    heartbeat_audio_deferred_ = false;
+    next_heartbeat_attempt_ms_ = now + kHeartbeatMs;
     portENTER_CRITICAL(&diagnostics_mux_);
     ++diagnostics_.reconnects;
     portEXIT_CRITICAL(&diagnostics_mux_);
@@ -2004,29 +2234,20 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     }
   }
   serviceTutorial(now);
-  if (due(now, last_heartbeat_ms_ + kHeartbeatMs)) {
-    // Lease maintenance is low-priority control traffic. Never contend with
-    // microphone uplink or TTS DMA; leaving last_heartbeat_ms_ unchanged makes
-    // the first audio-idle Network tick retry immediately.
-    if (audio_bridge_->captureBusy() || audio_bridge_->playbackBusy()) {
-      if (!heartbeat_audio_deferred_) {
-        heartbeat_audio_deferred_ = true;
-        portENTER_CRITICAL(&diagnostics_mux_);
-        ++diagnostics_.heartbeat_audio_deferrals;
-        portEXIT_CRITICAL(&diagnostics_mux_);
-      }
-      return;
-    }
-    heartbeat_audio_deferred_ = false;
+  if (due(now, last_heartbeat_ms_ + kHeartbeatMs) &&
+      due(now, next_heartbeat_attempt_ms_) && !voiceHeartbeatActive()) {
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,
         network_diagnostic_started_ms_,
         NativeNetworkDiagnosticOperation::Heartbeat);
-    const myai::Status heartbeat = client_->heartbeatVoice();
-    if (!heartbeat.ok()) {
+    const myai::Status heartbeat = scheduleVoiceHeartbeat();
+    next_heartbeat_attempt_ms_ = now +
+        (heartbeat.ok() ? kHeartbeatMs : kHeartbeatQueueRetryMs);
+    // Queue pressure is transient and the current WSS remains usable. Keep
+    // retrying in a bounded cadence rather than blocking or tearing down live
+    // audio merely because the low-priority worker queue was momentarily full.
+    if (!heartbeat.ok() && heartbeat.code != myai::ErrorCode::Transport) {
       scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
-    } else {
-      last_heartbeat_ms_ = now;
     }
   }
 }
@@ -2183,6 +2404,10 @@ WorkDisposition NativeVoiceService::handlePortalCommand(
     }
     return disposition;
   }
+  if (envelope.opcode ==
+      productOpcode(ProductOpcode::PortalRunVoiceHeartbeat)) {
+    return performVoiceHeartbeat(envelope);
+  }
   if (envelope.opcode != productOpcode(ProductOpcode::PortalRunAigc))
     return WorkDisposition::Failed;
   portENTER_CRITICAL(&aigc_mux_);
@@ -2196,7 +2421,7 @@ void NativeVoiceService::portalTick(bool album_mutation_allowed) {
 }
 
 bool NativeVoiceService::portalBusy() const {
-  return aigcBusy() || storageMaintenanceActive();
+  return aigcBusy() || storageMaintenanceActive() || voiceHeartbeatActive();
 }
 
 bool NativeVoiceService::aigcBusy() const {
@@ -2921,13 +3146,16 @@ myai::LocalTranscriptDecision NativeVoiceService::inspect(
 
 void NativeVoiceService::onActivationState(myai::ActivationState state,
                                             const myai::Status& status) {
+  const bool activation_state_changed =
+      !activation_state_observed_ || activation_state_ != state;
   activation_state_ = state;
+  activation_state_observed_ = true;
   if (state == myai::ActivationState::Pairing)
     next_pairing_poll_ms_ = nowMs();
   if (state == myai::ActivationState::Offline) {
     next_authorization_check_ms_ =
         MyAiAuthorizationRetryPolicy::nextDeadline(
-            nowMs(), false, status.retryAfterMs);
+            nowMs(), state, false, status.retryAfterMs);
   }
   if (state != myai::ActivationState::Bound) authorization_verified_ = false;
   publishOnboarding(nullptr);
@@ -2935,7 +3163,10 @@ void NativeVoiceService::onActivationState(myai::ActivationState state,
       state == myai::ActivationState::PaymentRequired ||
       state == myai::ActivationState::RecoveryRequired ||
       state == myai::ActivationState::Error) {
-    postVoiceState(myai::VoiceState::Error);
+    // A periodic authorization refresh can report the same inactive state for
+    // hours. Keep the red/error state latched without filling the responsive
+    // Voice queue with an identical event every refresh interval.
+    if (activation_state_changed) postVoiceState(myai::VoiceState::Error);
   }
 }
 
@@ -2958,6 +3189,7 @@ void NativeVoiceService::onVoiceState(myai::VoiceState state) {
     voice_aigc_action_armed_ = false;
     voice_aigc_action_deadline_ms_ = 0U;
     voice_aigc_request_fingerprint_ = 0U;
+    voice_aigc_latest_utterance_fingerprint_ = 0U;
     portEXIT_CRITICAL(&aigc_mux_);
   }
 
@@ -3023,6 +3255,7 @@ void NativeVoiceService::onTranscript(const std::string& text, bool final) {
     voice_aigc_action_armed_ = false;
     voice_aigc_action_deadline_ms_ = 0U;
     voice_aigc_request_fingerprint_ = 0U;
+    voice_aigc_latest_utterance_fingerprint_ = 0U;
     portEXIT_CRITICAL(&aigc_mux_);
     return;
   }
@@ -3030,19 +3263,24 @@ void NativeVoiceService::onTranscript(const std::string& text, bool final) {
   portENTER_CRITICAL(&aigc_mux_);
   const bool currently_armed = voice_aigc_action_armed_;
   const uint32_t current_deadline = voice_aigc_action_deadline_ms_;
+  const uint64_t explicit_request_fingerprint =
+      voice_aigc_request_fingerprint_;
+  const uint64_t latest_utterance_fingerprint =
+      voice_aigc_latest_utterance_fingerprint_;
   portEXIT_CRITICAL(&aigc_mux_);
   const bool window_open = currently_armed && current_deadline != 0U &&
       !due(now, current_deadline);
-  const bool next_armed = nextVoiceAigcIntentArmed(
-      currently_armed, window_open, text);
-  const uint64_t request_fingerprint =
-      next_armed ? voiceAigcRequestFingerprint(text) : 0U;
+  const VoiceAigcIntentCorrelation next = nextVoiceAigcIntentCorrelation(
+      {currently_armed, explicit_request_fingerprint,
+       latest_utterance_fingerprint}, window_open, text);
   portENTER_CRITICAL(&aigc_mux_);
-  voice_aigc_action_armed_ = next_armed && request_fingerprint != 0U;
+  voice_aigc_action_armed_ = next.armed;
   voice_aigc_action_deadline_ms_ = voice_aigc_action_armed_
       ? now + kVoiceAigcConfirmationWindowMs : 0U;
   voice_aigc_request_fingerprint_ =
-      voice_aigc_action_armed_ ? request_fingerprint : 0U;
+      voice_aigc_action_armed_ ? next.explicit_request : 0U;
+  voice_aigc_latest_utterance_fingerprint_ =
+      voice_aigc_action_armed_ ? next.latest_utterance : 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   queueChat(ProductTextKind::AsrFinal, text);
   assistant_text_.clear();
@@ -3077,6 +3315,7 @@ void NativeVoiceService::onLocalCommand(const std::string& command_name,
   voice_aigc_action_armed_ = false;
   voice_aigc_action_deadline_ms_ = 0U;
   voice_aigc_request_fingerprint_ = 0U;
+  voice_aigc_latest_utterance_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   // The slow Portal owner records the actual outcome. Logging recognition
   // here would create a misleading success row before any device action ran.
@@ -3092,9 +3331,12 @@ void NativeVoiceService::onVoiceAction(const myai::VoiceEvent& action) {
       !due(now, voice_aigc_action_deadline_ms_);
   const uint64_t expected_request_fingerprint =
       voice_aigc_request_fingerprint_;
+  const uint64_t expected_latest_utterance_fingerprint =
+      voice_aigc_latest_utterance_fingerprint_;
   voice_aigc_action_armed_ = false;
   voice_aigc_action_deadline_ms_ = 0U;
   voice_aigc_request_fingerprint_ = 0U;
+  voice_aigc_latest_utterance_fingerprint_ = 0U;
   portEXIT_CRITICAL(&aigc_mux_);
   if (!armed) {
     queueChat(ProductTextKind::AigcState,
@@ -3103,8 +3345,10 @@ void NativeVoiceService::onVoiceAction(const myai::VoiceEvent& action) {
   }
   const uint64_t action_request_fingerprint =
       voiceAigcRequestFingerprint(action.originalRequest);
-  if (action_request_fingerprint == 0U ||
-      action_request_fingerprint != expected_request_fingerprint) {
+  if (!voiceAigcIntentCorrelationMatches(
+          {true, expected_request_fingerprint,
+           expected_latest_utterance_fingerprint},
+          action_request_fingerprint)) {
     queueChat(ProductTextKind::AigcState,
               "aigc.rejected_mismatched_voice_request");
     return;

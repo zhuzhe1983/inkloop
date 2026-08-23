@@ -12,6 +12,8 @@
 
 #include "esp_http_server.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace inkloop {
 namespace recovery {
@@ -20,6 +22,8 @@ namespace {
 constexpr size_t kHeaderScratchBytes = 257U;
 constexpr size_t kMaximumUriBytes = 128U;
 constexpr size_t kRecoveryHttpTaskStackBytes = 16U * 1024U;
+constexpr TickType_t kRecoveryExportChunkDelay =
+    pdMS_TO_TICKS(4U) > 0U ? pdMS_TO_TICKS(4U) : 1U;
 
 const char* statusText(int status) {
   switch (status) {
@@ -43,6 +47,17 @@ RecoveryResponse nativeError(int status, const char* error) {
   RecoveryResponse output;
   output.status = status;
   output.body = std::string("{\"ok\":false,\"error\":\"") + error + "\"}";
+  return output;
+}
+
+template <size_t Size>
+std::string lowerHex(const std::array<uint8_t, Size>& value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string output(Size * 2U, '0');
+  for (size_t at = 0U; at < Size; ++at) {
+    output[at * 2U] = kHex[value[at] >> 4U];
+    output[at * 2U + 1U] = kHex[value[at] & 0x0fU];
+  }
   return output;
 }
 
@@ -189,7 +204,76 @@ struct EspRecoveryServer::Impl {
     RecoveryRequest request;
     const RecoveryResponse read = readRequest(native, request);
     if (read.status != 0) return sendResponse(native, read);
+    if (request.method == "GET" && request.path.rfind(
+            "/api/recovery/export/file/", 0U) == 0U) {
+      RecoveryExportStream stream;
+      const RecoveryResponse opened = core.openRecoveryExportFile(
+          request, stream);
+      if (opened.status != 200) return sendResponse(native, opened);
+      return sendExport(native, stream);
+    }
     return sendResponse(native, core.handle(request));
+  }
+
+  esp_err_t sendExport(httpd_req_t* request, RecoveryExportStream stream) {
+    const std::string digest = lowerHex(stream.digest);
+    const std::string bytes = std::to_string(stream.byte_count);
+    const std::string filename = stream.item == 0U
+        ? "attachment; filename=\"index.json\""
+        : stream.item == 1U
+            ? "attachment; filename=\"index.next\""
+            : stream.item == 2U
+                ? "attachment; filename=\"index.prev\""
+                : "attachment; filename=\"" + digest + ".png\"";
+    esp_err_t result = httpd_resp_set_status(request, "200 OK");
+    if (result == ESP_OK)
+      result = httpd_resp_set_type(request, "application/octet-stream");
+    if (result == ESP_OK)
+      result = httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (result == ESP_OK)
+      result = httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    if (result == ESP_OK)
+      result = httpd_resp_set_hdr(request, "Content-Disposition",
+                                  filename.c_str());
+    if (result == ESP_OK)
+      result = httpd_resp_set_hdr(request, "X-Inkloop-SHA256",
+                                  digest.c_str());
+    if (result == ESP_OK)
+      result = httpd_resp_set_hdr(request, "X-Inkloop-Bytes",
+                                  bytes.c_str());
+    if (result != ESP_OK) {
+      core.closeRecoveryExportFile(stream.handle);
+      return result;
+    }
+
+    std::array<uint8_t, kMaximumRecoveryExportChunkBytes> chunk{};
+    uint64_t sent = 0U;
+    for (;;) {
+      size_t count = 0U;
+      const RecoveryExportResult read = core.readRecoveryExportFile(
+          stream.handle, chunk.data(), chunk.size(), count);
+      if (read == RecoveryExportResult::Complete && count == 0U &&
+          sent == stream.byte_count) {
+        result = httpd_resp_send_chunk(request, nullptr, 0U);
+        break;
+      }
+      if (read != RecoveryExportResult::Ok || count == 0U ||
+          count > chunk.size() || sent > stream.byte_count ||
+          count > stream.byte_count - sent) {
+        result = ESP_FAIL;
+        break;
+      }
+      result = httpd_resp_send_chunk(
+          request, reinterpret_cast<const char*>(chunk.data()), count);
+      if (result != ESP_OK) break;
+      sent += count;
+      // One 4 KiB chunk per 4 ms caps a single authenticated export at
+      // roughly 1 MiB/s and yields to Wi-Fi/system tasks between reads.
+      vTaskDelay(kRecoveryExportChunkDelay);
+    }
+    core.closeRecoveryExportFile(stream.handle);
+    std::fill(chunk.begin(), chunk.end(), 0U);
+    return result;
   }
 
   esp_err_t start() {

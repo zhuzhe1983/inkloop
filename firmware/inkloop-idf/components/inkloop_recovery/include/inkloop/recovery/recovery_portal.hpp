@@ -8,7 +8,7 @@
 namespace inkloop {
 namespace recovery {
 
-inline constexpr size_t kMaximumRecoveryRequestBodyBytes = 192U;
+inline constexpr size_t kMaximumRecoveryRequestBodyBytes = 320U;
 inline constexpr size_t kMaximumRecoveryResponseBytes = 16384U;
 inline constexpr size_t kMaximumRecoveryIdentifierBytes = 48U;
 inline constexpr size_t kMaximumRecoveryAccessCodeBytes = 63U;
@@ -162,6 +162,10 @@ struct RecoveryActionRequest {
   RecoveryActionBackend backend = RecoveryActionBackend::None;
   RecoveryActionChoice choice = RecoveryActionChoice::Current;
   std::array<uint8_t, kRecoveryActionDigestBytes> inspection_id{};
+  // Required only for removable-album resolution. This is an explicit
+  // operator assertion that a verified external read-only export was
+  // completed; it is not set for display, task or internal-album actions.
+  bool external_backup_confirmed = false;
 };
 
 enum class RecoveryActionResolveResult : uint8_t {
@@ -188,6 +192,103 @@ class IRecoveryActionOwner {
   // re-inspect immediately before mutation, and perform only the named action.
   virtual RecoveryActionResolveResult resolveRecoveryAction(
       const RecoveryActionRequest& request) = 0;
+};
+
+inline constexpr size_t kRecoveryExportSessionBytes = 16U;
+inline constexpr size_t kMaximumRecoveryExportAssets =
+    kRecoveryActionCandidateCount * 96U;
+inline constexpr size_t kRecoveryExportInventoryPageAssets = 24U;
+inline constexpr size_t kMaximumRecoveryExportChunkBytes = 4096U;
+inline constexpr uint64_t kMaximumRecoveryExportIndexBytes = 64U * 1024U;
+inline constexpr uint64_t kMinimumRecoveryExportAssetBytes = 45U;
+inline constexpr uint64_t kMaximumRecoveryExportAssetBytes = 1500000U;
+inline constexpr uint64_t kMaximumRecoveryExportTotalBytes =
+    kRecoveryActionCandidateCount * kMaximumRecoveryExportIndexBytes +
+    kMaximumRecoveryExportAssets * kMaximumRecoveryExportAssetBytes;
+
+struct RecoveryExportExpectedIndexes {
+  std::array<std::array<uint8_t, kRecoveryActionDigestBytes>,
+             kRecoveryActionCandidateCount> digests{};
+};
+
+struct RecoveryExportCandidate {
+  uint64_t byte_count = 0U;
+  std::array<uint8_t, kRecoveryActionDigestBytes> digest{};
+  uint32_t asset_entries = 0U;
+};
+
+struct RecoveryExportAsset {
+  uint64_t byte_count = 0U;
+  std::array<uint8_t, kRecoveryActionDigestBytes> digest{};
+  // Bit 0/1/2 means Current/Next/Previous references this physical asset.
+  uint8_t candidate_mask = 0U;
+};
+
+struct RecoveryExportSnapshot {
+  std::array<uint8_t, kRecoveryExportSessionBytes> session_id{};
+  std::array<RecoveryExportCandidate, kRecoveryActionCandidateCount>
+      candidates{};
+  uint32_t asset_count = 0U;
+  uint32_t inventory_pages = 0U;
+  uint64_t total_bytes = 0U;
+};
+
+struct RecoveryExportInventoryPage {
+  std::array<uint8_t, kRecoveryExportSessionBytes> session_id{};
+  std::array<RecoveryExportAsset, kRecoveryExportInventoryPageAssets> assets{};
+  uint32_t page = 0U;
+  uint32_t asset_offset = 0U;
+  uint8_t count = 0U;
+};
+
+struct RecoveryExportOpenRequest {
+  std::array<uint8_t, kRecoveryExportSessionBytes> session_id{};
+  // 0..2 are the fixed index slots; 3+ is the inventory asset ordinal.
+  uint32_t item = 0U;
+};
+
+struct RecoveryExportStream {
+  uint32_t handle = 0U;
+  uint64_t byte_count = 0U;
+  std::array<uint8_t, kRecoveryActionDigestBytes> digest{};
+  uint32_t item = 0U;
+};
+
+enum class RecoveryExportResult : uint8_t {
+  Ok,
+  Complete,
+  Busy,
+  InvalidRequest,
+  SessionStale,
+  SourceChanged,
+  SourceUnavailable,
+  IoError,
+  VerificationFailed,
+};
+
+// Recovery-only, fixed-size and path-free. Implementations may read only the
+// three removable album indexes and assets they reference. They must never
+// write, move, remove, reinitialize, or repair the source media.
+class IRecoveryExportOwner {
+ public:
+  virtual ~IRecoveryExportOwner() = default;
+  virtual RecoveryExportResult prepareRecoveryExport(
+      const RecoveryExportExpectedIndexes& expected,
+      RecoveryExportSnapshot& output) = 0;
+  virtual RecoveryExportResult readRecoveryExportInventory(
+      const std::array<uint8_t, kRecoveryExportSessionBytes>& session_id,
+      uint32_t page, RecoveryExportInventoryPage& output) = 0;
+  virtual RecoveryExportResult openRecoveryExport(
+      const RecoveryExportOpenRequest& request,
+      RecoveryExportStream& output) = 0;
+  virtual RecoveryExportResult readRecoveryExport(
+      uint32_t handle, uint8_t* output, size_t capacity,
+      size_t& bytes_read) = 0;
+  virtual void closeRecoveryExport(uint32_t handle) = 0;
+  virtual RecoveryExportResult finishRecoveryExport(
+      const std::array<uint8_t, kRecoveryExportSessionBytes>& session_id) = 0;
+  virtual void abortRecoveryExport(
+      const std::array<uint8_t, kRecoveryExportSessionBytes>& session_id) = 0;
 };
 
 struct RecoveryAccessConfig {
@@ -226,7 +327,8 @@ class RecoveryPortalCore {
  public:
   RecoveryPortalCore(const RecoveryAccessConfig& access,
                      const IRecoveryDiagnosticCache& cache,
-                     IRecoveryActionOwner* action_owner = nullptr);
+                     IRecoveryActionOwner* action_owner = nullptr,
+                     IRecoveryExportOwner* export_owner = nullptr);
   ~RecoveryPortalCore();
 
   RecoveryPortalCore(const RecoveryPortalCore&) = delete;
@@ -234,6 +336,12 @@ class RecoveryPortalCore {
 
   bool ready() const { return ready_; }
   RecoveryResponse handle(const RecoveryRequest& request);
+  RecoveryResponse openRecoveryExportFile(
+      const RecoveryRequest& request, RecoveryExportStream& output);
+  RecoveryExportResult readRecoveryExportFile(
+      uint32_t handle, uint8_t* output, size_t capacity,
+      size_t& bytes_read);
+  void closeRecoveryExportFile(uint32_t handle);
   static const char* dashboardHtml();
 
  private:
@@ -246,10 +354,16 @@ class RecoveryPortalCore {
   RecoveryResponse renderDiagnostic() const;
   RecoveryResponse renderRecoveryActions();
   RecoveryResponse resolveRecoveryAction(const RecoveryRequest& request);
+  RecoveryResponse prepareRecoveryExport(const RecoveryRequest& request);
+  RecoveryResponse renderRecoveryExportInventory(
+      const RecoveryRequest& request);
+  RecoveryResponse finishRecoveryExport(const RecoveryRequest& request);
+  RecoveryResponse abortRecoveryExport(const RecoveryRequest& request);
 
   RecoveryAccessConfig access_;
   const IRecoveryDiagnosticCache& cache_;
   IRecoveryActionOwner* action_owner_ = nullptr;
+  IRecoveryExportOwner* export_owner_ = nullptr;
   bool ready_ = false;
   bool session_issued_ = false;
   uint64_t session_expires_at_seconds_ = 0;
