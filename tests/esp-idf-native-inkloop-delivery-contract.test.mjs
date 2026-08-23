@@ -33,6 +33,21 @@ function body(source, signature, nextSignature) {
   return source.slice(start, end < 0 ? undefined : end);
 }
 
+test("production Inkloop identity derives its SKU from the selected board", () => {
+  assert.match(
+    serviceHeader,
+    /NativeInkloopService\(RuntimeSupervisor& supervisor,\s*const BoardDescriptor& board/,
+  );
+  assert.match(serviceHeader, /const BoardDescriptor& board_/);
+  assert.match(service, /!board_\.valid\(\)/);
+  assert.match(service, /config\.sku_id\s*=\s*board_\.id/);
+  assert.match(
+    runtime,
+    /inkloop_\(supervisor_,\s*board\.descriptor\(\),\s*storage\.taskRoot\(\)/,
+  );
+  assert.doesNotMatch(service, /config\.sku_id\s*=\s*"m5-papercolor-c151"/);
+});
+
 test("30-second scheduling is wrap-safe and reuses the exact MyAI six-digit code", () => {
   assert.match(service, /kSyncIntervalMs\s*=\s*30000U/);
   assert.match(service, /kTaskRetryMs\s*=\s*30000U/);

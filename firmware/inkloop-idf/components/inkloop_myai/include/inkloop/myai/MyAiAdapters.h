@@ -116,6 +116,13 @@ class IWireCodec {
   virtual Status parsePairingStatus(const std::string& body,
                                     PairingStatusResponse& output) const = 0;
   virtual std::string parseErrorCode(const std::string& body) const = 0;
+  // Preserve the service-provided message/detail separately from its stable
+  // contract code. The default keeps third-party codecs source compatible;
+  // canonical codecs should return only bounded, control-free text and must
+  // never expose the raw response body or credentials through diagnostics.
+  virtual std::string parseErrorDiagnostic(const std::string& body) const {
+    return parseErrorCode(body);
+  }
   virtual std::string deviceCheckBody(const std::string& deviceId,
                                       const std::string& fingerprint) const = 0;
   virtual Status parseDeviceCheck(const std::string& body, bool& authorized,

@@ -74,7 +74,7 @@ EspProductRuntime::EspProductRuntime(IBoardAdapter& board,
       voice_(board, supervisor_, storage.selectedAssetRoot(
                  asset_preference),
              selected_album_store_, &serial_diagnostics_),
-      inkloop_(supervisor_, storage.taskRoot(),
+      inkloop_(supervisor_, board.descriptor(), storage.taskRoot(),
                selected_album_store_,
                display_),
       portal_(board, supervisor_, wifi_, leds_, display_, voice_,

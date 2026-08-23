@@ -320,6 +320,14 @@ int main() {
   assert(rendered.body.find("data-tab=\"album\"") != std::string::npos);
   assert(rendered.body.find("data-tab=\"myai\"") != std::string::npos);
   assert(rendered.body.find("data-tab=\"settings\"") != std::string::npos);
+  const size_t myai_panel = rendered.body.find("data-panel=\"myai\"");
+  const size_t myai_settings = rendered.body.find("id=\"myai-settings\"");
+  const size_t prompt_field = rendered.body.find("name=\"assistant_prompt\"");
+  const size_t general_settings = rendered.body.find("data-panel=\"settings\"");
+  assert(myai_panel < myai_settings && myai_settings < prompt_field &&
+         prompt_field < general_settings);
+  assert(rendered.body.find("保存 MyAI 设置") != std::string::npos);
+  assert(rendered.body.find("MyAI 设置已排队保存") != std::string::npos);
   assert(rendered.body.find("/api/album/upload") != std::string::npos);
   assert(rendered.body.find("/api/album/preview") != std::string::npos);
   assert(rendered.body.find("/api/chat?limit=") != std::string::npos);
@@ -335,6 +343,11 @@ int main() {
   assert(rendered.body.find("portal.hidden") != std::string::npos);
   assert(rendered.body.find("cadence=5000") != std::string::npos);
   assert(rendered.body.find("displayTimingSignature") != std::string::npos);
+  assert(rendered.body.find("storageCapacitySignature") != std::string::npos);
+  assert(rendered.body.find("storageFreeBytes") != std::string::npos);
+  assert(rendered.body.find("storageTotalBytes") != std::string::npos);
+  assert(rendered.body.find("剩余空间") != std::string::npos);
+  assert(rendered.body.find("总空间") != std::string::npos);
   assert(rendered.body.find("最近物理刷新") != std::string::npos);
   assert(rendered.body.find("运行诊断") != std::string::npos);
   assert(rendered.body.find("runtime-diagnostics") != std::string::npos);
@@ -560,6 +573,22 @@ int main() {
   assert(commands.received.back().settings.asset_storage_preference == "internal");
   assert(commands.received.back().settings.default_render_strategy == "solid-clean");
   assert(commands.received.back().settings.local_management_password_override == "portal pass 42");
+
+  PortalRequest myai_settings_request =
+      authenticated("POST", "/api/settings", cookie);
+  myai_settings_request.body =
+      "assistant_prompt=Inkloop+helper&image_prompt_template=Six-color+%7Bprompt%7D&negative_prompt=watermark";
+  assert(portal.handle(myai_settings_request).status == 202);
+  const PortalSettingsPatch& myai_patch = commands.received.back().settings;
+  assert(myai_patch.has_assistant_prompt &&
+         myai_patch.assistant_prompt == "Inkloop helper");
+  assert(myai_patch.has_image_prompt_template &&
+         myai_patch.image_prompt_template == "Six-color {prompt}");
+  assert(myai_patch.has_negative_prompt &&
+         myai_patch.negative_prompt == "watermark");
+  assert(!myai_patch.has_volume && !myai_patch.has_led_maximum_brightness &&
+         !myai_patch.has_asset_storage_preference &&
+         !myai_patch.has_local_management_password_override);
 
   PortalRequest invalid_utf8 = authenticated("POST", "/api/settings", cookie);
   invalid_utf8.body = "assistant_prompt=%FF";
@@ -834,6 +863,11 @@ test("embedded Portal browser scripts remain syntactically valid", () => {
   assert.match(html, /state\.displayHeight/);
   assert.match(html, /canvas\.style\.aspectRatio/);
   assert.match(html, /runtimeTelemetry/);
+  assert.match(html, /storageCapacitySignature/);
+  assert.match(html, /root\.querySelector\('\[data-storage-capacity\]'\)/);
+  assert.match(html, /new MutationObserver\(render\)\.observe\(root/);
+  assert.match(html, /free<=total/);
+  assert.match(html, /else\{stop\(\);timer=setTimeout\(poll,cadence\)\}/);
   assert.match(html, /runtime-diagnostics/);
   assert.match(html, /运行诊断暂不可用/);
   assert.match(html, /applyCapabilities\(state\.capabilities,f\)/);

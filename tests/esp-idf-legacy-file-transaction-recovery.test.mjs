@@ -193,6 +193,10 @@ static void inspectionAndChoiceMatrix(const Roots& roots) {
     assert(snapshot.candidates[0].probe ==
            LegacyFileCandidateProbe::Valid);
     assert(snapshot.candidates[0].digest_present);
+    assert(snapshot.candidates[0].item_count_present);
+    assert(snapshot.candidates[0].item_count == 1U);
+    assert(snapshot.candidates[0].modified_time_present);
+    assert(snapshot.candidates[0].modified_unix_seconds > 0U);
     writeExact(selected[1], manifest(target, 'b'));
     assert(recovery.inspect(target, snapshot) ==
            LegacyFileTransactionProbe::ChoiceRequired);
@@ -437,6 +441,8 @@ test("recovery source uses runtime parsers and only fixed transaction paths", ()
   );
   assert.equal(source.split("PosixTaskStore::decodeManifest").length - 1, 1);
   assert.equal(source.split("parseAlbumIndex").length - 1, 1);
+  assert.match(header, /item_count/);
+  assert.match(header, /modified_unix_seconds/);
   for (const path of [
     "/tasks.json", "/tasks.next", "/tasks.prev",
     "/inkloop-album", "/index.json", "/index.next", "/index.prev",

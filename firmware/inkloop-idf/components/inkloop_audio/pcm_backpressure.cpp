@@ -44,6 +44,16 @@ PcmTransfer PcmBackpressureRing::result(PcmFlowSignal signal,
   return PcmTransfer{signal, bytes, size_};
 }
 
+PcmTransfer PcmBackpressureRing::resumeIngress(uint32_t generation) {
+  if (!active_ || !ingress_closed_) return result(PcmFlowSignal::Closed);
+  if (generation == 0 || generation != generation_)
+    return result(PcmFlowSignal::StaleGeneration);
+  ingress_closed_ = false;
+  ingress_paused_ = size_ >= high_watermark_;
+  return result(ingress_paused_ ? PcmFlowSignal::PauseIngress
+                                : PcmFlowSignal::Continue);
+}
+
 PcmTransfer PcmBackpressureRing::push(uint32_t generation,
                                       const uint8_t* bytes, size_t length) {
   if (!active_ || ingress_closed_) return result(PcmFlowSignal::Closed);
@@ -113,4 +123,3 @@ PcmTransfer PcmBackpressureRing::cancel(uint32_t generation) {
 }
 
 }  // namespace inkloop
-

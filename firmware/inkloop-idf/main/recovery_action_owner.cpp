@@ -194,7 +194,11 @@ bool hashPublicPrefix(const recovery::RecoveryActionSnapshot& value,
     if (!hash.byte(static_cast<std::uint8_t>(candidate.state)) ||
         !hash.u64(candidate.byte_count) ||
         !hash.boolean(candidate.digest_present) ||
-        !hash.bytes(candidate.digest.data(), candidate.digest.size())) {
+        !hash.bytes(candidate.digest.data(), candidate.digest.size()) ||
+        !hash.u32(candidate.item_count) ||
+        !hash.boolean(candidate.item_count_present) ||
+        !hash.u32(candidate.modified_unix_seconds) ||
+        !hash.boolean(candidate.modified_time_present)) {
       return false;
     }
   }
@@ -243,7 +247,11 @@ bool hashFileSnapshot(
     if (!hash.byte(static_cast<std::uint8_t>(candidate.probe)) ||
         !hash.u64(candidate.byte_count) ||
         !hash.boolean(candidate.digest_present) ||
-        !hash.bytes(candidate.sha256.data(), candidate.sha256.size())) {
+        !hash.bytes(candidate.sha256.data(), candidate.sha256.size()) ||
+        !hash.u32(candidate.item_count) ||
+        !hash.boolean(candidate.item_count_present) ||
+        !hash.u32(candidate.modified_unix_seconds) ||
+        !hash.boolean(candidate.modified_time_present)) {
       return false;
     }
   }
@@ -343,6 +351,10 @@ bool EspRecoveryActionOwner::inspectFile(
     destination.byte_count = source.byte_count;
     destination.digest = source.sha256;
     destination.digest_present = source.digest_present;
+    destination.item_count = source.item_count;
+    destination.item_count_present = source.item_count_present;
+    destination.modified_unix_seconds = source.modified_unix_seconds;
+    destination.modified_time_present = source.modified_time_present;
   }
   file_snapshot_valid_[cache_index] =
       probe != storage::LegacyFileTransactionProbe::InvalidTarget;

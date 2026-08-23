@@ -120,6 +120,13 @@ struct RecoveryActionCandidate {
   uint64_t byte_count = 0U;
   std::array<uint8_t, kRecoveryActionDigestBytes> digest{};
   bool digest_present = false;
+  // Content-free diagnostics. For file transactions this is a task count or
+  // album-entry count plus an optional coarse filesystem modification time.
+  // Display candidates leave both absent.
+  uint32_t item_count = 0U;
+  bool item_count_present = false;
+  uint32_t modified_unix_seconds = 0U;
+  bool modified_time_present = false;
 };
 
 // A fixed, content-free inspection result. Display and Tasks use backend None;

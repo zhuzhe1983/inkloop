@@ -5,6 +5,7 @@
 #include <new>
 
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 namespace inkloop {
 namespace {
@@ -13,6 +14,10 @@ constexpr size_t kPlaybackLowWatermark = 8U * 1024U;
 constexpr size_t kPlaybackHighWatermark = 20U * 1024U;
 constexpr size_t kCaptureLowWatermark = 4U * 1024U;
 constexpr size_t kCaptureHighWatermark = 12U * 1024U;
+// Compatible gateways may split one logical answer into adjacent TTS
+// segments. Keep an already-drained channel alive briefly so the next
+// same-format tts.start can reopen ingress without a codec/I2S teardown gap.
+constexpr int64_t kPlaybackContinuationGraceUs = 150000;
 
 bool transferAccepted(const PcmTransfer& transfer) {
   return transfer.signal == PcmFlowSignal::Continue ||
@@ -83,8 +88,67 @@ void EspCrossCoreAudioBridge::releaseBuffers() {
 
 myai::Status EspCrossCoreAudioBridge::begin(uint32_t sample_rate_hz,
                                             uint8_t channels) {
+  if (playbackPumpBytes(sample_rate_hz, channels) == 0) {
+    return audioError(myai::ErrorCode::InvalidArgument,
+                      "playback format rejected");
+  }
   portENTER_CRITICAL(&mux_);
-  if (!core_ || playback_hardware_ != PlaybackHardwareState::Idle) {
+  if (!core_) {
+    portEXIT_CRITICAL(&mux_);
+    return audioError(myai::ErrorCode::InvalidState,
+                      "playback bridge is busy");
+  }
+  const bool same_format =
+      playback_sample_rate_hz_ == sample_rate_hz &&
+      playback_channels_ == channels;
+  if (playback_hardware_generation_ != 0 && same_format) {
+    const uint32_t resumed = core_->resumePlayback(
+        playback_hardware_generation_, sample_rate_hz, channels);
+    if (resumed == playback_hardware_generation_) {
+      // StopPending is still cancellable because hardware teardown has not
+      // started. Stopping is already outside the lock in endPlayback(); queue
+      // a restart of the same generation after that call returns.
+      if (playback_hardware_ == PlaybackHardwareState::StopPending &&
+          !playback_restart_after_stop_)
+        playback_hardware_ = PlaybackHardwareState::Active;
+      else if (playback_hardware_ == PlaybackHardwareState::Stopping)
+        playback_restart_after_stop_ = true;
+      playback_drained_since_us_ = 0;
+      portEXIT_CRITICAL(&mux_);
+      return myai::Status::success();
+    }
+  }
+
+  // A format change cannot share the old I2S run, but once the prior ring is
+  // complete it can claim a fresh generation while hardware teardown is still
+  // pending/in flight. PCM then queues behind the lock and the Voice owner
+  // restarts I2S with the new format after endPlayback() returns.
+  const bool replaceable_hardware =
+      playback_hardware_ == PlaybackHardwareState::StartPending ||
+      playback_hardware_ == PlaybackHardwareState::Active ||
+      playback_hardware_ == PlaybackHardwareState::StopPending ||
+      playback_hardware_ == PlaybackHardwareState::Stopping;
+  if (!same_format && replaceable_hardware &&
+      core_->playbackState() == DuplexStreamState::Complete) {
+    const uint32_t generation =
+        core_->beginPlayback(sample_rate_hz, channels);
+    if (generation != 0) {
+      playback_hardware_generation_ = generation;
+      playback_sample_rate_hz_ = sample_rate_hz;
+      playback_channels_ = channels;
+      playback_drained_since_us_ = 0;
+      if (playback_hardware_ == PlaybackHardwareState::StartPending) {
+        playback_restart_after_stop_ = false;
+      } else {
+        if (playback_hardware_ == PlaybackHardwareState::Active)
+          playback_hardware_ = PlaybackHardwareState::StopPending;
+        playback_restart_after_stop_ = true;
+      }
+      portEXIT_CRITICAL(&mux_);
+      return myai::Status::success();
+    }
+  }
+  if (playback_hardware_ != PlaybackHardwareState::Idle) {
     portEXIT_CRITICAL(&mux_);
     return audioError(myai::ErrorCode::InvalidState,
                       "playback bridge is busy");
@@ -99,6 +163,8 @@ myai::Status EspCrossCoreAudioBridge::begin(uint32_t sample_rate_hz,
   playback_hardware_generation_ = generation;
   playback_sample_rate_hz_ = sample_rate_hz;
   playback_channels_ = channels;
+  playback_drained_since_us_ = 0;
+  playback_restart_after_stop_ = false;
   playback_hardware_ = PlaybackHardwareState::StartPending;
   portEXIT_CRITICAL(&mux_);
   return myai::Status::success();
@@ -150,6 +216,7 @@ void EspCrossCoreAudioBridge::abort() {
   if (core_ && playback_hardware_generation_ != 0) {
     core_->cancelPlayback(playback_hardware_generation_);
     playback_hardware_ = PlaybackHardwareState::AbortPending;
+    playback_restart_after_stop_ = false;
     ++diagnostics_.cancellations;
   }
   portEXIT_CRITICAL(&mux_);
@@ -175,6 +242,7 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
   uint32_t generation = 0;
   uint32_t sample_rate = 0;
   uint8_t channels = 0;
+  bool restart_after_stop = false;
   PlaybackHardwareState action = PlaybackHardwareState::Idle;
   portENTER_CRITICAL(&mux_);
   if (!core_) {
@@ -185,8 +253,11 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
   generation = playback_hardware_generation_;
   sample_rate = playback_sample_rate_hz_;
   channels = playback_channels_;
+  restart_after_stop = playback_restart_after_stop_;
   if (action == PlaybackHardwareState::StartPending)
     playback_hardware_ = PlaybackHardwareState::Starting;
+  else if (action == PlaybackHardwareState::StopPending)
+    playback_hardware_ = PlaybackHardwareState::Stopping;
   portEXIT_CRITICAL(&mux_);
 
   if (action == PlaybackHardwareState::StartPending) {
@@ -209,16 +280,42 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
     portENTER_CRITICAL(&mux_);
     playback_hardware_ = PlaybackHardwareState::Idle;
     playback_hardware_generation_ = 0;
+    playback_drained_since_us_ = 0;
+    playback_restart_after_stop_ = false;
     portEXIT_CRITICAL(&mux_);
     return ESP_OK;
   }
   if (action == PlaybackHardwareState::StopPending) {
+    // A format-changing segment can be queued as soon as the prior ring is
+    // empty, which may precede the last old-format sample leaving DMA. Do not
+    // tear down that tail early; no more bytes target the old device, so a
+    // later Voice tick will observe it naturally drained.
+    if (restart_after_stop && !device.playbackDrained()) {
+      portENTER_CRITICAL(&mux_);
+      if (playback_hardware_ == PlaybackHardwareState::Stopping &&
+          playback_restart_after_stop_) {
+        playback_hardware_ = PlaybackHardwareState::StopPending;
+      }
+      portEXIT_CRITICAL(&mux_);
+      return ESP_OK;
+    }
     const esp_err_t stopped = device.endPlayback();
     portENTER_CRITICAL(&mux_);
-    playback_hardware_ = stopped == ESP_OK ? PlaybackHardwareState::Idle
-                                           : PlaybackHardwareState::Fault;
-    if (stopped != ESP_OK) ++diagnostics_.playback_hardware_failures;
-    if (stopped == ESP_OK) playback_hardware_generation_ = 0;
+    if (playback_hardware_ == PlaybackHardwareState::Stopping) {
+      if (stopped != ESP_OK) {
+        if (playback_hardware_generation_ != 0)
+          core_->cancelPlayback(playback_hardware_generation_);
+        playback_hardware_ = PlaybackHardwareState::Fault;
+        ++diagnostics_.playback_hardware_failures;
+      } else if (playback_restart_after_stop_) {
+        playback_hardware_ = PlaybackHardwareState::StartPending;
+      } else {
+        playback_hardware_ = PlaybackHardwareState::Idle;
+        playback_hardware_generation_ = 0;
+      }
+      playback_drained_since_us_ = 0;
+      playback_restart_after_stop_ = false;
+    }
     portEXIT_CRITICAL(&mux_);
     return stopped;
   }
@@ -229,6 +326,14 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
   if (pump_bytes == 0) return ESP_ERR_INVALID_ARG;
   PcmTransfer transfer;
   portENTER_CRITICAL(&mux_);
+  // Network may install a new-format generation after the Active snapshot but
+  // before this pop. Never drain that new ring with the old sample-rate/channel
+  // snapshot; the StopPending path will tear down and restart first.
+  if (playback_hardware_generation_ != generation ||
+      playback_hardware_ != PlaybackHardwareState::Active) {
+    portEXIT_CRITICAL(&mux_);
+    return ESP_OK;
+  }
   transfer = core_->popPlayback(bytes.data(), pump_bytes);
   portEXIT_CRITICAL(&mux_);
   if (transfer.bytes != 0) {
@@ -236,17 +341,34 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
         device.writePlayback(bytes.data(), transfer.bytes, 20);
     if (written != ESP_OK) {
       portENTER_CRITICAL(&mux_);
-      core_->cancelPlayback(generation);
+      // In the write's unlocked window, Network may already have installed a
+      // new-format generation and requested teardown. A hardware write failure
+      // invalidates that queued generation too; leaving it Open behind an abort
+      // would poison the next beginPlayback().
+      if (playback_hardware_generation_ != 0)
+        core_->cancelPlayback(playback_hardware_generation_);
       playback_hardware_ = PlaybackHardwareState::AbortPending;
+      playback_restart_after_stop_ = false;
       ++diagnostics_.playback_hardware_failures;
       portEXIT_CRITICAL(&mux_);
       return written;
     }
   }
+  const bool hardware_drained = device.playbackDrained();
+  const int64_t now_us = hardware_drained ? esp_timer_get_time() : 0;
   portENTER_CRITICAL(&mux_);
-  if (core_->playbackComplete() && device.playbackDrained() &&
-      playback_hardware_ == PlaybackHardwareState::Active)
-    playback_hardware_ = PlaybackHardwareState::StopPending;
+  if (playback_hardware_generation_ == generation &&
+      playback_hardware_ == PlaybackHardwareState::Active &&
+      core_->playbackComplete() && hardware_drained) {
+    if (playback_drained_since_us_ == 0) {
+      playback_drained_since_us_ = now_us;
+    } else if (now_us - playback_drained_since_us_ >=
+               kPlaybackContinuationGraceUs) {
+      playback_hardware_ = PlaybackHardwareState::StopPending;
+    }
+  } else {
+    playback_drained_since_us_ = 0;
+  }
   portEXIT_CRITICAL(&mux_);
   return ESP_OK;
 }

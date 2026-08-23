@@ -40,6 +40,8 @@ class AudioPlaybackFlow final {
   explicit AudioPlaybackFlow(PcmBackpressureRing& ring) : ring_(ring) {}
 
   uint32_t begin(uint32_t sample_rate_hz, uint8_t channels);
+  uint32_t resume(uint32_t generation, uint32_t sample_rate_hz,
+                  uint8_t channels);
   PcmTransfer accept(uint32_t generation, const uint8_t* bytes, size_t length);
   PcmTransfer drain(uint8_t* output, size_t maximum_bytes);
   PcmTransfer finish(uint32_t generation);

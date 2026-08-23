@@ -102,6 +102,37 @@ bool stringField(const std::string& json, const std::string& key,
          readStringAt(json, position, output);
 }
 
+bool topLevelStringField(const std::string& json, const std::string& key,
+                         std::string& output) {
+  const std::string needle = "\"" + key + "\"";
+  bool inString = false;
+  bool escaped = false;
+  int objectDepth = 0;
+  for (size_t index = 0; index < json.size(); ++index) {
+    const char ch = json[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch == '\\') escaped = true;
+      else if (ch == '"') inString = false;
+      continue;
+    }
+    if (ch == '{') {
+      ++objectDepth;
+    } else if (ch == '}') {
+      --objectDepth;
+    } else if (ch == '"') {
+      if (objectDepth == 1 && json.compare(index, needle.size(), needle) == 0) {
+        const size_t separator = skipSpace(json, index + needle.size());
+        if (separator < json.size() && json[separator] == ':') {
+          return readStringAt(json, skipSpace(json, separator + 1), output);
+        }
+      }
+      inString = true;
+    }
+  }
+  return false;
+}
+
 bool boolField(const std::string& json, const std::string& key, bool& output,
                size_t begin = 0) {
   size_t position = 0;
@@ -205,6 +236,18 @@ bool validContractErrorCode(const std::string& value) {
   return true;
 }
 
+bool validErrorDiagnostic(const std::string& value) {
+  if (value.empty() || value.size() > 256) return false;
+  for (size_t index = 0; index < value.size(); ++index) {
+    const unsigned char ch = static_cast<unsigned char>(value[index]);
+    // Error diagnostics are surfaced in the local UI/log. Reject control
+    // characters rather than allowing an upstream body to forge log lines or
+    // terminal escapes. UTF-8 bytes and ordinary punctuation remain intact.
+    if (ch < 0x20 || ch == 0x7f) return false;
+  }
+  return true;
+}
+
 void appendIdentity(std::ostringstream& body, const std::string& deviceId,
                     const std::string& fingerprint) {
   body << "\"device_id\":" << quote(deviceId)
@@ -285,6 +328,39 @@ std::string CanonicalJsonCodec::parseErrorCode(const std::string& body) const {
   }
   if (stringField(body, "code", error) && validContractErrorCode(error))
     return error;
+  return std::string();
+}
+
+std::string CanonicalJsonCodec::parseErrorDiagnostic(
+    const std::string& body) const {
+  // Match the public Flutter client's precedence while keeping the embedded
+  // diagnostic bounded and free of controls. We intentionally never fall
+  // back to the raw body: it can be arbitrarily large or contain credentials.
+  if (body.empty() || body.size() > 4096) return std::string();
+  std::string value;
+  if (topLevelStringField(body, "message", value) &&
+      validErrorDiagnostic(value))
+    return value;
+
+  size_t nestedBegin = 0, nestedEnd = 0;
+  if (rangeForValue(body, "error", '{', '}', nestedBegin, nestedEnd)) {
+    const std::string nested = body.substr(nestedBegin,
+                                           nestedEnd - nestedBegin);
+    if (stringField(nested, "message", value) &&
+        validErrorDiagnostic(value)) {
+      return value;
+    }
+    if (stringField(nested, "detail", value) &&
+        validErrorDiagnostic(value)) {
+      return value;
+    }
+  }
+  if (topLevelStringField(body, "detail", value) &&
+      validErrorDiagnostic(value))
+    return value;
+  if (topLevelStringField(body, "error", value) &&
+      validErrorDiagnostic(value))
+    return value;
   return std::string();
 }
 

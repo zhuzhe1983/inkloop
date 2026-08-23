@@ -43,6 +43,15 @@ struct LegacyFileCandidateSummary {
   std::uint64_t byte_count = 0U;
   std::array<std::uint8_t, 32> sha256{};
   bool digest_present = false;
+  // Parsed logical records: task count for Tasks, asset-entry count for Album.
+  // This is safe recovery metadata only; no record contents or paths escape.
+  std::uint32_t item_count = 0U;
+  bool item_count_present = false;
+  // Filesystem mtime, exposed only when it is a positive 32-bit Unix time.
+  // FAT timestamps can be coarse or unavailable, so this is a hint and never
+  // participates in automatic selection (there is no automatic selection).
+  std::uint32_t modified_unix_seconds = 0U;
+  bool modified_time_present = false;
 };
 
 enum class LegacyFileTransactionProbe : std::uint8_t {

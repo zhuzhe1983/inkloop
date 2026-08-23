@@ -294,10 +294,9 @@ test("ported core is independent from Arduino and gateway probing is one bounded
 
 test("unchanged portable contracts and voice state machines match their audited source", () => {
   const pairs = [
-    ["firmware/m5-papercolor/lib/InkloopMyAi/src/MyAiTypes.h",
-     "firmware/inkloop-idf/components/inkloop_myai/include/inkloop/myai/MyAiTypes.h"],
     // Native MyAI contracts intentionally diverge from the frozen Arduino
-    // client after the 2026-08-23 probe_token/gateway_token data-plane split.
+    // client after the 2026-08-23 probe_token/gateway_token data-plane split
+    // and the 2026-08-24 Qwen3 24 kHz TTS output-rate correction.
     ["firmware/m5-papercolor/lib/InkloopVoice/src/VoiceTypes.h",
      "firmware/inkloop-idf/components/inkloop_voice/include/inkloop/voice/VoiceTypes.h"],
     ["firmware/m5-papercolor/lib/InkloopVoice/src/VoiceAdapters.h",

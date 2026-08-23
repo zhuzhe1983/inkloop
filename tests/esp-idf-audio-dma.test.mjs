@@ -166,6 +166,8 @@ test("local prompts and TTS use scheduler-sized frames and drain DMA tails", () 
   assert.match(bridge, /size_t playbackPumpBytes/);
   assert.match(bridge, /\(sample_rate_hz \+ 99U\) \/ 100U/);
   assert.match(bridge, /device\.playbackDrained\(\)/);
+  assert.match(bridge, /core_->resumePlayback/);
+  assert.match(bridge, /playback_drained_since_us_/);
   assert.match(prompt, /kPlaybackChunkBytes = 320U/);
   assert.match(prompt, /requestVolumePreview/);
   assert.match(prompt, /kPreviewToneSamples = 4800U/);

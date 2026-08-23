@@ -58,6 +58,26 @@ uint32_t AudioPlaybackFlow::begin(uint32_t sample_rate_hz, uint8_t channels) {
   return generation_;
 }
 
+uint32_t AudioPlaybackFlow::resume(uint32_t generation,
+                                   uint32_t sample_rate_hz,
+                                   uint8_t channels) {
+  if ((state_ != AudioFlowState::Draining &&
+       state_ != AudioFlowState::Complete) ||
+      generation == 0 || generation != generation_ ||
+      sample_rate_hz != sample_rate_hz_ || channels != channels_ ||
+      accepted_bytes_ >= byte_limit_) {
+    return 0;
+  }
+  const PcmTransfer resumed = ring_.resumeIngress(generation);
+  if (resumed.signal != PcmFlowSignal::Continue &&
+      resumed.signal != PcmFlowSignal::PauseIngress) {
+    return 0;
+  }
+  empty_observed_ = false;
+  state_ = AudioFlowState::Receiving;
+  return generation_;
+}
+
 PcmTransfer AudioPlaybackFlow::accept(uint32_t generation,
                                       const uint8_t* bytes, size_t length) {
   if (state_ != AudioFlowState::Receiving) return reject(PcmFlowSignal::Closed);

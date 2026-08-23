@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
+#include <limits>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -68,7 +69,10 @@ bool legacyFileCandidateEqual(const LegacyFileCandidateSummary& left,
                               const LegacyFileCandidateSummary& right) {
   return left.probe == right.probe && left.byte_count == right.byte_count &&
       left.digest_present == right.digest_present &&
-      left.sha256 == right.sha256;
+      left.sha256 == right.sha256 && left.item_count == right.item_count &&
+      left.item_count_present == right.item_count_present &&
+      left.modified_unix_seconds == right.modified_unix_seconds &&
+      left.modified_time_present == right.modified_time_present;
 }
 
 bool legacyFileTransactionSnapshotEqual(
@@ -172,6 +176,13 @@ PosixLegacyFileTransactionRecovery::readCandidate(
           static_cast<std::uint64_t>(opened_status.st_size);
     return output;
   }
+  if (opened_status.st_mtime > 0 &&
+      static_cast<std::uint64_t>(opened_status.st_mtime) <=
+          std::numeric_limits<std::uint32_t>::max()) {
+    output.modified_unix_seconds =
+        static_cast<std::uint32_t>(opened_status.st_mtime);
+    output.modified_time_present = true;
+  }
   std::string bytes(static_cast<std::size_t>(opened_status.st_size), '\0');
   Sha256 hash;
   std::size_t at = 0U;
@@ -204,9 +215,19 @@ PosixLegacyFileTransactionRecovery::readCandidate(
   if (target.domain == LegacyFileTransactionDomain::Tasks) {
     std::vector<InkloopTaskRecord> tasks;
     parsed = PosixTaskStore::decodeManifest(bytes, tasks);
+    if (parsed &&
+        tasks.size() <= std::numeric_limits<std::uint32_t>::max()) {
+      output.item_count = static_cast<std::uint32_t>(tasks.size());
+      output.item_count_present = true;
+    }
   } else {
     AlbumIndex index;
     parsed = parseAlbumIndex(bytes, index) == AlbumIndexCode::Ok;
+    if (parsed &&
+        index.assets.size() <= std::numeric_limits<std::uint32_t>::max()) {
+      output.item_count = static_cast<std::uint32_t>(index.assets.size());
+      output.item_count_present = true;
+    }
   }
   std::fill(bytes.begin(), bytes.end(), '\0');
   output.probe = parsed ? LegacyFileCandidateProbe::Valid

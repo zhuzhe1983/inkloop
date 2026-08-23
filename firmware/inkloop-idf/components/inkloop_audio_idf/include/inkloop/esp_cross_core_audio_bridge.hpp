@@ -80,6 +80,7 @@ class EspCrossCoreAudioBridge final : public myai::IAudioSink {
     Starting,
     Active,
     StopPending,
+    Stopping,
     AbortPending,
     Fault,
   };
@@ -96,6 +97,8 @@ class EspCrossCoreAudioBridge final : public myai::IAudioSink {
   uint32_t playback_hardware_generation_ = 0;
   uint32_t playback_sample_rate_hz_ = 0;
   uint8_t playback_channels_ = 0;
+  int64_t playback_drained_since_us_ = 0;
+  bool playback_restart_after_stop_ = false;
   uint32_t capture_generation_ = 0;
   bool capture_stop_sent_ = false;
   CrossCoreAudioDiagnostics diagnostics_{};

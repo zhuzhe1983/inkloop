@@ -113,6 +113,7 @@ struct Http final : IHttpTransport {
   int disconnects = 0;
   int pairingErrorStatus = 0;
   std::string pairingErrorCode;
+  std::string pairingErrorMessage;
 
   explicit Http(HttpMode value) : mode(value) {}
 
@@ -124,7 +125,9 @@ struct Http final : IHttpTransport {
       assert(request.body.find("pairing-secret") != std::string::npos);
       if (mode == HttpMode::PairError) {
         response.status = pairingErrorStatus;
-        response.body = "{\"error\":\"" + pairingErrorCode + "\"}";
+        response.body = "{\"error\":{\"code\":\"" + pairingErrorCode +
+                        "\",\"message\":\"" + pairingErrorMessage +
+                        "\"}}";
       } else {
         response.body =
             "{\"device_id\":\"123456\",\"app_id\":\"inkloop\","
@@ -276,13 +279,20 @@ struct Audio final : IAudioSink {
   int writes = 0;
   int ends = 0;
   int aborts = 0;
+  std::vector<uint32_t> rates;
+  std::vector<uint8_t> channelsSeen;
+  std::vector<uint8_t> played;
+  std::vector<size_t> writeSizes;
   Status begin(uint32_t rate, uint8_t channels) override {
-    assert(rate == 24000 && channels == 1);
+    rates.push_back(rate);
+    channelsSeen.push_back(channels);
     ++begins;
     return Status::success();
   }
   Status write(const uint8_t* bytes, size_t length) override {
-    assert(bytes && length == 4);
+    assert(bytes && length != 0 && (length & 1U) == 0);
+    played.insert(played.end(), bytes, bytes + length);
+    writeSizes.push_back(length);
     ++writes;
     return Status::success();
   }
@@ -301,6 +311,7 @@ struct Events final : IMyAiEvents {
   int finalAsr = 0;
   int partialAssistant = 0;
   int finalAssistant = 0;
+  int errors = 0;
   void onActivationState(ActivationState, const Status&) override {}
   void onPairingReady(const PairingView&) override {}
   void onVoiceState(VoiceState) override {}
@@ -315,7 +326,7 @@ struct Events final : IMyAiEvents {
   void onLocalCommand(const std::string&, const std::string&) override {}
   void onVoiceAction(const VoiceEvent&) override {}
   void onAigcState(AigcState, const std::string&) override {}
-  void onError(const Status&) override {}
+  void onError(const Status&) override { ++errors; }
 };
 
 struct Sink final : IImageSink {
@@ -366,6 +377,7 @@ void checkPairingDiagnostic(int httpStatus, const char* error,
   Http http(HttpMode::PairError);
   http.pairingErrorStatus = httpStatus;
   http.pairingErrorCode = error;
+  http.pairingErrorMessage = "Center diagnostic preserved";
   WebSocket socket;
   MyAiClient client(config(), http, probes, socket, output, security, store,
                     codec, clock, audio, local, events);
@@ -374,10 +386,27 @@ void checkPairingDiagnostic(int httpStatus, const char* error,
   const Status status = client.pollPairing(bound);
   assert(status.code == expected && status.httpStatus == httpStatus);
   assert(status.detail.find(error) != std::string::npos);
+  assert(status.detail.find("message=Center diagnostic preserved") !=
+         std::string::npos);
 }
 
 int main() {
   CanonicalJsonCodec codec("contract-test");
+  assert(codec.parseErrorDiagnostic(
+      "{\"error\":{\"code\":\"subscription_required\","
+      "\"message\":\"Activate this device in MyAI\"}}") ==
+      "Activate this device in MyAI");
+  assert(codec.parseErrorDiagnostic(
+      "{\"code\":\"unauthorized\",\"detail\":\"credential revoked\"}") ==
+      "credential revoked");
+  assert(codec.parseErrorDiagnostic(
+      "{\"error\":{\"message\":\"nested fallback\"},"
+      "\"message\":\"top-level first\"}") == "top-level first");
+  assert(codec.parseErrorDiagnostic(
+      "{\"message\":\"forged\\nline\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"message\":\"") + std::string(257, 'x') +
+      "\"}").empty());
   Security security;
   Clock clock;
   Probes probes;
@@ -447,15 +476,69 @@ int main() {
     client.onWebSocketText("{\"type\":\"asr.final\",\"payload\":{\"text\":\"hello\"}}");
     client.onWebSocketText("{\"type\":\"llm.delta\",\"payload\":{\"text\":\"world\"}}");
     client.onWebSocketText("{\"type\":\"llm.done\",\"payload\":{\"text\":\"world\"}}");
-    client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":24000,\"channels\":1}}");
+    // sample_rate_hz is authoritative. There is no provider/model field with
+    // which a client could safely distinguish true 16 kHz from Qwen3 audio.
+    client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"channels\":1}}");
+    assert(voiceAudio.begins == 0 && voiceEvents.errors == 1);
+    client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":16000,\"channels\":1}}");
     const uint8_t downlink[] = {3, 0, 4, 0};
+    // WebSocket message boundaries are not PCM frame boundaries. Preserve one
+    // partial sample between callbacks and emit the exact original byte stream.
+    client.onWebSocketBinary(downlink, 1);
+    client.onWebSocketBinary(downlink + 1, 2);
+    client.onWebSocketBinary(downlink + 3, 1);
+    client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
+    client.onWebSocketText("{\"type\":\"response.done\",\"payload\":{}}");
+    assert(client.voiceState() == VoiceState::Ready);
+    assert(!client.voiceResponseCompletionDue(true));
+
+    // A normal adjacent segment arriving inside the post-playback idle grace
+    // cancels fallback completion and remains Speaking.
+    client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":24000,\"channels\":1}}");
+    client.onWebSocketBinary(downlink, sizeof(downlink));
+    client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
+    clock.now = 10000;
+    assert(!client.voiceResponseCompletionDue(true));
+    clock.now += 1499;
+    assert(!client.voiceResponseCompletionDue(true));
+    assert(client.completeVoiceResponseAfterTtsStop().code ==
+           ErrorCode::InvalidState);
+    client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":24000,\"channels\":1}}");
+    assert(client.voiceState() == VoiceState::Speaking);
+    assert(!client.voiceResponseCompletionDue(true));
     client.onWebSocketBinary(downlink, sizeof(downlink));
     client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
     client.onWebSocketText("{\"type\":\"response.done\",\"payload\":{}}");
+    assert(client.voiceState() == VoiceState::Ready);
+
+    // If response.done never arrives, the Network owner can close Speaking in
+    // bounded time, but the 1.5 s grace starts only once playback is truly idle.
+    client.onWebSocketText("{\"type\":\"tts.start\",\"payload\":{\"sample_rate_hz\":16000,\"channels\":1}}");
+    client.onWebSocketBinary(downlink, sizeof(downlink));
+    client.onWebSocketText("{\"type\":\"tts.stop\",\"payload\":{}}");
+    clock.now = 30000;
+    assert(!client.voiceResponseCompletionDue(false));
+    clock.now = 60000;
+    assert(!client.voiceResponseCompletionDue(false));
+    assert(!client.voiceResponseCompletionDue(true));
+    clock.now += 1499;
+    assert(!client.voiceResponseCompletionDue(true));
+    clock.now += 1;
+    assert(client.voiceResponseCompletionDue(true));
+    assert(client.completeVoiceResponseAfterTtsStop().ok());
+    assert(client.voiceState() == VoiceState::Ready);
+
     assert(voiceEvents.partialAsr == 1 && voiceEvents.finalAsr == 1);
     assert(voiceEvents.partialAssistant == 1 && voiceEvents.finalAssistant == 1);
-    assert(voiceAudio.begins == 1 && voiceAudio.writes == 1 &&
-           voiceAudio.ends == 1);
+    assert(voiceAudio.rates ==
+           std::vector<uint32_t>({16000, 24000, 24000, 16000}));
+    assert(voiceAudio.channelsSeen ==
+           std::vector<uint8_t>({1, 1, 1, 1}));
+    assert(voiceAudio.ends == 4);
+    assert(voiceAudio.writeSizes[0] == 2 && voiceAudio.writeSizes[1] == 2);
+    assert(std::vector<uint8_t>(voiceAudio.played.begin(),
+                                voiceAudio.played.begin() + 4) ==
+           std::vector<uint8_t>(downlink, downlink + sizeof(downlink)));
     assert(client.disconnectVoice("cancel_generation").ok());
     const int writesBeforeStale = voiceAudio.writes;
     client.onWebSocketBinary(downlink, sizeof(downlink));
@@ -542,6 +625,9 @@ test("native product keeps AIGC cadence, diagnostics and button ACK bounded", ()
   assert.match(aigc, /next_aigc_poll_ms_ = now \+ kAigcPollMs/);
   assert.match(aigc, /AigcAlbumSink[\s\S]*downloadImage/);
   assert.match(aigc, /safeAigcFailureState\(status\)/);
+  assert.match(source, /voiceResponseCompletionDue\([\s\S]*playbackComplete/);
+  assert.ok(source.indexOf("wss_.pollIngress") <
+            source.indexOf("voiceResponseCompletionDue"));
   assert.match(source, /bool explicitImageIntent\(/);
   assert.match(
     source,

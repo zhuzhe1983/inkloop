@@ -3,11 +3,14 @@
 #include "GatewayProbeContract.h"
 
 #include <algorithm>
+#include <cstring>
 #include <sstream>
 
 namespace inkloop {
 namespace myai {
 namespace {
+
+constexpr uint64_t kVoiceTtsCompletionGraceMs = 1500U;
 
 bool successfulHttp(int status) { return status >= 200 && status < 300; }
 
@@ -72,13 +75,16 @@ void applyGatewayTransportPolicy(HttpRequest& request) {
 }
 
 std::string httpFailureDetail(const char* summary, int httpStatus,
-                              const std::string& error) {
+                              const std::string& error,
+                              const std::string& diagnostic) {
   std::ostringstream detail;
   detail << summary << " (HTTP " << httpStatus;
-  // parseErrorCode() already rejects control characters and caps this value
-  // at 128 bytes. Preserve the Center contract error for field diagnostics
-  // without ever logging a token-bearing response body.
+  // The codec independently bounds and sanitizes both fields. Preserve the
+  // stable contract code and the service's actionable message without ever
+  // logging a token-bearing raw response body.
   if (!error.empty()) detail << ", error=" << error;
+  if (!diagnostic.empty() && diagnostic != error)
+    detail << ", message=" << diagnostic;
   detail << ")";
   return detail.str();
 }
@@ -159,6 +165,9 @@ MyAiClient::MyAiClient(
       activationState_(ActivationState::Unconfigured),
       voiceState_(VoiceState::Idle), aigcState_(AigcState::Idle), voiceLastSeq_(0),
       voiceReconnectAttempts_(0), voiceSocketOpen_(false), voiceClosing_(false),
+      voiceTtsFrameBytes_(0), voiceTtsCarry_{0, 0, 0, 0},
+      voiceTtsCarryBytes_(0), voiceTtsCompletionPending_(false),
+      voiceTtsIdleObserved_(false), voiceTtsIdleSinceMs_(0),
       credentialHealthy_(false), initialized_(false) {}
 
 MyAiClient::~MyAiClient() {
@@ -744,18 +753,43 @@ Status MyAiClient::disconnectVoice(const std::string& reason) {
   voiceSocketOpen_ = false;
   voiceStreamId_.clear();
   audio_.abort();
+  resetVoiceTtsTracking();
   Status status = disconnectLease(voiceLease_, reason);
   setVoice(VoiceState::Idle);
   return status;
+}
+
+bool MyAiClient::voiceResponseCompletionDue(bool playbackComplete) {
+  if (!voiceSocketOpen_ || voiceState_ != VoiceState::Speaking ||
+      !voiceTtsCompletionPending_) {
+    return false;
+  }
+  if (!playbackComplete) {
+    voiceTtsIdleObserved_ = false;
+    voiceTtsIdleSinceMs_ = 0;
+    return false;
+  }
+  const uint64_t now = clock_.monotonicMs();
+  if (!voiceTtsIdleObserved_) {
+    voiceTtsIdleObserved_ = true;
+    voiceTtsIdleSinceMs_ = now;
+    return false;
+  }
+  return now - voiceTtsIdleSinceMs_ >= kVoiceTtsCompletionGraceMs;
 }
 
 Status MyAiClient::completeVoiceResponseAfterTtsStop() {
   if (!voiceSocketOpen_)
     return Status(ErrorCode::InvalidState, 0, "voice socket is not open");
   if (voiceState_ == VoiceState::Ready) return Status::success();
-  if (voiceState_ != VoiceState::Speaking)
+  if (voiceState_ != VoiceState::Speaking ||
+      !voiceTtsCompletionPending_ || !voiceTtsIdleObserved_ ||
+      clock_.monotonicMs() - voiceTtsIdleSinceMs_ <
+          kVoiceTtsCompletionGraceMs) {
     return Status(ErrorCode::InvalidState, 0,
                   "voice response is not awaiting completion");
+  }
+  resetVoiceTtsTracking();
   setVoice(VoiceState::Ready);
   return Status::success();
 }
@@ -1026,11 +1060,13 @@ Status MyAiClient::classifyHttp(const HttpResponse& response,
                                 RequestKind kind) {
   const int httpStatus = response.status;
   const std::string error = codec_.parseErrorCode(response.body);
+  const std::string diagnostic = codec_.parseErrorDiagnostic(response.body);
   Status status;
   if (httpStatus == 401) {
     status = Status(
         ErrorCode::Unauthorized, 401,
-        httpFailureDetail("MyAI authorization rejected", 401, error));
+        httpFailureDetail("MyAI authorization rejected", 401, error,
+                          diagnostic));
     if (kind == RequestKind::PairingStatus) {
       Status cleared = clearPendingFailClosed();
       if (!cleared.ok()) return cleared;
@@ -1050,12 +1086,13 @@ Status MyAiClient::classifyHttp(const HttpResponse& response,
       status = Status(
           ErrorCode::Unauthorized, 401,
           httpFailureDetail("MyAI gateway session expired; reselect required",
-                            401, error));
+                            401, error, diagnostic));
     }
   } else if (httpStatus == 402) {
     status = Status(
         ErrorCode::PaymentRequired, 402,
-        httpFailureDetail("MyAI activation/payment required", 402, error));
+        httpFailureDetail("MyAI activation/payment required", 402, error,
+                          diagnostic));
     setActivation(ActivationState::PaymentRequired, status);
   } else if (httpStatus == 409 &&
              (kind == RequestKind::PairingStatus ||
@@ -1066,14 +1103,15 @@ Status MyAiClient::classifyHttp(const HttpResponse& response,
     status = Status(
         ErrorCode::RecoveryRequired, 409,
         httpFailureDetail("MyAI device credential recovery required", 409,
-                          error));
+                          error, diagnostic));
     setActivation(ActivationState::RecoveryRequired, status);
   } else if (httpStatus == 410 && kind == RequestKind::PairingStatus &&
              error == "pairing_expired") {
     Status cleared = clearPendingFailClosed();
     if (!cleared.ok()) return cleared;
     status = Status(ErrorCode::PairingExpired, 410,
-                    httpFailureDetail("MyAI pairing expired", 410, error));
+                    httpFailureDetail("MyAI pairing expired", 410, error,
+                                      diagnostic));
     setActivation(ActivationState::Unconfigured, status);
   } else if (httpStatus == 400 && kind == RequestKind::PairingStart &&
              error == "invalid_input") {
@@ -1110,6 +1148,22 @@ void MyAiClient::setAigc(AigcState state, const std::string& detail) {
   events_.onAigcState(state, detail);
 }
 
+void MyAiClient::resetVoiceTtsTracking() {
+  voiceTtsFrameBytes_ = 0;
+  voiceTtsCarryBytes_ = 0;
+  std::memset(voiceTtsCarry_, 0, sizeof(voiceTtsCarry_));
+  voiceTtsCompletionPending_ = false;
+  voiceTtsIdleObserved_ = false;
+  voiceTtsIdleSinceMs_ = 0;
+}
+
+void MyAiClient::failVoiceTtsAudio(const Status& status) {
+  audio_.abort();
+  resetVoiceTtsTracking();
+  setVoice(VoiceState::Error);
+  events_.onError(status);
+}
+
 std::string MyAiClient::voiceWebSocketUrl(const GatewayLease& lease) const {
   std::string url = lease.gatewayBaseUrl;
   if (url.compare(0, 8, "https://") == 0) url.replace(0, 8, "wss://");
@@ -1123,6 +1177,7 @@ std::string MyAiClient::voiceWebSocketUrl(const GatewayLease& lease) const {
 
 void MyAiClient::onWebSocketOpen() {
   voiceSocketOpen_ = true;
+  resetVoiceTtsTracking();
   Status status = webSocket_.sendText(codec_.sessionUpdateMessage(
       voiceLease_, credentials_.deviceId, config_.systemPrompt));
   if (!status.ok()) {
@@ -1140,6 +1195,7 @@ void MyAiClient::onWebSocketText(const std::string& message) {
   }
   if (event.type == "session.ready") {
     voiceReconnectAttempts_ = 0;
+    resetVoiceTtsTracking();
     setVoice(VoiceState::Ready);
   } else if (event.type == "vad.state") {
     // VAD is advisory; button ownership remains local and half duplex.
@@ -1163,27 +1219,58 @@ void MyAiClient::onWebSocketText(const std::string& message) {
     }
   } else if (event.type == "llm.delta") {
     events_.onAssistantText(event.text, false);
+    voiceTtsIdleObserved_ = false;
+    voiceTtsIdleSinceMs_ = 0;
   } else if (event.type == "llm.done") {
     events_.onAssistantText(event.text, true);
+    voiceTtsIdleObserved_ = false;
+    voiceTtsIdleSinceMs_ = 0;
   } else if (event.type == "tts.start") {
-    status = audio_.begin(event.sampleRateHz ? event.sampleRateHz
-                                            : kVoiceSampleRateHz,
-                          event.channels ? event.channels : kVoiceChannels);
-    if (!status.ok()) events_.onError(status);
-    else setVoice(VoiceState::Speaking);
+    // The wire contract has no model/provider discriminator. A declared 16 kHz
+    // stream may therefore be genuine and must not be rewritten to Qwen3's
+    // 24 kHz format. Missing rates are protocol-invalid: guessing would either
+    // stretch real 24 kHz audio or accelerate real 16 kHz audio.
+    if (event.sampleRateHz == 0) {
+      events_.onError(Status(ErrorCode::Protocol, 0,
+                             "tts.start missing sample_rate_hz"));
+      return;
+    }
+    const uint8_t playbackChannels =
+        event.channels ? event.channels : kVoiceChannels;
+    status = audio_.begin(event.sampleRateHz, playbackChannels);
+    if (!status.ok()) {
+      events_.onError(status);
+    } else {
+      resetVoiceTtsTracking();
+      voiceTtsFrameBytes_ = static_cast<uint8_t>(playbackChannels * 2U);
+      setVoice(VoiceState::Speaking);
+    }
   } else if (event.type == "tts.stop") {
+    if (voiceTtsCarryBytes_ != 0) {
+      failVoiceTtsAudio(Status(ErrorCode::Protocol, 0,
+                               "tts PCM ended on a partial sample frame"));
+      return;
+    }
     status = audio_.end();
-    if (!status.ok()) events_.onError(status);
+    if (!status.ok()) {
+      events_.onError(status);
+    } else {
+      voiceTtsCompletionPending_ = true;
+      voiceTtsIdleObserved_ = false;
+      voiceTtsIdleSinceMs_ = 0;
+    }
   } else if (event.type == "response.done") {
     // Some compatible gateways omit llm.done but include the final text on
     // response.done. The application owns de-duplication when both arrive.
     if (!event.text.empty()) events_.onAssistantText(event.text, true);
+    resetVoiceTtsTracking();
     setVoice(VoiceState::Ready);
   } else if (event.type == "action.execute") {
     events_.onVoiceAction(event);
   } else if (event.type == "error") {
     status = Status(ErrorCode::Protocol, 0,
                     event.code.empty() ? event.message : event.code);
+    resetVoiceTtsTracking();
     setVoice(VoiceState::Error);
     events_.onError(status);
   }
@@ -1191,17 +1278,50 @@ void MyAiClient::onWebSocketText(const std::string& message) {
 
 void MyAiClient::onWebSocketBinary(const uint8_t* bytes, size_t length) {
   if (voiceState_ != VoiceState::Speaking || !bytes || length == 0) return;
-  Status status = audio_.write(bytes, length);
-  if (!status.ok()) {
-    audio_.abort();
-    setVoice(VoiceState::Error);
-    events_.onError(status);
+  if (voiceTtsFrameBytes_ == 0 ||
+      voiceTtsFrameBytes_ > sizeof(voiceTtsCarry_)) {
+    failVoiceTtsAudio(Status(ErrorCode::Protocol, 0,
+                             "tts PCM frame format is invalid"));
+    return;
+  }
+
+  size_t offset = 0;
+  if (voiceTtsCarryBytes_ != 0) {
+    const size_t needed = voiceTtsFrameBytes_ - voiceTtsCarryBytes_;
+    const size_t copied = std::min(needed, length);
+    std::memcpy(voiceTtsCarry_ + voiceTtsCarryBytes_, bytes, copied);
+    voiceTtsCarryBytes_ += copied;
+    offset += copied;
+    if (voiceTtsCarryBytes_ == voiceTtsFrameBytes_) {
+      const Status status = audio_.write(voiceTtsCarry_, voiceTtsFrameBytes_);
+      if (!status.ok()) {
+        failVoiceTtsAudio(status);
+        return;
+      }
+      voiceTtsCarryBytes_ = 0;
+    }
+  }
+
+  const size_t remaining = length - offset;
+  const size_t aligned = remaining - (remaining % voiceTtsFrameBytes_);
+  if (aligned != 0) {
+    const Status status = audio_.write(bytes + offset, aligned);
+    if (!status.ok()) {
+      failVoiceTtsAudio(status);
+      return;
+    }
+    offset += aligned;
+  }
+  if (offset != length) {
+    voiceTtsCarryBytes_ = length - offset;
+    std::memcpy(voiceTtsCarry_, bytes + offset, voiceTtsCarryBytes_);
   }
 }
 
 void MyAiClient::onWebSocketClosed(int, const std::string&) {
   voiceSocketOpen_ = false;
   audio_.abort();
+  resetVoiceTtsTracking();
   voiceStreamId_.clear();
   if (voiceClosing_) {
     voiceClosing_ = false;

@@ -34,11 +34,12 @@ uint32_t boundedRetry(uint32_t requested) {
 }  // namespace
 
 NativeInkloopService::NativeInkloopService(
-    RuntimeSupervisor& supervisor, const char* task_root,
+    RuntimeSupervisor& supervisor, const BoardDescriptor& board,
+    const char* task_root,
     storage::PosixAtomicAlbumStore* album_store,
     NativeDisplayService& display)
-    : supervisor_(supervisor), task_root_(task_root), album_store_(album_store),
-      display_(display) {}
+    : supervisor_(supervisor), board_(board), task_root_(task_root),
+      album_store_(album_store), display_(display) {}
 
 uint32_t NativeInkloopService::nowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -67,14 +68,15 @@ uint64_t NativeInkloopService::nextRequestId() {
 }
 
 esp_err_t NativeInkloopService::initialize() {
-  if (initialized_ || !task_root_ || task_root_[0] != '/' || !album_store_ ||
-      !album_store_->pathsValid()) {
+  if (initialized_ || !board_.valid() || !task_root_ ||
+      task_root_[0] != '/' || !album_store_ || !album_store_->pathsValid()) {
     return ESP_ERR_INVALID_STATE;
   }
   task_store_.reset(
       new (std::nothrow) storage::PosixTaskStore(std::string(task_root_)));
   if (!task_store_ || !task_store_->pathsValid()) return ESP_ERR_NO_MEM;
   cloud::InkloopCloudConfig config;
+  config.sku_id = board_.id;
   const esp_app_desc_t* app = esp_app_get_description();
   if (!app || app->version[0] == '\0') return ESP_ERR_INVALID_VERSION;
   config.firmware_version = app->version;

@@ -2054,6 +2054,15 @@ void NativeVoiceService::networkTick(bool wifi_online) {
     scheduleReconnect(client_->suggestedVoiceReconnectDelayMs());
     return;
   }
+  // MyAiClient is Network-owner-only. Observe hardware completion here after
+  // polling ingress so an already-arrived adjacent tts.start cancels the
+  // fallback before its idle grace can elapse.
+  if (client_->voiceResponseCompletionDue(
+          audio_bridge_->playbackComplete())) {
+    const myai::Status completed =
+        client_->completeVoiceResponseAfterTtsStop();
+    if (!completed.ok()) onError(completed);
+  }
   if (audio_bridge_->captureBusy()) {
     NetworkDiagnosticScope operation(
         network_diagnostic_mux_, network_diagnostic_operation_,

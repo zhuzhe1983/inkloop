@@ -34,6 +34,8 @@ class DuplexPcmBridgeCore final {
   bool valid() const;
 
   uint32_t beginPlayback(uint32_t sample_rate_hz, uint8_t channels);
+  uint32_t resumePlayback(uint32_t generation, uint32_t sample_rate_hz,
+                          uint8_t channels);
   PcmTransfer pushPlayback(uint32_t generation, const uint8_t* bytes,
                            size_t length);
   PcmTransfer popPlayback(uint8_t* bytes, size_t maximum);

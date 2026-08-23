@@ -53,6 +53,19 @@ uint32_t DuplexPcmBridgeCore::beginPlayback(uint32_t sample_rate_hz,
   return generation;
 }
 
+uint32_t DuplexPcmBridgeCore::resumePlayback(uint32_t generation,
+                                             uint32_t sample_rate_hz,
+                                             uint8_t channels) {
+  if (!valid() || (playback_state_ != DuplexStreamState::Draining &&
+                   playback_state_ != DuplexStreamState::Complete)) {
+    return 0;
+  }
+  const uint32_t resumed =
+      playback_.resume(generation, sample_rate_hz, channels);
+  if (resumed != 0) playback_state_ = playbackStateFor(playback_.state());
+  return resumed;
+}
+
 PcmTransfer DuplexPcmBridgeCore::pushPlayback(uint32_t generation,
                                               const uint8_t* bytes,
                                               size_t length) {

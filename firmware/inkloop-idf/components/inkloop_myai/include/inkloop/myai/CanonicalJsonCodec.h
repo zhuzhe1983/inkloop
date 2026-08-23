@@ -22,6 +22,7 @@ class CanonicalJsonCodec final : public IWireCodec {
   Status parsePairingStatus(const std::string& body,
                             PairingStatusResponse& output) const override;
   std::string parseErrorCode(const std::string& body) const override;
+  std::string parseErrorDiagnostic(const std::string& body) const override;
   std::string deviceCheckBody(const std::string& deviceId,
                               const std::string& fingerprint) const override;
   Status parseDeviceCheck(const std::string& body, bool& authorized,

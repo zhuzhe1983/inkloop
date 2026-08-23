@@ -64,11 +64,17 @@ struct Cache final : IRecoveryDiagnosticCache {
 };
 
 void candidate(RecoveryActionCandidate& output, uint8_t digest,
-               uint64_t byte_count) {
+               uint64_t byte_count, bool file_candidate = false) {
   output.state = RecoveryActionCandidateState::Valid;
   output.byte_count = byte_count;
   bytes(digest, output.digest);
   output.digest_present = true;
+  if (file_candidate) {
+    output.item_count = digest;
+    output.item_count_present = true;
+    output.modified_unix_seconds = 1700000000U + digest;
+    output.modified_time_present = true;
+  }
 }
 
 struct Owner final : IRecoveryActionOwner {
@@ -100,9 +106,9 @@ struct Owner final : IRecoveryActionOwner {
     tasks.domain = RecoveryActionDomain::Tasks;
     tasks.backend = RecoveryActionBackend::None;
     tasks.state = RecoveryActionState::ChoiceRequired;
-    candidate(tasks.candidates[0], 0x21U, 201U);
-    candidate(tasks.candidates[1], 0x22U, 202U);
-    candidate(tasks.candidates[2], 0x23U, 203U);
+    candidate(tasks.candidates[0], 0x21U, 201U, true);
+    candidate(tasks.candidates[1], 0x22U, 202U, true);
+    candidate(tasks.candidates[2], 0x23U, 203U, true);
     bytes(0xa2U, tasks.inspection_id);
     tasks.valid_candidates = 3U;
 
@@ -110,7 +116,7 @@ struct Owner final : IRecoveryActionOwner {
     internal.domain = RecoveryActionDomain::Album;
     internal.backend = RecoveryActionBackend::Internal;
     internal.state = RecoveryActionState::Recoverable;
-    candidate(internal.candidates[1], 0x31U, 301U);
+    candidate(internal.candidates[1], 0x31U, 301U, true);
     bytes(0xa3U, internal.inspection_id);
     internal.valid_candidates = 1U;
 
@@ -257,6 +263,9 @@ int main() {
          std::string::npos);
   assert(inventory.body.find(hex(0x11U)) != std::string::npos);
   assert(inventory.body.find(hex(0xa3U)) != std::string::npos);
+  assert(inventory.body.find("\"items\":33") != std::string::npos);
+  assert(inventory.body.find("\"modifiedAt\":1700000033") !=
+         std::string::npos);
   assert(inventory.body.find("/tasks.json") == std::string::npos);
   assert(inventory.body.find("password") == std::string::npos);
 
@@ -469,6 +478,9 @@ test("browser requires explicit choice and confirmation with display semantics",
   assert.ok(html);
   assert.match(html, /采用目标画面并完成事务/);
   assert.match(html, /保留上一画面并放弃事务/);
+  assert.match(html, /Current 是已提交版本/);
+  assert.match(html, /条目：/);
+  assert.match(html, /更新时间：/);
   assert.match(html, /必须手动选择一项并勾选明确确认/);
   assert.match(
     html,

@@ -36,6 +36,7 @@ class PcmBackpressureRing {
 
   bool valid() const;
   uint32_t beginTurn();
+  PcmTransfer resumeIngress(uint32_t generation);
   PcmTransfer push(uint32_t generation, const uint8_t* bytes, size_t length);
   PcmTransfer pop(uint8_t* output, size_t maximum_bytes);
   PcmTransfer finishIngress(uint32_t generation);

@@ -7,6 +7,7 @@
 
 #include "inkloop/cloud/esp_frame_downloader.hpp"
 #include "inkloop/cloud/esp_nvs_identity_store.hpp"
+#include "inkloop/board.hpp"
 #include "inkloop/inkloop_cloud_client.hpp"
 #include "inkloop/myai/esp_http_adapters.hpp"
 #include "inkloop/native_display_service.hpp"
@@ -40,7 +41,8 @@ struct NativeInkloopDiagnostics {
 // network or filesystem I/O.
 class NativeInkloopService final {
  public:
-  NativeInkloopService(RuntimeSupervisor& supervisor, const char* task_root,
+  NativeInkloopService(RuntimeSupervisor& supervisor,
+                       const BoardDescriptor& board, const char* task_root,
                        storage::PosixAtomicAlbumStore* album_store,
                        NativeDisplayService& display);
 
@@ -110,6 +112,7 @@ class NativeInkloopService final {
   static bool sixDigits(const char* value);
 
   RuntimeSupervisor& supervisor_;
+  const BoardDescriptor& board_;
   const char* task_root_;
   storage::PosixAtomicAlbumStore* album_store_;
   NativeDisplayService& display_;
