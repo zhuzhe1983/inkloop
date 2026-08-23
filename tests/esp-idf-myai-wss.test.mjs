@@ -132,6 +132,8 @@ test("native WS/WSS adapter rejects redirects and checks the connected public pe
   assert.match(source, /result != 0[\s\S]+redirect[\s\S]+Security/);
   assert.match(source, /get_upgrade_request_status\(websocket_\) != 101/);
   assert.match(source, /validateConnectedSocket[\s\S]+esp_transport_get_socket/);
+  assert.match(source, /EspNetworkOperationLease network_lease\(kConnectTimeoutMs\)/);
+  assert.match(source, /network_lease\.acquired\(\)/);
   assert.match(source, /esp_transport_poll_read\(websocket_, 0\)/);
   assert.match(source, /std::array<uint8_t, 2048> chunk/);
   assert.match(source, /currentFrameOffset_/);

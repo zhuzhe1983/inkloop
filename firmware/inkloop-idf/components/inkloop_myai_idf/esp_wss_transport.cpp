@@ -6,6 +6,7 @@
 #include "esp_transport_tcp.h"
 #include "esp_transport_ws.h"
 #include "inkloop/myai/EndpointPolicy.h"
+#include "inkloop/myai/esp_network_operation_gate.hpp"
 
 #include <algorithm>
 #include <array>
@@ -155,6 +156,11 @@ Status EspWssTransport::connect(
   }
   Status status = configure(url, headers);
   if (!status.ok()) return status;
+  EspNetworkOperationLease network_lease(kConnectTimeoutMs);
+  if (!network_lease.acquired()) {
+    releaseTransport();
+    return transportError("MyAI WSS operation gate timed out");
+  }
   const int result = esp_transport_connect(websocket_, host_.c_str(), port_,
                                            kConnectTimeoutMs);
   // esp_transport_ws returns zero only for the exact 101 upgrade. Positive

@@ -798,6 +798,8 @@ test("ESP-IDF adapter keeps slow work outside HTTP handlers", () => {
   assert.match(source, /httpd_resp_send_chunk/);
   assert.match(source, /std::array<uint8_t, kReceiveChunkBytes>/);
   assert.match(source, /retryBusyUntil/);
+  assert.match(header, /http_task_stack_bytes = 8192U/);
+  assert.match(source, /native\.stack_size = config\.http_task_stack_bytes/);
   assert.match(source, /kQueueBackpressureDeadlineUs = 30000000LL/);
   assert.match(header, /tryBegin/);
   assert.match(header, /tryWrite/);
@@ -806,6 +808,15 @@ test("ESP-IDF adapter keeps slow work outside HTTP handlers", () => {
   assert.match(cmake, /inkloop_portal/);
   assert.doesNotMatch(combined, /esp_http_client|MyAiClient|DisplayController|LocalChatLog|AlbumStore/);
   assert.doesNotMatch(source, /std::vector\s*<\s*uint8_t|malloc\s*\(|realloc\s*\(/);
+});
+
+test("Portal state snapshots stay off the constrained HTTP task stack", () => {
+  const stateRender = portalSource.slice(
+    portalSource.indexOf("PortalResponse PortalCore::renderState"),
+    portalSource.indexOf("PortalResponse PortalCore::renderAlbum", portalSource.indexOf("PortalResponse PortalCore::renderState")),
+  );
+  assert.match(stateRender, /new \(std::nothrow\) PortalStateSnapshot/);
+  assert.doesNotMatch(stateRender, /\n\s*PortalStateSnapshot state;/);
 });
 
 test("1.5 MiB fast upload tolerates the bounded slow Portal consumer", () => {

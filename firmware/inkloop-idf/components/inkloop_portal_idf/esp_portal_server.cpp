@@ -383,6 +383,8 @@ struct EspPortalServer::Impl {
     if (server) return ESP_ERR_INVALID_STATE;
     if (!core.ready() || config.port == 0U || config.preview_queue_length == 0U ||
         config.preview_queue_length > 8U ||
+        config.http_task_stack_bytes < 6144U ||
+        config.http_task_stack_bytes > 16384U ||
         config.preview_task_stack_bytes < 4096U ||
         config.preview_task_stack_bytes > 16384U ||
         config.preview_task_priority > static_cast<uint8_t>(configMAX_PRIORITIES - 1)) {
@@ -403,6 +405,7 @@ struct EspPortalServer::Impl {
     }
     httpd_config_t native = HTTPD_DEFAULT_CONFIG();
     native.server_port = config.port;
+    native.stack_size = config.http_task_stack_bytes;
     native.uri_match_fn = httpd_uri_match_wildcard;
     native.max_uri_handlers = std::max(native.max_uri_handlers, static_cast<uint16_t>(4U));
     native.lru_purge_enable = true;

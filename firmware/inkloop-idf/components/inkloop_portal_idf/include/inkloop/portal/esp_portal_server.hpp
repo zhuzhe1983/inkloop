@@ -43,6 +43,10 @@ class IPortalPreviewSource {
 
 struct EspPortalServerConfig {
   uint16_t port = 80U;
+  // PortalCore renders a bounded but rich state document. ESP-IDF's 4 KiB
+  // HTTPD default is too small once the request, response stream and C++
+  // formatter frames coexist, so keep an explicit measured margin here.
+  uint32_t http_task_stack_bytes = 8192U;
   size_t preview_queue_length = 2U;
   uint32_t preview_task_stack_bytes = 6144U;
   uint8_t preview_task_priority = 1U;

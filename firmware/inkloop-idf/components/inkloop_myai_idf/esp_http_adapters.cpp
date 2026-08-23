@@ -5,6 +5,7 @@
 #include "esp_timer.h"
 #include "inkloop/myai/EndpointPolicy.h"
 #include "inkloop/myai/GatewayProbeContract.h"
+#include "inkloop/myai/esp_network_operation_gate.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/netdb.h"
@@ -250,6 +251,12 @@ Status EspHttpTransport::perform(const HttpRequest& request,
   valid = endpointSecurity_.validatePublicEndpoint(request.url);
   if (!valid.ok()) return valid;
 
+  EspNetworkOperationLease network_lease(request.timeoutMs);
+  if (!network_lease.acquired()) {
+    return Status(ErrorCode::Transport, 0,
+                  "MyAI network operation gate timed out");
+  }
+
   HttpEventContext context;
   context.responseBody = &response.body;
   context.maximumResponseBytes = request.maxResponseBytes;
@@ -344,6 +351,11 @@ Status EspGatewayProbeSet::probeConcurrent(
   results.clear();
   Status valid = GatewayProbeContract::validateCandidates(candidates);
   if (!valid.ok()) return valid;
+  EspNetworkOperationLease network_lease(totalDeadlineMs);
+  if (!network_lease.acquired()) {
+    return Status(ErrorCode::Transport, 0,
+                  "MyAI gateway probe gate timed out");
+  }
   valid = validateHeaders(headers);
   if (!valid.ok()) return valid;
   const auto authorization = headers.find("Authorization");

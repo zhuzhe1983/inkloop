@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <memory>
+#include <new>
 #include <sstream>
 #include <utility>
 
@@ -195,7 +197,10 @@ bool validCapabilities(const PortalBoardCapabilities& capabilities) {
 
 PortalResult readCapabilities(const IPortalReadCache& cache,
                               PortalBoardCapabilities& output) {
-  PortalStateSnapshot state;
+  std::unique_ptr<PortalStateSnapshot> allocated(
+      new (std::nothrow) PortalStateSnapshot());
+  if (!allocated) return PortalResult::Unavailable;
+  PortalStateSnapshot& state = *allocated;
   const PortalResult result = cache.readState(state);
   if (result != PortalResult::Ok) return result;
   if (!validCapabilities(state.capabilities)) return PortalResult::InvalidData;
@@ -945,7 +950,10 @@ PortalResponse PortalCore::handleAuthenticated(const PortalRequest& request) {
 }
 
 PortalResponse PortalCore::renderState() {
-  PortalStateSnapshot state;
+  std::unique_ptr<PortalStateSnapshot> allocated(
+      new (std::nothrow) PortalStateSnapshot());
+  if (!allocated) return errorResponse(503, "state_unavailable");
+  PortalStateSnapshot& state = *allocated;
   const PortalResult result = cache_.readState(state);
   if (result != PortalResult::Ok) return resultError(result, "state_invalid");
   if (!validState(state)) return errorResponse(422, "state_invalid");
@@ -1337,7 +1345,11 @@ PortalResponse PortalCore::requestFirmwareUpdate(
   if (!constantTimeEquals(fields[0].second, "install-signed-firmware")) {
     return errorResponse(422, "firmware_update_confirmation_required");
   }
-  PortalStateSnapshot state;
+  std::unique_ptr<PortalStateSnapshot> allocated(
+      new (std::nothrow) PortalStateSnapshot());
+  if (!allocated)
+    return errorResponse(503, "firmware_update_state_unavailable");
+  PortalStateSnapshot& state = *allocated;
   const PortalResult state_result = cache_.readState(state);
   if (state_result != PortalResult::Ok)
     return resultError(state_result, "firmware_update_state_invalid");

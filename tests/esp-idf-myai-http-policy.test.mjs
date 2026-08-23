@@ -110,6 +110,8 @@ test("native MyAI transport isolates TLS Center and public short-token Gateway p
   assert.match(source, /kMaximumResponseBodyBytes/);
   assert.match(source, /context\.responseTooLarge/);
   assert.match(source, /esp_http_client_is_complete_data_received/);
+  assert.match(source, /EspNetworkOperationLease network_lease\(request\.timeoutMs\)/);
+  assert.match(source, /EspNetworkOperationLease network_lease\(totalDeadlineMs\)/);
   assert.match(source, /config\.is_async = true/);
   assert.match(source, /while \(pending > 0\)/);
   assert.match(source, /ESP_ERR_HTTP_EAGAIN/);
