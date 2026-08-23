@@ -107,6 +107,15 @@ int main() {
   assert(policy.admit(TaskLane::Voice, deadline, 0x11U) ==
          AdmissionResult::Expired);
 
+  // Durable accepted work remains executable even when its owner has spent
+  // more than the two-minute idle window in a synchronous gateway call.
+  auto durable = command(WorkClass::MyAiNetwork, 1, 8, 0);
+  assert(policy.admit(TaskLane::Network, durable, 100) ==
+         AdmissionResult::Admitted);
+  assert(policy.release(TaskLane::Network) == AdmissionResult::Admitted);
+  assert(policy.shouldExecute(TaskLane::Network, durable, 120101) ==
+         AdmissionResult::Admitted);
+
   auto result = command(WorkClass::Voice, 9, 7);
   result.kind = EnvelopeKind::Result;
   result.disposition = WorkDisposition::Complete;

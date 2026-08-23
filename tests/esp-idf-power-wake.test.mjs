@@ -461,7 +461,12 @@ test("native wake composition is capability-injected and preserves the panel", (
   );
   assert.match(
     nativeVoice,
-    /enqueueImageGenerationImpl[\s\S]{0,1400}aigc_admission_pending_ = true[\s\S]{0,120}aigc_admission_ticket_ = ticket[\s\S]{0,800}supervisor_\.post\(envelope\)/,
+    /enqueueImageGenerationImpl[\s\S]{0,1800}aigc_admission_pending_ = true[\s\S]{0,120}aigc_admission_ticket_ = ticket[\s\S]{0,1600}supervisor_\.post\(envelope\)/,
+  );
+  assert.match(
+    nativeVoice,
+    /enqueueImageGenerationImpl[\s\S]{0,3200}envelope\.deadline_ms\s*=\s*0/,
+    "durable AIGC admission must not expire behind a blocking gateway tick",
   );
   assert.match(
     nativeVoice,
@@ -470,6 +475,11 @@ test("native wake composition is capability-injected and preserves the panel", (
   assert.match(
     nativeVoice,
     /handleControlResult[\s\S]{0,2200}NetworkQueueAigc[\s\S]{0,500}disposition != WorkDisposition::Complete[\s\S]{0,180}text_pool_\.release\(envelope\.request_id\)[\s\S]{0,160}cancelQueuedAigcAdmission\(envelope\.request_id\)/,
+  );
+  assert.match(
+    nativeVoice,
+    /handleControlResult[\s\S]{0,2600}NetworkQueueAigc[\s\S]{0,700}envelope\.flags == 1U[\s\S]{0,200}SerialDiagnosticEventKind::AigcError/,
+    "a diagnostic request must report terminal admission failure",
   );
   assert.match(
     nativePower,

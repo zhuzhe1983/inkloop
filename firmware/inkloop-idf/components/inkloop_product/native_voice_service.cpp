@@ -750,7 +750,12 @@ AdmissionResult NativeVoiceService::enqueueImageGenerationImpl(
   WorkEnvelope envelope{};
   envelope.generation = 1;
   envelope.request_id = ticket;
-  envelope.deadline_ms = nowMs() + kNetworkDeadlineMs;
+  // A manual image request is durable admitted work.  The Network owner can
+  // legitimately be inside a slow gateway/voice operation when Portal posts
+  // this envelope, so a short queue deadline would cancel the request before
+  // the handler ran.  Keep the ticket-bound AIGC blocker until Network either
+  // accepts the exact ticket or returns an explicit non-complete result.
+  envelope.deadline_ms = 0;
   envelope.opcode = productOpcode(ProductOpcode::NetworkQueueAigc);
   envelope.work_class = WorkClass::MyAiNetwork;
   envelope.kind = EnvelopeKind::Command;
@@ -1316,6 +1321,12 @@ bool NativeVoiceService::handleControlResult(
     if (envelope.disposition != WorkDisposition::Complete) {
       text_pool_.release(envelope.request_id);
       cancelQueuedAigcAdmission(envelope.request_id);
+      if (envelope.flags == 1U) {
+        diagnostics::SerialDiagnosticEvent event;
+        event.kind = diagnostics::SerialDiagnosticEventKind::AigcError;
+        event.code = 3U;
+        emitSerialDiagnostic(event);
+      }
     }
     return true;
   }
