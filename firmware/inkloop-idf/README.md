@@ -131,3 +131,9 @@ three divergent TF album indexes and the union of their referenced assets. See
 complete export never selects a slot, but it is not pre-flash physical custody:
 the current SDSPI/FAT mount is writable. An offline whole-card image is
 mandatory before any candidate device write.
+
+The separately reviewed
+[`docs/C151_DEFERRED_TF_APP0_STAGE.md`](docs/C151_DEFERRED_TF_APP0_STAGE.md)
+describes a narrower, app0-only deferred-TF staging proposal. Its Stage A does
+not authorize selector, reset, boot or TF access, and its Stage B is explicitly
+not authorized or implemented. It does not weaken the whole-card policy above.
