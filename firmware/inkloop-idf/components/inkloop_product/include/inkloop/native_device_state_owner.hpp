@@ -27,6 +27,9 @@ class NativeDeviceStateOwner final : public local_tools::ILocalToolsAdapter,
  public:
   NativeDeviceStateOwner(const BoardDescriptor& board,
                          storage::EspStorageMountOwner& storage);
+  NativeDeviceStateOwner(const BoardDescriptor& board,
+                         storage::EspStorageMountOwner& storage,
+                         IBoardRenderer& renderer);
 
   esp_err_t initialize(
       const NativeSettingsMigrationAuthorization& authorization);
@@ -46,6 +49,11 @@ class NativeDeviceStateOwner final : public local_tools::ILocalToolsAdapter,
 
   local_tools::AdapterResult queryStorage(
       local_tools::StorageInfo& output) override;
+  local_tools::AdapterResult queryAlbumSummary(
+      local_tools::AlbumSummary& output) override;
+  local_tools::AdapterResult resolveImageByOrdinal(
+      uint32_t one_based_ordinal,
+      local_tools::AlbumSelection& output) override;
   local_tools::AdapterResult deleteImageByOrdinal(
       uint32_t one_based_ordinal) override;
   local_tools::AdapterResult deleteImageById(
@@ -59,12 +67,18 @@ class NativeDeviceStateOwner final : public local_tools::ILocalToolsAdapter,
   local_tools::AdapterResult setAssistantPrompt(
       const std::string& prompt) override;
   local_tools::AdapterResult queryAigcPrompt(std::string& output) override;
+  local_tools::AdapterResult queryAigcSteps(uint8_t& steps) override;
   local_tools::AdapterResult queryAigcNegativePrompt(
       std::string& output) override;
   local_tools::AdapterResult queryDefaultRenderStrategy(
       std::string& output) override;
   local_tools::AdapterResult setAigcPrompt(
       const std::string& prompt) override;
+  local_tools::AdapterResult setAigcSteps(uint8_t steps) override;
+  local_tools::AdapterResult setAigcNegativePrompt(
+      const std::string& prompt) override;
+  local_tools::AdapterResult setDefaultRenderStrategy(
+      const std::string& strategy) override;
   local_tools::AdapterResult setLedMaximumBrightness(
       uint8_t percent) override;
 
@@ -89,10 +103,17 @@ class NativeDeviceStateOwner final : public local_tools::ILocalToolsAdapter,
   const char* selectedRoot() const;
 
   storage::EspStorageMountOwner& storage_;
+  // Optional only to preserve source compatibility for recovery/host
+  // compositions that never mutate render settings. Production composition
+  // passes the selected SKU renderer so local voice changes can be checked
+  // against the exact adapter-owned catalog and support predicate.
+  IBoardRenderer* renderer_ = nullptr;
   IStorageMaintenanceCoordinator* storage_maintenance_ = nullptr;
   settings::DeviceSettings defaults_;
   settings::EspNvsSettingsJournalStore journal_{};
   settings::SettingsStoreCore store_;
+  settings::EspNvsSettingsExtensionJournalStore extension_journal_{};
+  settings::SettingsExtensionStoreCore extension_store_;
   mutable StaticSemaphore_t mutex_storage_{};
   mutable SemaphoreHandle_t mutex_ = nullptr;
   settings::SettingsSnapshot snapshot_{};

@@ -129,9 +129,72 @@ int main() {
   event.kind = SerialDiagnosticEventKind::SerialState;
   event.first = 3;
   event.second = 4;
+  event.third = 5;
   assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
   assert(std::string(frame) ==
-         "INKLOOP_SERIAL_STATE:drops=3,write_failures=4\n");
+         "INKLOOP_SERIAL_STATE:drops=3,write_failures=4,"
+         "button_mailbox_overflows=5\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::AudioDma;
+  event.flags = AudioDiagnosticsAvailable;
+  event.first = 321;
+  event.second = 2;
+  event.third = 1;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_AUDIO_DMA:available=1,callbacks=321,underruns=2,"
+         "expected_drain_overflows=1\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::AudioFeed;
+  event.flags = AudioDiagnosticsAvailable;
+  event.first = 4;
+  event.second = 90;
+  event.third = 3;
+  event.fourth = 2;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_AUDIO_FEED:available=1,streams=4,submits=90,"
+         "late_submits=3,estimated_underruns=2\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::AudioTiming;
+  event.flags = AudioDiagnosticsAvailable;
+  event.first = 25000;
+  event.second = 12000;
+  event.third = 93000;
+  event.fourth = 160;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_AUDIO_TIMING:available=1,max_gap_us=25000,"
+         "min_lead_us=12000,max_lead_us=93000,current_queue_frames=160\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::AudioQueue;
+  event.flags = AudioDiagnosticsAvailable;
+  event.first = 960;
+  event.second = 1;
+  event.third = 5;
+  event.fourth = 6;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_AUDIO_QUEUE:available=1,peak_frames=960,clamps=1,"
+         "capture_timeouts=5,playback_timeouts=6\n");
+
+  // SKU-neutral unavailable records are explicit and cannot carry stale
+  // counters from a previous audio-capable composition.
+  event = {};
+  event.kind = SerialDiagnosticEventKind::AudioFeed;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_AUDIO_FEED:available=0,streams=0,submits=0,"
+         "late_submits=0,estimated_underruns=0\n");
+  event.first = 1;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
+  event.first = 0;
+  event.flags = 0x80;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
 
   event = {};
   event.kind = SerialDiagnosticEventKind::Album;
@@ -180,6 +243,39 @@ int main() {
   assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
   event.detail = {};
   event.first = 42;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::ButtonLatency;
+  event.correlation = (1ULL << 63U) | 9U;
+  event.code = static_cast<uint8_t>(SerialDiagnosticButton::Top);
+  event.flags = static_cast<uint8_t>(SerialDiagnosticButtonOutcome::Led);
+  event.first = UINT32_MAX - 10U;
+  event.second = 5U;
+  event.third = 20U;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_BUTTON_LATENCY:v=1,id=9223372036854775817,button=top,"
+         "capture_us=4294967285,control_us=5,feedback_us=20,"
+         "control_delta_us=16,feedback_delta_us=31,result=led\n");
+
+  event = {};
+  event.kind = SerialDiagnosticEventKind::ButtonLatency;
+  event.correlation = (1ULL << 63U) | 10U;
+  event.code = static_cast<uint8_t>(SerialDiagnosticButton::Next);
+  event.flags = static_cast<uint8_t>(
+      SerialDiagnosticButtonOutcome::NotReady);
+  event.first = 100U;
+  event.third = 500100U;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) > 0);
+  assert(std::string(frame) ==
+         "INKLOOP_BUTTON_LATENCY:v=1,id=9223372036854775818,button=next,"
+         "capture_us=100,control_us=0,feedback_us=500100,"
+         "control_delta_us=0,feedback_delta_us=500000,result=not_ready\n");
+  event.correlation = 0U;
+  assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
+  event.correlation = 1U;
+  event.code = 255U;
   assert(formatSerialDiagnosticEvent(event, frame, sizeof(frame)) == 0);
 
   event = {};

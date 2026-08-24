@@ -1,15 +1,23 @@
 # M5 PaperColor C151 physical acceptance
 
-Status: **PARTIAL PHYSICAL EVIDENCE — RELEASE STILL PENDING.** beta27 has a
+Status: **BETA31 CANDIDATE UNBOUND; PHYSICAL PRODUCT/RELEASE BLOCKED.** beta27 has a
 retained inactive-app1 readback/boot and Recovery-path pass with app0 beta25
 preserved. It does not have a Product pass: three valid divergent TF album
-indexes remain behind an explicit operator choice. The previously reviewed
-beta29 artifact is **revoked for physical staging after the complete audit**;
-it must not be flashed. The next eligible candidate is beta30 or newer and must
-have a fresh exact-commit acceptance result plus two byte-identical C151 builds.
-Its commit, version, application SHA-256 and byte count remain deliberately
-unbound until those new artifacts exist. No older physical observation
-transfers to that candidate.
+indexes remain behind an explicit operator choice. The previously bound beta30
+tuple is **revoked**. beta30 was never flashed to this installed unit, never
+booted on it, and never published or released. Its former commit, version,
+application hash, size and acceptance result are historical non-authorizing
+data and are intentionally absent from this runbook.
+
+The next eligible release train is beta31, but this repository deliberately
+contains no receipt-bound beta31 C151 artifact. This document does not
+hard-code a beta31 commit, version, SHA-256 or byte count and by itself
+authorizes no candidate write. From one exact clean beta31 source commit, an
+independently reviewed staging receipt stored outside the repository must bind
+one explicit commit/version/application-SHA-256/application-size tuple to the
+exact external binary and PASS acceptance result. Only that receipt-bound tuple
+may proceed to inactive app0; no older physical or digital observation
+transfers to it.
 
 Current pre-candidate internal-flash custody: two 16 MiB reads are byte-identical
 with SHA-256
@@ -19,8 +27,9 @@ device was left in ROM bootloader after the reads; no deliberate device or TF
 mutation command was issued. This does not establish TF byte custody: the
 existing firmware mounts TF writable through `esp_vfs_fat_sdspi_mount`, and no
 offline whole-card image has yet been captured. Physical candidate staging is
-therefore **BLOCKED** until that image and its hash are verified and a fresh
-beta30-or-newer release acceptance is bound.
+therefore **BLOCKED** until that image and its hash are verified and the
+post-commit beta31 external staging receipt and explicit tuple are independently
+accepted. Until both gates pass, even inactive-app0 staging is forbidden.
 
 This is the release-blocking procedure for the currently attached,
 user-authorized C151. The unit is currently in Download mode, but future runs
@@ -54,14 +63,79 @@ export INKLOOP_C151_PORT=/dev/cu.usbmodem-REPLACE_ME
 export INKLOOP_C151_DIAG_PORT=/dev/cu.usbmodem-SECONDARY-REPLACE_ME
 export INKLOOP_EVIDENCE_DIR="$PWD/.butler/evidence/c151-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$INKLOOP_EVIDENCE_DIR"
-git rev-parse HEAD >"$INKLOOP_EVIDENCE_DIR/git-head.txt"
+git rev-parse HEAD >"$INKLOOP_EVIDENCE_DIR/runbook-head.txt"
 git status --short >"$INKLOOP_EVIDENCE_DIR/git-status.txt"
-shasum -a 256 firmware/inkloop-idf/build/inkloop_idf.bin \
-  >"$INKLOOP_EVIDENCE_DIR/firmware-sha256.txt"
 ```
 
-If the accepted build directory is not `build`, substitute its exact path and
-record it. Do not use an old binary merely because that path exists.
+Those commands collect runbook state only; they do not bind or authorize a
+candidate. Once beta31 is committed and built, a second reviewer must verify an
+external staging receipt with this minimum contract:
+
+- it is a regular file outside the repository and names release train
+  `beta31`;
+- it records one full 40-lowercase-hex source commit, nonempty version, full
+  64-lowercase-hex application SHA-256 and positive decimal application size;
+- it identifies the exact regular external C151 binary and exact independent
+  PASS acceptance result, each by absolute path, size and SHA-256;
+- it records the clean C151/mock build results and reviewer decision; and
+- it says `authorized_for_inactive_app0: true` only after all preceding fields
+  have been independently reproduced.
+
+There is intentionally no default receipt path or beta31 tuple in this
+repository. The operator supplies the reviewed external receipt explicitly,
+then derives every release-sensitive value from it and verifies the tuple
+before any inactive-app0 gate or write:
+
+```sh
+export INKLOOP_C151_STAGING_RECEIPT=/ABSOLUTE/OUTSIDE/REPOSITORY/beta31-staging-receipt.json
+test -f "$INKLOOP_C151_STAGING_RECEIPT" && test ! -L "$INKLOOP_C151_STAGING_RECEIPT"
+case "$INKLOOP_C151_STAGING_RECEIPT" in "$PWD"/*) exit 1;; esac
+
+jq -e '
+  .release_train == "beta31" and
+  .authorized_for_inactive_app0 == true and
+  (.source.commit | test("^[0-9a-f]{40}$")) and
+  .source.version == "0.4.0-beta.31" and
+  (.application.sha256 | test("^[0-9a-f]{64}$")) and
+  (.application.size_bytes | type == "number" and . > 0 and floor == .) and
+  (.application.path | type == "string" and startswith("/")) and
+  (.acceptance.status == "PASS") and
+  (.acceptance.result_path | type == "string" and startswith("/")) and
+  (.acceptance.sha256 | test("^[0-9a-f]{64}$")) and
+  (.acceptance.size_bytes | type == "number" and . > 0 and floor == .)
+' "$INKLOOP_C151_STAGING_RECEIPT" >/dev/null
+
+export BETA31_COMMIT="$(jq -er '.source.commit' "$INKLOOP_C151_STAGING_RECEIPT")"
+export BETA31_VERSION="$(jq -er '.source.version' "$INKLOOP_C151_STAGING_RECEIPT")"
+export BETA31_SHA256="$(jq -er '.application.sha256' "$INKLOOP_C151_STAGING_RECEIPT")"
+export BETA31_BYTES="$(jq -er '.application.size_bytes' "$INKLOOP_C151_STAGING_RECEIPT")"
+export INKLOOP_C151_CANDIDATE="$(jq -er '.application.path' "$INKLOOP_C151_STAGING_RECEIPT")"
+export BETA31_ACCEPTANCE_RESULT="$(jq -er '.acceptance.result_path' "$INKLOOP_C151_STAGING_RECEIPT")"
+export BETA31_ACCEPTANCE_SHA256="$(jq -er '.acceptance.sha256' "$INKLOOP_C151_STAGING_RECEIPT")"
+export BETA31_ACCEPTANCE_BYTES="$(jq -er '.acceptance.size_bytes' "$INKLOOP_C151_STAGING_RECEIPT")"
+
+case "$INKLOOP_C151_CANDIDATE" in "$PWD"/*) exit 1;; esac
+test -f "$INKLOOP_C151_CANDIDATE" && test ! -L "$INKLOOP_C151_CANDIDATE"
+git rev-parse "$BETA31_COMMIT^{commit}" \
+  >"$INKLOOP_EVIDENCE_DIR/candidate-source-commit.txt"
+test "$(cat "$INKLOOP_EVIDENCE_DIR/candidate-source-commit.txt")" = \
+  "$BETA31_COMMIT"
+test "$(stat -f %z "$INKLOOP_C151_CANDIDATE")" = "$BETA31_BYTES"
+test "$(shasum -a 256 "$INKLOOP_C151_CANDIDATE" | awk '{print $1}')" = \
+  "$BETA31_SHA256"
+test -f "$BETA31_ACCEPTANCE_RESULT" && test ! -L "$BETA31_ACCEPTANCE_RESULT"
+test "$(stat -f %z "$BETA31_ACCEPTANCE_RESULT")" = \
+  "$BETA31_ACCEPTANCE_BYTES"
+test "$(shasum -a 256 "$BETA31_ACCEPTANCE_RESULT" | awk '{print $1}')" = \
+  "$BETA31_ACCEPTANCE_SHA256"
+shasum -a 256 "$INKLOOP_C151_STAGING_RECEIPT" \
+  "$INKLOOP_C151_CANDIDATE" "$BETA31_ACCEPTANCE_RESULT" \
+  >"$INKLOOP_EVIDENCE_DIR/staging-bindings-sha256.txt"
+```
+
+Any absent field, placeholder, path inside the repository, non-PASS result,
+tuple mismatch or changed file is `BLOCKED`. Do not substitute a local rebuild
+or infer a value from the current branch.
 
 For each section retain:
 
@@ -77,17 +151,24 @@ For each section retain:
 
 ## 2. Preconditions and safe candidate flash
 
-Historical beta29 digital evidence is not an eligible physical target after the
-complete audit. The next candidate must be beta30 or newer, pass the complete
-repository suite and lint on its exact commit, and produce two byte-identical
-official ESP-IDF v6.0.2 C151 builds. A fresh independent result must prove the
-same commit and artifacts. The operator must bind every physical result to that
-exact committed source, version, binary SHA/size, acceptance file and physical
-run. A beta27 Recovery pass is not Product evidence for the new candidate.
+beta30 is revoked and was never flashed, booted, published or released. beta31
+is only a candidate release train: until one exact clean source commit is
+selected and the external staging receipt described in Section 1 has passed
+independent review, there is no accepted firmware tuple and no inactive-app0
+write is authorized.
+A beta27 Recovery pass and beta30 digital evidence are not Product evidence for
+beta31.
 
-- [ ] the candidate's exact source commit, version, C151 binary hash, signed
-  manifest hash and fresh-acceptance report all match; no unversioned branch
-  build is used.
+- [ ] beta31 source has been committed; the complete repository suite and lint
+  are PASS on that exact commit, and two official ESP-IDF v6.0.2 C151 builds
+  plus the mock-SKU build are retained. The two C151 application binaries are
+  byte-identical.
+- [ ] a regular external staging receipt is reviewed after that commit and
+  explicitly binds the exact commit, version, application SHA-256, application
+  byte count, external binary and independent PASS acceptance result. Every
+  Section 1 receipt/tuple check is PASS. Local inactive-app0 staging is bound by
+  this exact receipt and tuple; it does not require or consume an OTA signed
+  manifest.
 - [ ] `node --test tests/esp-idf-*.test.mjs` is PASS on the exact tree and its
   output is retained.
 - [ ] official ESP-IDF v6.0.2 clean C151 and mock-SKU builds are PASS; archive
@@ -138,16 +219,10 @@ may additionally retain all
 three candidate indexes and the referenced-asset union for selection. A
 `manifest.json` with `complete: true` is logical export evidence only.
 
-Build only after the preconditions pass and no gated watcher owns the device.
-Use only the exact freshly accepted external build selected by the gate, not an
-arbitrary rebuild, and archive it before staging:
-
-```sh
-cd firmware/inkloop-idf
-IDF_PATH=/Users/zhuzhe/.espressif/frameworks/esp-idf-v6.0.2 ./tools/build.sh --clean
-. /Users/zhuzhe/.espressif/frameworks/esp-idf-v6.0.2/export.sh
-idf.py -p "$INKLOOP_C151_PORT" monitor
-```
+Do not rebuild the candidate during the physical run. After the preconditions
+pass and no gated watcher owns the device, use only the exact receipt-bound
+external application. Do not start a monitor/reset yet; the first boot happens
+only after both app and selector staging verifications pass in Section 2.2.
 
 Do **not** run the generic `idf.py flash` target on an installed dual-slot
 device. Its normal flash arguments write `app0 @ 0x10000` and the initial OTA
@@ -165,16 +240,17 @@ first write. Factory flashing of a
 verified blank board is a separate procedure and is not evidence for this
 installed unit.
 
-### 2.1 Installed-unit beta30+ inactive-app0 gate
+### 2.1 Installed-unit receipt-bound beta31 inactive-app0 gate
 
 For this one installed unit, use
 `tools/c151_inactive_app0_gate.py`. The tool is pinned to the authorized MAC,
 port, 16 MiB pre-candidate baseline, beta25 app0, selected beta27 app1 rollback,
 partition table and current seq1/seq2 `VALID` otadata. It is deliberately not
-pinned to a release: every release-sensitive phase requires the same explicit
-beta30-or-newer commit, version, C151 SHA-256 and byte count, and `gate-app`
-also requires a fresh acceptance file proving that exact tuple. The revoked
-beta29 tuple is rejected before any authorization is emitted. Its `capture`
+pinned to a future release tuple. Every release-sensitive phase requires the
+same explicit beta31 commit, version, C151 SHA-256 and byte count derived from
+the reviewed external staging receipt, and `gate-app` also requires the exact
+PASS acceptance file bound by that receipt. A missing, placeholder, beta30 or
+different tuple is rejected before an authorization is emitted. Its `capture`
 subcommand has a fixed read-only esptool allow-list. Writes are possible only
 through the generated `execute-app`, `execute-selector` and `execute-rollback`
 commands; never copy or improvise a raw esptool write. Do not run `capture`
@@ -195,28 +271,26 @@ merely well-formed or self-consistent 64-hex fingerprint is not sufficient.
 Device shutdown and physical card removal remain witnessed operator
 preconditions; a logical album export or mounted FAT copy cannot satisfy them.
 
-Run the read-only capture, then the offline first-stage gate:
+The read-only `capture` subcommand is not candidate authorization. Do not run
+`gate-app` or any generated execute command unless every Section 1 receipt and
+tuple check has already passed in the same operator environment. Then run the
+read-only capture and offline first-stage gate:
 
 ```sh
-export BETA30_COMMIT=REPLACE_WITH_40_LOWERCASE_HEX
-export BETA30_VERSION=0.4.0-beta.30
-export BETA30_SHA256=REPLACE_WITH_64_LOWERCASE_HEX
-export BETA30_BYTES=REPLACE_WITH_DECIMAL_BYTE_COUNT
-
 python3 firmware/inkloop-idf/tools/c151_inactive_app0_gate.py capture \
   --port /dev/cu.usbmodem21442201 \
   --output-dir /ABSOLUTE/NEW/c151-candidate-readonly-capture
 
 python3 firmware/inkloop-idf/tools/c151_inactive_app0_gate.py gate-app \
   --capture-dir /ABSOLUTE/NEW/c151-candidate-readonly-capture \
-  --candidate /ABSOLUTE/BETA30-C151/inkloop_idf.bin \
-  --acceptance-result /ABSOLUTE/BETA30-FRESH-ACCEPTANCE/result.json \
+  --candidate "$INKLOOP_C151_CANDIDATE" \
+  --acceptance-result "$BETA31_ACCEPTANCE_RESULT" \
   --baseline-custody /Users/zhuzhe/.local/share/inkloop/device-evidence/c151-20260824-pre-beta29-current/custody.json \
   --tf-custody /ABSOLUTE/TF-CUSTODY.json \
-  --expected-commit "$BETA30_COMMIT" \
-  --expected-version "$BETA30_VERSION" \
-  --expected-candidate-sha256 "$BETA30_SHA256" \
-  --expected-candidate-bytes "$BETA30_BYTES" \
+  --expected-commit "$BETA31_COMMIT" \
+  --expected-version "$BETA31_VERSION" \
+  --expected-candidate-sha256 "$BETA31_SHA256" \
+  --expected-candidate-bytes "$BETA31_BYTES" \
   --output-dir /ABSOLUTE/NEW/c151-candidate-app0-gate
 ```
 
@@ -242,10 +316,10 @@ Only after those files exist may the second gate run:
 python3 firmware/inkloop-idf/tools/c151_inactive_app0_gate.py authorize-selector \
   --app-authorization /ABSOLUTE/NEW/c151-candidate-app0-gate/app-stage-authorization.json \
   --full-flash-readback /ABSOLUTE/NEW/c151-candidate-app0-gate/app-execution/full-flash-after-app.bin \
-  --expected-commit "$BETA30_COMMIT" \
-  --expected-version "$BETA30_VERSION" \
-  --expected-candidate-sha256 "$BETA30_SHA256" \
-  --expected-candidate-bytes "$BETA30_BYTES" \
+  --expected-commit "$BETA31_COMMIT" \
+  --expected-version "$BETA31_VERSION" \
+  --expected-candidate-sha256 "$BETA31_SHA256" \
+  --expected-candidate-bytes "$BETA31_BYTES" \
   --output-dir /ABSOLUTE/NEW/c151-candidate-selector-gate
 ```
 
@@ -272,13 +346,56 @@ controlled `execute_rollback_argv` applies the same protections to the exact
 seq1 entry, and its verification compares the whole flash against the exact
 post-app image. Thus both paths also prove the app0 suffix, flash tail/coredump,
 prefix, NVS, app1 and LittleFS. All execute and verify commands repeat the four
-release-binding arguments. If rollback is required, use only those two recorded
-rollback commands; never improvise an otadata erase/write.
+release-binding arguments.
+
+`execute_rollback_argv` and its recorded verification command are a
+**pre-first-boot cancellation path only**: they may be used after selector
+staging but before any reset, power-on or attempt to boot the receipt-bound
+beta31 candidate. Once the first boot starts, ROM/bootloader state can advance
+`NEW` to `PENDING_VERIFY`,
+so the pre-boot plan is stale and must never be replayed. A failed pending boot
+must use the bootloader's automatic rollback. Any post-boot manual rollback or
+slot change requires a new read-only capture and a separately reviewed,
+state-aware gate for the then-current full flash and otadata. Never improvise
+an otadata erase/write.
 
 No phase authorizes bootloader, partition-table, NVS, app1, LittleFS, coredump
 or TF writes. No phase authorizes generic `idf.py flash`, `erase-flash`, a raw
 esptool write, a different port/MAC, a rebuilt candidate, or a selector write
 before the app after-image passes.
+
+### 2.2 First boot with TF removed, then Recovery/export
+
+After `execute_selector_argv` and `final_verification_argv` pass, keep the TF
+card physically removed. Exit Download mode and perform the **first
+receipt-bound beta31 candidate boot with no TF card inserted** while saving the
+complete primary serial log.
+Do not insert the card into a powered device. The pending image must complete
+its local 30-second boot-health soak and report confirmed/valid before any
+candidate firmware is allowed to mount the protected TF card. Missing TF may
+select the internal fallback for this boot, but must not rewrite the saved
+storage preference.
+
+Start the pinned-IDF monitor in a subshell so the repository-root paths used by
+the gate remain unchanged after the monitor exits:
+
+```sh
+(
+  . /Users/zhuzhe/.espressif/frameworks/esp-idf-v6.0.2/export.sh
+  cd firmware/inkloop-idf
+  idf.py -p "$INKLOOP_C151_PORT" monitor
+)
+```
+
+If pending-image boot health fails, leave TF removed and allow the bootloader
+to roll back automatically to beta27 app1; do not run the pre-first-boot
+`execute_rollback_argv`. If boot health is confirmed, power the device fully
+off, verify it is off, reinsert the **same card whose whole-card custody hash is
+bound to the gate**, and only then power on again. The read-only audit may now
+enter Recovery for the three divergent TF album indexes. Authenticate to that
+Recovery instance and perform the logical three-index/referenced-asset export
+before making the explicit operator choice. The no-TF first boot is boot-health
+evidence only; it is not a TF, Recovery, storage-migration or Product pass.
 
 Save the full monitor output from reset through stable normal or Recovery mode.
 If the boot loops, reports an ambiguous audit without the expected Recovery
@@ -517,8 +634,13 @@ local/read-only until an authenticated exact action is confirmed.
 Run only after the non-OTA sections pass. Configure an ephemeral reviewed
 external signing key, a stable same-origin C151 manifest URL and a strictly
 newer SemVer build. Archive public artifacts/receipts; never copy the private
-key into firmware, repository or evidence.
+key into firmware, repository or evidence. The signed-manifest requirement
+starts in this OTA section; it is not a prerequisite for the exact local app0
+staging procedure in Section 2.
 
+- [ ] the OTA signed manifest binds the exact C151 application bytes, byte
+  count, SHA-256, SKU and strictly newer version, and verifies with the reviewed
+  public key before publication or acquisition.
 - [ ] package, sign, verify and promote an immutable version directory. The
   stable `<sku>/manifest.json` changes atomically only after the version is
   complete. Equal/downgrade, corrupt receipt/image/signature, symlink,
@@ -553,7 +675,7 @@ key into firmware, repository or evidence.
 
 | Gate | Result | Evidence path / defect |
 |---|---|---|
-| Digital final gate and clean builds | PENDING (beta29 target revoked) | Produce beta30-or-newer exact-commit reproducible C151/mock artifacts and pass a fresh independent gate before any write. |
+| Digital final gate and clean builds | **BLOCKED** (beta30 revoked; beta31 unbound) | beta30 was never flashed, booted, published or released. Select one exact clean beta31 commit, then retain reproducible C151/mock builds, a fresh independent PASS result and the reviewed external staging receipt that binds the explicit commit/version/SHA-256/size tuple before any inactive-app0 write. |
 | First flash, boot and identity | PENDING | |
 | Input latency and LEDs | PENDING | |
 | Wi-Fi and Portal | PENDING | |

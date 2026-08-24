@@ -52,13 +52,19 @@ const settingsAdapters = String.raw`#pragma once
 #include <cstdint>
 #include <string>
 #include "inkloop/settings/legacy_portal_import.hpp"
+#include "inkloop/settings/settings_extension_journal.hpp"
 #include "inkloop/settings/settings_journal.hpp"
 namespace inkloop::settings {
 inline SettingsJournalState test_settings_state{};
+inline SettingsExtensionJournalState test_settings_extension_state{};
 inline LegacyPortalJournalState test_legacy_state{};
 inline unsigned test_settings_slot_writes = 0;
 inline unsigned test_settings_head_writes = 0;
+inline unsigned test_settings_extension_slot_writes = 0;
+inline unsigned test_settings_extension_head_writes = 0;
 inline bool test_fail_settings_head_once = false;
+inline bool test_fail_settings_extension_head_once = false;
+inline bool test_fail_settings_extension_head_after_commit_once = false;
 
 inline std::string testDigest(const std::string& payload) {
   std::uint32_t value = 2166136261U;
@@ -99,6 +105,40 @@ class EspNvsSettingsJournalStore final : public ISettingsJournalStore {
     test_settings_state.head_generation = generation;
     test_settings_state.marker_present = true;
     test_settings_state.marker_valid = true;
+    return SettingsStatus::success();
+  }
+};
+
+class EspNvsSettingsExtensionJournalStore final
+    : public ISettingsExtensionJournalStore {
+ public:
+  SettingsStatus inspect(SettingsExtensionJournalState& output) override {
+    output = test_settings_extension_state;
+    return SettingsStatus::success();
+  }
+  SettingsStatus writeSlot(
+      std::uint8_t slot,
+      const std::vector<std::uint8_t>& encoded) override {
+    ++test_settings_extension_slot_writes;
+    if (slot > 1U) return {SettingsError::InvalidArgument, "ext slot"};
+    test_settings_extension_state.namespace_available = true;
+    test_settings_extension_state.slot_present[slot] = true;
+    test_settings_extension_state.slot[slot] = encoded;
+    return SettingsStatus::success();
+  }
+  SettingsStatus writeHead(std::uint32_t sequence) override {
+    ++test_settings_extension_head_writes;
+    if (test_fail_settings_extension_head_once) {
+      test_fail_settings_extension_head_once = false;
+      return {SettingsError::Storage, "injected ext head failure"};
+    }
+    test_settings_extension_state.namespace_available = true;
+    test_settings_extension_state.head_present = true;
+    test_settings_extension_state.head_sequence = sequence;
+    if (test_fail_settings_extension_head_after_commit_once) {
+      test_fail_settings_extension_head_after_commit_once = false;
+      return {SettingsError::Storage, "injected durable ext head failure"};
+    }
     return SettingsStatus::success();
   }
 };
@@ -307,9 +347,19 @@ std::string legacyPayload(unsigned volume = 77U,
       ",\"settings\":{"
       "\"storage\":1,\"volume\":" + std::to_string(volume) +
       ",\"voice_assistance\":false,\"prompt\":\"agent\","
-      "\"image_prompt\":\"image {prompt}\",\"negative\":\"\","
+      "\"image_prompt\":\"image {prompt}\",\"steps\":29,\"negative\":\"\","
       "\"led_brightness\":31,\"led_swap\":true,"
       "\"local_password\":\"wifi-pass\",\"refresh\":1}}";
+}
+
+std::string legacyDefaultsPayload(std::uint64_t revision = 1U) {
+  return "{\"schema\":2,\"revision\":" + std::to_string(revision) +
+      ",\"settings\":{"
+      "\"storage\":0,\"volume\":60,\"voice_assistance\":true,"
+      "\"prompt\":\"default assistant\","
+      "\"image_prompt\":\"default image {prompt}\",\"steps\":20,"
+      "\"negative\":\"default negative\",\"led_brightness\":60,"
+      "\"led_swap\":false,\"local_password\":\"\",\"refresh\":0}}";
 }
 
 std::string envelope(const std::string& payload) {
@@ -325,6 +375,7 @@ settings::DeviceSettings candidate(unsigned volume = 77U) {
   value.voice_assistance_enabled = false;
   value.assistant_prompt = "agent";
   value.aigc_prompt_template = "image {prompt}";
+  value.aigc_steps = 29U;
   value.negative_prompt.clear();
   value.asset_storage_preference = settings::AssetStoragePreference::Internal;
   value.default_render_strategy = "classic-six-color";
@@ -336,11 +387,18 @@ settings::DeviceSettings candidate(unsigned volume = 77U) {
 void resetStores() {
   settings::test_settings_state = settings::SettingsJournalState{};
   settings::test_settings_state.namespace_available = true;
+  settings::test_settings_extension_state =
+      settings::SettingsExtensionJournalState{};
+  settings::test_settings_extension_state.namespace_available = true;
   settings::test_legacy_state = settings::LegacyPortalJournalState{};
   settings::test_legacy_state.namespace_available = true;
   settings::test_settings_slot_writes = 0U;
   settings::test_settings_head_writes = 0U;
+  settings::test_settings_extension_slot_writes = 0U;
+  settings::test_settings_extension_head_writes = 0U;
   settings::test_fail_settings_head_once = false;
+  settings::test_fail_settings_extension_head_once = false;
+  settings::test_fail_settings_extension_head_after_commit_once = false;
   storage::test_marker_state = storage::RawMigrationMarkerJournal{};
   storage::test_marker_state.namespace_available = true;
   storage::test_marker_slot_writes = 0U;
@@ -353,6 +411,16 @@ void resetStores() {
 
 void installLegacy(unsigned volume = 77U, std::uint64_t revision = 19U) {
   const std::string payload = legacyPayload(volume, revision);
+  settings::test_legacy_state.marker_present = true;
+  settings::test_legacy_state.marker_valid = true;
+  settings::test_legacy_state.head_present = true;
+  settings::test_legacy_state.head = 1U;
+  settings::test_legacy_state.slot_present[0] = true;
+  settings::test_legacy_state.slot[0] = envelope(payload);
+}
+
+void installDefaultLegacy() {
+  const std::string payload = legacyDefaultsPayload();
   settings::test_legacy_state.marker_present = true;
   settings::test_legacy_state.marker_valid = true;
   settings::test_legacy_state.head_present = true;
@@ -376,6 +444,9 @@ void installLegacySuccessor(unsigned volume, std::uint64_t revision) {
 std::vector<std::uint8_t> encodeOld(
     std::uint32_t generation, settings::DeviceSettings values,
     std::uint16_t schema = 2U) {
+  const bool legacy_led_roles_swapped = values.led_roles_swapped;
+  values.led_roles_swapped = false;
+  values.aigc_steps = settings::kDefaultAigcSteps;
   settings::SettingsSnapshot snapshot;
   snapshot.generation = generation;
   snapshot.values = std::move(values);
@@ -383,7 +454,11 @@ std::vector<std::uint8_t> encodeOld(
   assert(settings::encodeSettingsRecord(snapshot, bytes).ok());
   bytes[4] = static_cast<std::uint8_t>(schema);
   bytes[5] = 0U;
-  bytes[6] &= static_cast<std::uint8_t>(~2U);
+  if (schema >= 3U && legacy_led_roles_swapped)
+    bytes[6] |= 2U;
+  else
+    bytes[6] &= static_cast<std::uint8_t>(~2U);
+  bytes[15] = 0U;
   const std::uint32_t checksum = crc32(bytes.data(), bytes.size() - 4U);
   for (std::size_t at = 0U; at < 4U; ++at) {
     bytes[bytes.size() - 4U + at] =
@@ -395,6 +470,25 @@ std::vector<std::uint8_t> encodeOld(
   return bytes;
 }
 
+void installExtension(const settings::DeviceSettings& values,
+                      std::uint32_t main_generation,
+                      std::uint32_t sequence = 1U) {
+  settings::SettingsExtensionSnapshot snapshot;
+  snapshot.sequence = sequence;
+  snapshot.settings_generation = main_generation;
+  snapshot.values = settings::settingsExtensionValues(values);
+  std::vector<std::uint8_t> encoded;
+  assert(settings::encodeSettingsExtensionRecord(snapshot, encoded).ok());
+  auto& state = settings::test_settings_extension_state;
+  state = settings::SettingsExtensionJournalState{};
+  state.namespace_available = true;
+  state.head_present = true;
+  state.head_sequence = sequence;
+  const std::size_t selected = static_cast<std::size_t>(sequence & 1U);
+  state.slot_present[selected] = true;
+  state.slot[selected] = std::move(encoded);
+}
+
 void installNativeCurrent(std::uint32_t generation,
                           const settings::DeviceSettings& values) {
   assert(generation != 0U);
@@ -402,6 +496,8 @@ void installNativeCurrent(std::uint32_t generation,
   snapshot.generation = generation;
   snapshot.decoded_record_schema = settings::kSettingsRecordSchema;
   snapshot.values = values;
+  snapshot.values.led_roles_swapped = false;
+  snapshot.values.aigc_steps = settings::kDefaultAigcSteps;
   std::vector<std::uint8_t> encoded;
   assert(settings::encodeSettingsRecord(snapshot, encoded).ok());
   settings::test_settings_state = settings::SettingsJournalState{};
@@ -413,14 +509,19 @@ void installNativeCurrent(std::uint32_t generation,
   const std::size_t selected = static_cast<std::size_t>(generation & 1U);
   settings::test_settings_state.slot_present[selected] = true;
   settings::test_settings_state.slot[selected] = std::move(encoded);
+  installExtension(values, generation);
 }
 
 void installHistorical(std::uint32_t generation = 1U,
                        unsigned volume = 77U,
                        std::uint16_t schema = 2U) {
+  settings::test_settings_extension_state =
+      settings::SettingsExtensionJournalState{};
+  settings::test_settings_extension_state.namespace_available = true;
   settings::DeviceSettings old = candidate(volume);
   old.local_management_password_override.clear();
   old.led_roles_swapped = false;
+  old.aigc_steps = settings::kDefaultAigcSteps;
   old.default_render_strategy = "experimental-six-color";
   const std::uint8_t slot = static_cast<std::uint8_t>(generation & 1U);
   settings::test_settings_state.marker_present = true;
@@ -430,6 +531,30 @@ void installHistorical(std::uint32_t generation = 1U,
   settings::test_settings_state.slot_present[slot] = true;
   settings::test_settings_state.slot[slot] =
       encodeOld(generation, std::move(old), schema);
+}
+
+settings::SettingsStatus loadComposite(
+    settings::SettingsSnapshot& output) {
+  settings::EspNvsSettingsJournalStore main_journal;
+  settings::EspNvsSettingsExtensionJournalStore extension_journal;
+  settings::SettingsStoreCore main_store(
+      main_journal, settings::makeGenericDeviceDefaults());
+  settings::SettingsExtensionStoreCore extension_store(extension_journal);
+  return settings::loadRollbackCompatibleSettings(
+      main_store, extension_store, output);
+}
+
+settings::SettingsStatus saveComposite(
+    const settings::DeviceSettings& values,
+    std::uint32_t expected_generation,
+    settings::SettingsSnapshot& output) {
+  settings::EspNvsSettingsJournalStore main_journal;
+  settings::EspNvsSettingsExtensionJournalStore extension_journal;
+  settings::SettingsStoreCore main_store(
+      main_journal, settings::makeGenericDeviceDefaults());
+  settings::SettingsExtensionStoreCore extension_store(extension_journal);
+  return settings::saveRollbackCompatibleSettings(
+      main_store, extension_store, values, expected_generation, output);
 }
 
 NativeSettingsMigrationPlan audit(
@@ -476,6 +601,64 @@ int main() {
   assert(settings::test_settings_slot_writes == 0U &&
          storage::test_marker_slot_writes == 0U);
 
+  // Fresh migration: power loss after the schema-2 main selector became
+  // authoritative but before ext-head publication resumes by publishing only
+  // the already-prepared extension. The main target is never rewritten.
+  resetStores();
+  installLegacy();
+  NativeSettingsMigrationGate fresh_partial_main(board, owner);
+  plan = audit(owner, fresh_partial_main);
+  settings::test_fail_settings_extension_head_once = true;
+  assert(execute(owner, fresh_partial_main, plan, authorization) ==
+         NativeSettingsMigrationGateCode::TargetWriteFailed);
+  assert(settings::test_settings_state.head_generation == 1U);
+  assert(!settings::test_settings_extension_state.head_present);
+  assert(currentMarker().phase == storage::MigrationPhase::Prepared);
+  const unsigned fresh_partial_main_writes =
+      settings::test_settings_slot_writes;
+  NativeSettingsMigrationGate fresh_partial_restart(board, owner);
+  plan = audit(owner, fresh_partial_restart);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Resume);
+  assert(execute(owner, fresh_partial_restart, plan, authorization) ==
+         NativeSettingsMigrationGateCode::Ok);
+  assert(settings::test_settings_slot_writes == fresh_partial_main_writes);
+  settings::SettingsSnapshot partial_result;
+  assert(loadComposite(partial_result).ok());
+  assert(partial_result.generation == 1U &&
+         partial_result.values == candidate());
+
+  // Even an exact-default legacy candidate must create migration authority:
+  // force_main advances fresh generation 0->1 and seeds the extension selector
+  // instead of returning a false no-op at generation zero.
+  resetStores();
+  installDefaultLegacy();
+  NativeSettingsMigrationGate exact_default_import(board, owner);
+  plan = audit(owner, exact_default_import);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Start);
+  settings::test_fail_settings_extension_head_once = true;
+  assert(execute(owner, exact_default_import, plan, authorization) ==
+         NativeSettingsMigrationGateCode::TargetWriteFailed);
+  assert(settings::test_settings_state.head_generation == 1U);
+  assert(!settings::test_settings_extension_state.head_present);
+  const unsigned exact_default_main_writes =
+      settings::test_settings_slot_writes;
+  NativeSettingsMigrationGate exact_default_restart(board, owner);
+  plan = audit(owner, exact_default_restart);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Resume);
+  assert(execute(owner, exact_default_restart, plan, authorization) ==
+         NativeSettingsMigrationGateCode::Ok);
+  assert(settings::test_settings_slot_writes == exact_default_main_writes);
+  assert(authorization.observed_generation == 1U);
+  assert(settings::test_settings_state.head_generation == 1U);
+  assert(settings::test_settings_extension_state.head_present);
+  assert(loadComposite(partial_result).ok());
+  settings::DeviceSettings exact_defaults =
+      settings::makeGenericDeviceDefaults();
+  exact_defaults.assistant_prompt = "default assistant";
+  exact_defaults.aigc_prompt_template = "default image {prompt}";
+  exact_defaults.negative_prompt = "default negative";
+  assert(partial_result.values == exact_defaults);
+
   // A fresh native journal with a verified legacy snapshot starts at target
   // generation one and keeps the untouched legacy snapshot as rollback.
   resetStores();
@@ -496,6 +679,8 @@ int main() {
   // performs no writes; corrupt legacy bytes remain a hard source failure.
   const settings::SettingsJournalState completed_settings =
       settings::test_settings_state;
+  const settings::SettingsExtensionJournalState completed_extension =
+      settings::test_settings_extension_state;
   const settings::LegacyPortalJournalState completed_legacy =
       settings::test_legacy_state;
   const storage::RawMigrationMarkerJournal completed_marker =
@@ -503,6 +688,33 @@ int main() {
   const unsigned completed_settings_writes =
       settings::test_settings_slot_writes;
   const unsigned completed_marker_writes = storage::test_marker_slot_writes;
+
+  // A beta30 Complete marker may still point at a schema-3 target. Schema 3
+  // had no persisted steps, so its exact migration result carries 20 while
+  // the verified Arduino source may carry another value. It remains valid
+  // native authority and upgrades on the next explicit settings save rather
+  // than entering Recovery or rewriting during the read-only gate.
+  settings::test_settings_state = completed_settings;
+  settings::test_settings_extension_state = completed_extension;
+  settings::test_legacy_state = completed_legacy;
+  storage::test_marker_state = completed_marker;
+  settings::test_settings_state.slot[1] = encodeOld(1U, candidate(), 3U);
+  const unsigned schema_three_settings_writes =
+      settings::test_settings_slot_writes;
+  const unsigned schema_three_marker_writes = storage::test_marker_slot_writes;
+  NativeSettingsMigrationGate schema_three_complete(board, owner);
+  plan = audit(owner, schema_three_complete);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Complete);
+  assert(execute(owner, schema_three_complete, plan, authorization) ==
+         NativeSettingsMigrationGateCode::Ok);
+  assert(authorization.observed_generation == 1U &&
+         settings::test_settings_slot_writes == schema_three_settings_writes &&
+         storage::test_marker_slot_writes == schema_three_marker_writes);
+
+  settings::test_settings_state = completed_settings;
+  settings::test_settings_extension_state = completed_extension;
+  settings::test_legacy_state = completed_legacy;
+  storage::test_marker_state = completed_marker;
   settings::test_legacy_state = settings::LegacyPortalJournalState{};
   settings::test_legacy_state.namespace_available = true;
   NativeSettingsMigrationGate legacy_factory_reset(board, owner);
@@ -515,14 +727,11 @@ int main() {
          storage::test_marker_slot_writes == completed_marker_writes);
 
   settings::test_settings_state = completed_settings;
+  settings::test_settings_extension_state = completed_extension;
   settings::test_legacy_state = completed_legacy;
   storage::test_marker_state = completed_marker;
-  settings::EspNvsSettingsJournalStore absent_newer_store;
-  settings::SettingsStoreCore absent_newer_core(
-      absent_newer_store, settings::makeGenericDeviceDefaults());
   settings::SettingsSnapshot absent_newer_snapshot;
-  assert(absent_newer_core.save(
-             candidate(88U), 1U, absent_newer_snapshot).ok());
+  assert(saveComposite(candidate(88U), 1U, absent_newer_snapshot).ok());
   assert(absent_newer_snapshot.generation == 2U);
   settings::test_legacy_state = settings::LegacyPortalJournalState{};
   settings::test_legacy_state.namespace_available = true;
@@ -537,6 +746,7 @@ int main() {
          storage::test_marker_slot_writes == completed_marker_writes);
 
   settings::test_settings_state = completed_settings;
+  settings::test_settings_extension_state = completed_extension;
   settings::test_legacy_state = completed_legacy;
   storage::test_marker_state = completed_marker;
   settings::test_legacy_state.slot[0] = "corrupt";
@@ -545,12 +755,14 @@ int main() {
          NativeSettingsMigrationGateCode::SourceCorrupt);
 
   settings::test_settings_state = completed_settings;
+  settings::test_settings_extension_state = completed_extension;
   settings::test_legacy_state = settings::LegacyPortalJournalState{};
   storage::test_marker_state = completed_marker;
   NativeSettingsMigrationGate unavailable_after_complete(board, owner);
   assert(auditCode(owner, unavailable_after_complete, plan) ==
          NativeSettingsMigrationGateCode::SourceCorrupt);
   settings::test_settings_state = completed_settings;
+  settings::test_settings_extension_state = completed_extension;
   settings::test_legacy_state = completed_legacy;
   storage::test_marker_state = completed_marker;
 
@@ -561,24 +773,58 @@ int main() {
   installLegacySuccessor(66U, 20U);
   const settings::SettingsJournalState rollover_settings =
       settings::test_settings_state;
+  const settings::SettingsExtensionJournalState rollover_extension =
+      settings::test_settings_extension_state;
   const settings::LegacyPortalJournalState rollover_legacy =
       settings::test_legacy_state;
   const storage::RawMigrationMarkerJournal rollover_marker =
       storage::test_marker_state;
   auto restoreRollover = [&]() {
     settings::test_settings_state = rollover_settings;
+    settings::test_settings_extension_state = rollover_extension;
     settings::test_legacy_state = rollover_legacy;
     storage::test_marker_state = rollover_marker;
     settings::test_settings_slot_writes = 0U;
     settings::test_settings_head_writes = 0U;
+    settings::test_settings_extension_slot_writes = 0U;
+    settings::test_settings_extension_head_writes = 0U;
     storage::test_marker_slot_writes = 0U;
     storage::test_marker_head_writes = 0U;
     settings::test_fail_settings_head_once = false;
+    settings::test_fail_settings_extension_head_once = false;
+    settings::test_fail_settings_extension_head_after_commit_once = false;
     storage::test_fail_marker_slot_call = 0U;
     storage::test_fail_marker_slot_after_commit_call = 0U;
     storage::test_fail_marker_head_once = false;
     storage::test_fail_marker_head_after_commit_once = false;
   };
+
+  // Post-Complete rollover has the same split-journal boundary: gen2 main may
+  // be selected while ext-head still names the gen1 extension. Prepared
+  // recovery must publish the staged extension without a second main write.
+  restoreRollover();
+  NativeSettingsMigrationGate rollover_partial_main(board, owner);
+  plan = audit(owner, rollover_partial_main);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Start);
+  settings::test_fail_settings_extension_head_once = true;
+  assert(execute(owner, rollover_partial_main, plan, authorization) ==
+         NativeSettingsMigrationGateCode::TargetWriteFailed);
+  assert(settings::test_settings_state.head_generation == 2U);
+  assert(settings::test_settings_extension_state.head_present);
+  assert(currentMarker().phase == storage::MigrationPhase::Prepared);
+  const unsigned rollover_partial_main_writes =
+      settings::test_settings_slot_writes;
+  NativeSettingsMigrationGate rollover_partial_restart(board, owner);
+  plan = audit(owner, rollover_partial_restart);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Resume);
+  assert(execute(owner, rollover_partial_restart, plan, authorization) ==
+         NativeSettingsMigrationGateCode::Ok);
+  assert(settings::test_settings_slot_writes ==
+         rollover_partial_main_writes);
+  assert(loadComposite(partial_result).ok());
+  assert(partial_result.generation == 2U &&
+         partial_result.values == candidate(66U));
+  restoreRollover();
 
   NativeSettingsMigrationGate rollback_forward(board, owner);
   plan = audit(owner, rollback_forward);
@@ -602,10 +848,7 @@ int main() {
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.valid() && authorization.observed_generation == 2U);
   settings::SettingsSnapshot rollover_result;
-  settings::EspNvsSettingsJournalStore rollover_store;
-  settings::SettingsStoreCore rollover_core(
-      rollover_store, settings::makeGenericDeviceDefaults());
-  assert(rollover_core.load(rollover_result).ok());
+  assert(loadComposite(rollover_result).ok());
   assert(rollover_result.values == candidate(66U));
 
   // The NVS head may become durable even when its commit call reports an I/O
@@ -656,6 +899,8 @@ int main() {
   assert(settings::test_settings_state.head_generation == 1U);
   const settings::SettingsJournalState prepared_settings =
       settings::test_settings_state;
+  const settings::SettingsExtensionJournalState prepared_extension =
+      settings::test_settings_extension_state;
   const storage::RawMigrationMarkerJournal prepared_marker =
       storage::test_marker_state;
 
@@ -664,7 +909,7 @@ int main() {
   // raw seq-1 Complete rollover proof and a current native base.
   installHistorical(1U, 66U, 2U);
   settings::SettingsSnapshot forged_historical_target;
-  assert(rollover_core.load(forged_historical_target).ok());
+  assert(loadComposite(forged_historical_target).ok());
   settings::LegacySettingsImport forged_historical_legacy;
   settings::EspNvsReadOnlyLegacyPortalSource forged_legacy_source;
   settings::EspPsaLegacySha256Verifier forged_legacy_sha;
@@ -678,6 +923,7 @@ int main() {
   assert(auditCode(owner, forged_historical_prepared, plan) ==
          NativeSettingsMigrationGateCode::TargetCorrupt);
   settings::test_settings_state = prepared_settings;
+  settings::test_settings_extension_state = prepared_extension;
   storage::test_marker_state = prepared_marker;
 
   // The inactive raw marker must itself be a coherent exact seq-1 Complete.
@@ -725,7 +971,7 @@ int main() {
   restoreRollover();
   settings::SettingsSnapshot native_edited;
   settings::DeviceSettings native_values = candidate(88U);
-  assert(rollover_core.save(native_values, 1U, native_edited).ok());
+  assert(saveComposite(native_values, 1U, native_edited).ok());
   const unsigned native_edit_writes = settings::test_settings_slot_writes;
   const unsigned native_marker_writes = storage::test_marker_slot_writes;
   NativeSettingsMigrationGate native_newer(board, owner);
@@ -767,7 +1013,7 @@ int main() {
   assert(execute(owner, two_legacy_saves, plan, authorization) ==
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.valid() && authorization.observed_generation == 2U);
-  assert(rollover_core.load(rollover_result).ok());
+  assert(loadComposite(rollover_result).ok());
   assert(rollover_result.values == candidate(67U));
 
   restoreRollover();
@@ -784,7 +1030,7 @@ int main() {
   assert(execute(owner, second_rollover, plan, authorization) ==
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.observed_generation == 3U);
-  assert(rollover_core.load(rollover_result).ok());
+  assert(loadComposite(rollover_result).ok());
   assert(rollover_result.values == candidate(67U));
 
   // Repeated OTA rollback cycles use the same three-way proof at every
@@ -799,8 +1045,35 @@ int main() {
   assert(execute(owner, third_rollover, plan, authorization) ==
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.observed_generation == 4U);
-  assert(rollover_core.load(rollover_result).ok());
+  assert(loadComposite(rollover_result).ok());
   assert(rollover_result.values == candidate(68U));
+
+  // Historical gen1 repair: the promoted gen2 main can survive while the
+  // first extension head is absent. Prepared restart recognizes the exact
+  // main projection and completes only the sidecar publication.
+  resetStores();
+  installLegacy();
+  installHistorical();
+  NativeSettingsMigrationGate historical_partial_main(board, owner);
+  plan = audit(owner, historical_partial_main);
+  settings::test_fail_settings_extension_head_once = true;
+  assert(execute(owner, historical_partial_main, plan, authorization) ==
+         NativeSettingsMigrationGateCode::TargetWriteFailed);
+  assert(settings::test_settings_state.head_generation == 2U);
+  assert(!settings::test_settings_extension_state.head_present);
+  assert(currentMarker().phase == storage::MigrationPhase::Prepared);
+  const unsigned historical_partial_main_writes =
+      settings::test_settings_slot_writes;
+  NativeSettingsMigrationGate historical_partial_restart(board, owner);
+  plan = audit(owner, historical_partial_restart);
+  assert(plan.kind == NativeSettingsMigrationPlanKind::Resume);
+  assert(execute(owner, historical_partial_restart, plan, authorization) ==
+         NativeSettingsMigrationGateCode::Ok);
+  assert(settings::test_settings_slot_writes ==
+         historical_partial_main_writes);
+  assert(loadComposite(partial_result).ok());
+  assert(partial_result.generation == 2U &&
+         partial_result.values == candidate());
 
   // The old auto-importer could only create generation one. Combined with a
   // schema-1/2 record, exact historical projection, and verified live legacy
@@ -842,10 +1115,7 @@ int main() {
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.valid() && authorization.observed_generation == 2U);
   settings::SettingsSnapshot migrated;
-  settings::EspNvsSettingsJournalStore settings_store;
-  settings::SettingsStoreCore settings_core(
-      settings_store, settings::makeGenericDeviceDefaults());
-  assert(settings_core.load(migrated).ok());
+  assert(loadComposite(migrated).ok());
   assert(migrated.decoded_record_schema == settings::kSettingsRecordSchema);
   assert(migrated.values == candidate());
   assert(settings::test_settings_state.slot[1] == rollback_slot);
@@ -869,7 +1139,7 @@ int main() {
   assert(execute(owner, historical_rollover_resume, plan, authorization) ==
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.observed_generation == 3U);
-  assert(settings_core.load(migrated).ok());
+  assert(loadComposite(migrated).ok());
   assert(migrated.values == candidate(66U));
 
   // Power loss after the target became authoritative but before the
@@ -924,13 +1194,13 @@ int main() {
   assert(storage::test_marker_slot_writes == 0U &&
          settings::test_settings_slot_writes == 0U);
 
-  // Schema 3 is already native authority and cannot be mistaken for the old
-  // importer merely because its values collide with the historical projection.
+  // A schema-2 main plus a selected extension is current native authority and
+  // cannot be mistaken for the old schema-2 importer projection.
   resetStores();
   installLegacy();
-  installHistorical(1U, 77U, settings::kSettingsRecordSchema);
-  NativeSettingsMigrationGate schema3(board, owner);
-  plan = audit(owner, schema3);
+  installNativeCurrent(1U, candidate());
+  NativeSettingsMigrationGate current_schema(board, owner);
+  plan = audit(owner, current_schema);
   assert(plan.kind == NativeSettingsMigrationPlanKind::NativeNoMigration);
 
   // Same-valued generation >=2 can be an intentional user save. It remains
@@ -958,6 +1228,8 @@ int main() {
          NativeSettingsMigrationGateCode::Ok);
   const settings::SettingsJournalState exhaustion_settings =
       settings::test_settings_state;
+  const settings::SettingsExtensionJournalState exhaustion_extension =
+      settings::test_settings_extension_state;
   const settings::LegacyPortalJournalState exhaustion_legacy =
       settings::test_legacy_state;
   const storage::RawMigrationMarkerJournal exhaustion_marker =
@@ -978,6 +1250,7 @@ int main() {
          storage::test_marker_slot_writes == 0U);
 
   settings::test_settings_state = exhaustion_settings;
+  settings::test_settings_extension_state = exhaustion_extension;
   settings::test_legacy_state = exhaustion_legacy;
   storage::test_marker_state = exhaustion_marker;
   installCurrentMarker(exhaustion_identity, kMaxSequence);
@@ -994,6 +1267,7 @@ int main() {
   // rejected before the target write; MAX-5 has exact capacity and reaches a
   // durable Complete at MAX.
   settings::test_settings_state = exhaustion_settings;
+  settings::test_settings_extension_state = exhaustion_extension;
   settings::test_legacy_state = exhaustion_legacy;
   storage::test_marker_state = exhaustion_marker;
   installCurrentMarker(exhaustion_identity, kMaxSequence - 4U);
@@ -1007,6 +1281,7 @@ int main() {
          storage::test_marker_slot_writes == 0U);
 
   settings::test_settings_state = exhaustion_settings;
+  settings::test_settings_extension_state = exhaustion_extension;
   settings::test_legacy_state = exhaustion_legacy;
   storage::test_marker_state = exhaustion_marker;
   installCurrentMarker(exhaustion_identity, kMaxSequence - 5U);
@@ -1020,11 +1295,8 @@ int main() {
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.observed_generation == 2U &&
          storage::test_marker_state.head_sequence == kMaxSequence);
-  settings::EspNvsSettingsJournalStore exhaustion_result_store;
-  settings::SettingsStoreCore exhaustion_result_core(
-      exhaustion_result_store, settings::makeGenericDeviceDefaults());
   settings::SettingsSnapshot exhaustion_result;
-  assert(exhaustion_result_core.load(exhaustion_result).ok());
+  assert(loadComposite(exhaustion_result).ok());
   assert(exhaustion_result.values == candidate(66U));
 
   const std::array<storage::MigrationPhase, 4U> exhausted_phases{{
@@ -1035,6 +1307,7 @@ int main() {
   }};
   for (storage::MigrationPhase phase : exhausted_phases) {
     settings::test_settings_state = exhaustion_settings;
+    settings::test_settings_extension_state = exhaustion_extension;
     settings::test_legacy_state = exhaustion_legacy;
     storage::test_marker_state = exhaustion_marker;
     storage::MigrationMarker phase_marker = exhaustion_identity;
@@ -1053,6 +1326,7 @@ int main() {
   // Prepared exhaustion also fails before writing when the target still names
   // the previous generation.
   settings::test_settings_state = prepared_settings;
+  settings::test_settings_extension_state = prepared_extension;
   settings::test_legacy_state = rollover_legacy;
   storage::test_marker_state = prepared_marker;
   storage::MigrationMarker exhausted_prepared_identity = currentMarker();
@@ -1127,7 +1401,7 @@ int main() {
   assert(execute(owner, penultimate_rollover, plan, authorization) ==
          NativeSettingsMigrationGateCode::Ok);
   assert(authorization.observed_generation == kMaxGeneration);
-  assert(exhaustion_result_core.load(exhaustion_result).ok());
+  assert(loadComposite(exhaustion_result).ok());
   assert(exhaustion_result.values == candidate(66U));
 
   // Marker generations outside the native uint32 range are codec-valid but
@@ -1184,6 +1458,7 @@ function buildAndRun(sanitized) {
       join(idf, "inkloop_product/native_settings_migration_gate.cpp"),
       join(idf, "inkloop_settings/device_settings.cpp"),
       join(idf, "inkloop_settings/settings_journal.cpp"),
+      join(idf, "inkloop_settings/settings_extension_journal.cpp"),
       join(idf, "inkloop_settings/legacy_portal_import.cpp"),
       join(idf, "inkloop_storage/upgrade_recovery_planner.cpp"),
       join(idf, "inkloop_storage/upgrade_marker_journal.cpp"),

@@ -119,7 +119,23 @@ function collectDeviceIdentifiers(value, output = new Set()) {
   return output;
 }
 
+function positivelyUnmounted(info) {
+  if (safeString(info.MountPoint) !== null) return false;
+  if (info.Mounted === false) return true;
+  // Current macOS omits Mounted after a successful diskutil unmount and
+  // instead reports an explicit empty MountPoint plus WritableVolume=false.
+  return info.Mounted === undefined &&
+    Object.hasOwn(info, "MountPoint") && info.MountPoint === "" &&
+    info.WritableVolume === false;
+}
+
 function normalizedMember(info) {
+  const mountPoint = safeString(info.MountPoint);
+  const reportedMounted = safeBoolean(info.Mounted);
+  // Current macOS omits `Mounted` for a filesystem-less whole disk even after
+  // every child volume has been explicitly unmounted. Normalize only that
+  // exact whole-device case; child partitions must still report false.
+  const mounted = positivelyUnmounted(info) ? false : reportedMounted;
   return Object.freeze({
     deviceIdentifier: safeString(info.DeviceIdentifier),
     parentWholeDisk: safeString(info.ParentWholeDisk),
@@ -130,8 +146,8 @@ function normalizedMember(info) {
     volumeUUID: safeString(info.VolumeUUID),
     diskUUID: safeString(info.DiskUUID),
     mediaUUID: safeString(info.MediaUUID),
-    mounted: safeBoolean(info.Mounted),
-    mountPoint: safeString(info.MountPoint),
+    mounted,
+    mountPoint,
     volumeRoles: Array.isArray(info.APFSVolumeRole)
       ? [...info.APFSVolumeRole].filter((entry) => typeof entry === "string").sort()
       : safeString(info.APFSVolumeRole),
@@ -179,8 +195,14 @@ export function validateDiskSnapshot(snapshot, requestedDisk) {
   if (!targetInfo || !targetList || !Array.isArray(memberInfos) ||
       !Array.isArray(rootInfos) || rootInfos.length === 0)
     fail("diskutil snapshot is incomplete");
+  // diskutil's plist key differs across supported macOS releases. Sonoma-era
+  // builds expose `Whole`, while current releases expose `WholeDisk`. Accept
+  // either positive spelling, but fail closed if either spelling explicitly
+  // contradicts the other.
+  const whole = (targetInfo.Whole === true || targetInfo.WholeDisk === true) &&
+    targetInfo.Whole !== false && targetInfo.WholeDisk !== false;
   if (targetInfo.DeviceIdentifier !== disk.identifier ||
-      targetInfo.DeviceNode !== disk.blockPath || targetInfo.Whole !== true)
+      targetInfo.DeviceNode !== disk.blockPath || !whole)
     fail("diskutil did not resolve the exact requested whole disk");
   if (targetInfo.Internal !== false)
     fail("internal or indeterminate media is forbidden");
@@ -209,7 +231,7 @@ export function validateDiskSnapshot(snapshot, requestedDisk) {
     if (!IDENTIFIER_PATTERN.test(info.DeviceIdentifier ?? "") ||
         wholeIdentifier(info.DeviceIdentifier) !== disk.identifier)
       fail("diskutil member info escaped the requested whole disk");
-    if (info.Mounted !== false || safeString(info.MountPoint))
+    if (!positivelyUnmounted(info))
       fail(`target member ${info.DeviceIdentifier} is mounted or mount state is indeterminate; unmount it manually first`);
   }
 
@@ -524,15 +546,62 @@ export async function runCli(argv, runtime = {}) {
   const verify = () => verifyOutputBinding(binding, createdIdentity);
   const startedAt = (runtime.now ?? (() => new Date()))().toISOString();
   const custodyPath = join(binding.output, "custody.json");
-  durableJson(custodyPath, {
-    schema: 1,
-    complete: false,
-    startedAt,
-    disk: disk.blockPath,
-    expectedBytes: expectedSize,
-    confirmedFingerprint: before.fingerprint,
-  }, verify);
+  let captureStage = "capture-initialized";
+  let first = null;
+  let second = null;
+  let imageSha256 = null;
+  const snapshotFingerprints = {
+    before: before.fingerprint,
+    preRead: null,
+    betweenPasses: null,
+    after: null,
+  };
+  const incompleteCustody = (errorMessage = null) => {
+    const firstSha256 = first?.sha256 ?? null;
+    const secondSha256 = second?.sha256 ?? null;
+    const value = {
+      schema: 1,
+      complete: false,
+      startedAt,
+      disk: disk.blockPath,
+      expectedBytes: expectedSize,
+      confirmedFingerprint: before.fingerprint,
+      sourceWritesPerformed: false,
+      automaticUnmountOrEjectPerformed: false,
+      implicitPrivilegeEscalationPerformed: false,
+      captureStage,
+      snapshotFingerprints: { ...snapshotFingerprints },
+      digestSummaries: {
+        sourcePass1: first,
+        sourcePass2: second,
+        capturedImage: imageSha256 === null ? null : {
+          bytes: expectedSize,
+          sha256: imageSha256,
+        },
+      },
+      digestAgreement: {
+        sourcePassesMatch:
+          firstSha256 === null || secondSha256 === null
+            ? null : firstSha256 === secondSha256,
+        sourcePass1MatchesImage:
+          firstSha256 === null || imageSha256 === null
+            ? null : firstSha256 === imageSha256,
+        sourcePass2MatchesImage:
+          secondSha256 === null || imageSha256 === null
+            ? null : secondSha256 === imageSha256,
+      },
+    };
+    if (errorMessage !== null) {
+      value.failedAt = (runtime.now ?? (() => new Date()))().toISOString();
+      value.error = errorMessage;
+    }
+    return value;
+  };
+  const checkpoint = () =>
+    durableJson(custodyPath, incompleteCustody(), verify);
+  checkpoint();
   try {
+    captureStage = "record-before-snapshot";
     durableJson(join(binding.output, "diskutil-info-before.json"),
       beforeRaw.targetInfo, verify);
     durableJson(join(binding.output, "diskutil-list-before.json"),
@@ -540,8 +609,10 @@ export async function runCli(argv, runtime = {}) {
     durableJson(join(binding.output, "diskutil-members-before.json"),
       beforeRaw.memberInfos, verify);
 
+    captureStage = "validate-pre-read-snapshot";
     const preReadRaw = takeSnapshot(disk);
     const preRead = validateDiskSnapshot(preReadRaw, disk);
+    snapshotFingerprints.preRead = preRead.fingerprint;
     if (!sameCaptureIdentity(before, preRead))
       fail("source identity changed before the image read");
     durableJson(join(binding.output, "diskutil-info-pre-read.json"),
@@ -551,7 +622,8 @@ export async function runCli(argv, runtime = {}) {
 
     const partialImage = join(binding.output, "tf-whole-card.img.partial");
     const finalImage = join(binding.output, "tf-whole-card.img");
-    const first = await readRawPass({
+    captureStage = "read-source-pass-1";
+    first = await readRawPass({
       rawPath: disk.rawPath,
       expectedBytes: expectedSize,
       imagePath: partialImage,
@@ -565,29 +637,45 @@ export async function runCli(argv, runtime = {}) {
     try { fsyncSync(outputDirectory); }
     finally { closeSync(outputDirectory); }
     verify();
+    captureStage = "source-pass-1-committed";
+    checkpoint();
 
+    captureStage = "validate-between-passes-snapshot";
     const betweenRaw = takeSnapshot(disk);
     const between = validateDiskSnapshot(betweenRaw, disk);
+    snapshotFingerprints.betweenPasses = between.fingerprint;
     if (!sameCaptureIdentity(before, between))
       fail("source identity changed after the image read");
     durableJson(join(binding.output, "diskutil-info-between.json"),
       betweenRaw.targetInfo, verify);
     durableJson(join(binding.output, "diskutil-members-between.json"),
       betweenRaw.memberInfos, verify);
-    const second = await readRawPass({
+    captureStage = "read-source-pass-2";
+    second = await readRawPass({
       rawPath: disk.rawPath,
       expectedBytes: expectedSize,
       openRaw: runtime.openRaw ?? productionOpenRaw,
       verify,
     });
+    captureStage = "source-pass-2-read";
+    checkpoint();
+    captureStage = "validate-after-snapshot";
     const afterRaw = takeSnapshot(disk);
     const after = validateDiskSnapshot(afterRaw, disk);
+    snapshotFingerprints.after = after.fingerprint;
     if (!sameCaptureIdentity(before, after))
       fail("source identity changed during the verification read");
-    const imageSha256 = hashImage(finalImage, expectedSize);
+    captureStage = "hash-captured-image";
+    imageSha256 = hashImage(finalImage, expectedSize);
+    captureStage = "compare-digests";
+    // Persist all three independently measured summaries before comparing
+    // them. A mismatch or abrupt interruption therefore leaves enough
+    // read-only evidence to distinguish source instability from image damage.
+    checkpoint();
     if (first.sha256 !== second.sha256 || first.sha256 !== imageSha256)
       fail("source pass 1, source pass 2 and captured image SHA-256 do not match");
 
+    captureStage = "finalize-custody";
     durableJson(join(binding.output, "diskutil-info-after.json"),
       afterRaw.targetInfo, verify);
     durableJson(join(binding.output, "diskutil-members-after.json"),
@@ -637,16 +725,9 @@ export async function runCli(argv, runtime = {}) {
     return manifest;
   } catch (error) {
     try {
-      durableJson(custodyPath, {
-        schema: 1,
-        complete: false,
-        startedAt,
-        failedAt: (runtime.now ?? (() => new Date()))().toISOString(),
-        disk: disk.blockPath,
-        expectedBytes: expectedSize,
-        confirmedFingerprint: before.fingerprint,
-        error: error instanceof Error ? error.message : "unknown capture failure",
-      }, verify);
+      durableJson(custodyPath, incompleteCustody(
+        error instanceof Error ? error.message : "unknown capture failure",
+      ), verify);
     } catch {
       // Never follow a changed destination binding just to record an error.
     }

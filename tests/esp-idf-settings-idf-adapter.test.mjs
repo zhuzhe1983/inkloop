@@ -29,6 +29,12 @@ test("legacy NVS adapter has a mechanically read-only surface", () => {
   assert.match(source, /writeSlotAndCommit[\s\S]*nvs_set_blob[\s\S]*nvs_commit/);
   assert.match(source,
     /writeHeadAndMarkerAndCommit[\s\S]*nvs_set_u32[\s\S]*nvs_set_u8[\s\S]*nvs_commit/);
+  assert.match(source,
+    /EspNvsSettingsExtensionJournalStore::writeSlot[\s\S]*nvs_set_blob[\s\S]*nvs_commit/);
+  assert.match(source,
+    /EspNvsSettingsExtensionJournalStore::writeHead[\s\S]*nvs_set_u32[\s\S]*nvs_commit/);
+  assert.match(source, /kSettingsExtensionHeadKey\[\] = "ext-head"/);
+  assert.doesNotMatch(source, /ext-init/);
 });
 
 test("native NVS and PSA adapters compile and honor their ownership contract", () => {
@@ -103,6 +109,9 @@ static unsigned blob_writes = 0;
 static unsigned head_writes = 0;
 static unsigned marker_writes = 0;
 static unsigned commits = 0;
+static bool fail_commit = false;
+static std::vector<std::string> blob_keys;
+static std::vector<std::string> u32_keys;
 
 extern "C" esp_err_t nvs_open(const char* name, int mode, nvs_handle_t* handle) {
   opened_namespace = name ? name : "";
@@ -127,19 +136,23 @@ extern "C" esp_err_t nvs_get_str(
   return ESP_ERR_NVS_NOT_FOUND;
 }
 extern "C" esp_err_t nvs_set_blob(
-    nvs_handle_t, const char*, const void*, size_t size) {
-  assert(size > 0); ++blob_writes; return ESP_OK;
+    nvs_handle_t, const char* key, const void*, size_t size) {
+  assert(size > 0); ++blob_writes;
+  blob_keys.emplace_back(key ? key : "");
+  return ESP_OK;
 }
 extern "C" esp_err_t nvs_set_u32(
-    nvs_handle_t, const char*, uint32_t value) {
-  assert(value > 0); ++head_writes; return ESP_OK;
+    nvs_handle_t, const char* key, uint32_t value) {
+  assert(value > 0); ++head_writes;
+  u32_keys.emplace_back(key ? key : "");
+  return ESP_OK;
 }
 extern "C" esp_err_t nvs_set_u8(
     nvs_handle_t, const char*, uint8_t value) {
   assert(value == kSettingsInitializedMarker); ++marker_writes; return ESP_OK;
 }
 extern "C" esp_err_t nvs_commit(nvs_handle_t) {
-  ++commits; return ESP_OK;
+  ++commits; return fail_commit ? 7 : ESP_OK;
 }
 extern "C" psa_status_t psa_crypto_init(void) { return PSA_SUCCESS; }
 extern "C" psa_status_t psa_hash_compute(
@@ -183,6 +196,34 @@ int main() {
   assert(journal.writeHeadAndMarkerAndCommit(0).code ==
          SettingsError::InvalidArgument);
 
+  EspNvsSettingsExtensionJournalStore extension;
+  SettingsExtensionJournalState extension_state;
+  assert(extension.inspect(extension_state).ok());
+  assert(extension_state.namespace_available);
+  assert(opened_namespace == "ink-settings-v1" &&
+         opened_mode == NVS_READONLY);
+  std::vector<std::uint8_t> extension_record(
+      kSettingsExtensionRecordBytes, 0xA5U);
+  assert(extension.writeSlot(1U, extension_record).ok());
+  assert(blob_writes == 2U && commits == 3U);
+  assert(blob_keys.back() == "ext1");
+  assert(extension.writeHead(11U).ok());
+  assert(head_writes == 2U && commits == 4U);
+  assert(u32_keys.back() == "ext-head");
+  assert(extension.writeSlot(2U, extension_record).code ==
+         SettingsError::InvalidArgument);
+  assert(extension.writeHead(0U).code == SettingsError::InvalidArgument);
+
+  // Each public set is followed by its own commit. A commit failure remains
+  // an uncertain storage failure (the core resolves authority by readback).
+  fail_commit = true;
+  assert(extension.writeSlot(0U, extension_record).code ==
+         SettingsError::Storage);
+  assert(blob_keys.back() == "ext0" && commits == 5U);
+  assert(extension.writeHead(12U).code == SettingsError::Storage);
+  assert(u32_keys.back() == "ext-head" && commits == 6U);
+  fail_commit = false;
+
   EspPsaLegacySha256Verifier verifier;
   const std::string expected =
       "000102030405060708090a0b0c0d0e0f"
@@ -207,6 +248,7 @@ int main() {
       source,
       join(settings, "device_settings.cpp"),
       join(settings, "settings_journal.cpp"),
+      join(settings, "settings_extension_journal.cpp"),
       join(settings, "legacy_portal_import.cpp"),
       join(native, "esp_nvs_settings_store.cpp"),
       "-o", binary,

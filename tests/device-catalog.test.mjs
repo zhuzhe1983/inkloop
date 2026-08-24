@@ -74,3 +74,24 @@ test("the studio has one write-target control while the sidebar only opens detai
   assert.match(studio, /查看设备详情，不切换写入设备/);
   assert.doesNotMatch(studio, /tRuntime\("(?:竖版 528×792|横版 792×528)"\)/);
 });
+
+test("the studio and operator docs describe device cadence without changing browser status polling", async () => {
+  const [studio, english, japanese, handoff, architecture] = await Promise.all([
+    readFile(new URL("../app/ink-studio.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/i18n/en.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/i18n/ja.ts", import.meta.url), "utf8"),
+    readFile(new URL("../HANDOFF.md", import.meta.url), "utf8"),
+    readFile(new URL("../docs/esp32-device-architecture.md", import.meta.url), "utf8"),
+  ]);
+  const copy = "计划保存在设备端；开机联网后每 30 秒同步变更，按本机时钟执行并拉取最新画面。";
+
+  assert.match(studio, new RegExp(copy));
+  assert.doesNotMatch(studio, /开机联网后每 15 秒同步变更/);
+  assert.match(english, /syncs changes every 30 seconds/);
+  assert.match(japanese, /30秒ごとに変更を同期/);
+  assert.match(handoff, /由设备每 30 秒同步服务器 revision/);
+  assert.doesNotMatch(handoff, /由设备每 15 秒同步服务器 revision/);
+  assert.match(architecture, /reports `applied_revision` every 30 seconds/);
+  assert.doesNotMatch(architecture, /reports `applied_revision` every 15 seconds/);
+  assert.match(studio, /window\.setInterval\(\(\) => void refreshEsp32Devices\(\), 15_000\)/);
+});

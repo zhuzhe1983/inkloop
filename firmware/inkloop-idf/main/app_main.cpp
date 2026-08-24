@@ -678,7 +678,19 @@ extern "C" void app_main(void) {
   // for the whole boot and prevents Voice, Portal, Display and Inkloop from
   // accidentally operating on different albums. A missing requested TF card
   // falls back to Automatic without rewriting the user's saved preference.
-  static inkloop::NativeDeviceStateOwner device_state(board, storage);
+  inkloop::IBoardRenderer* const renderer = board_adapter.renderer();
+  if (!renderer) {
+    ESP_LOGE(kTag,
+             "board renderer unavailable; refusing SKU render-setting owner");
+    failPendingBoot("board_renderer");
+    runRecoveryNetwork(recoveryDiagnostic(
+        board, inkloop::recovery::RecoveryReason::BootAuditRefused,
+        inkloop::recovery::RecoveryPhase::BootAudit,
+        inkloop::recovery::RecoveryOutcome::Failed,
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
+  }
+  static inkloop::NativeDeviceStateOwner device_state(
+      board, storage, *renderer);
   const esp_err_t settings_status =
       device_state.initialize(settings_authorization);
   if (settings_status != ESP_OK) {

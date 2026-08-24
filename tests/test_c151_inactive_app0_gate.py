@@ -174,6 +174,7 @@ class Fixture:
             ota_valid_state=2,
             minimum_tf_image_bytes=1,
             minimum_candidate_beta=30,
+            maximum_candidate_beta=30,
         )
         self._write_capture()
         self.acceptance = root / "acceptance.json"
@@ -484,13 +485,14 @@ class C151InactiveApp0GateTests(unittest.TestCase):
             f"emitted CLI failed\nstdout:\n{stdout.getvalue()}\nstderr:\n{stderr.getvalue()}",
         )
 
-    def test_production_policy_requires_fresh_beta30_or_newer_binding(self) -> None:
+    def test_production_policy_requires_exact_fresh_beta31_binding(self) -> None:
         policy = gate.PRODUCTION_POLICY
         self.assertEqual(policy.commit, "")
         self.assertEqual(policy.version, "")
         self.assertEqual(policy.candidate_sha256, "")
         self.assertEqual(policy.candidate_bytes, 0)
-        self.assertEqual(policy.minimum_candidate_beta, 30)
+        self.assertEqual(policy.minimum_candidate_beta, 31)
+        self.assertEqual(policy.maximum_candidate_beta, 31)
         self.assertEqual(policy.minimum_tf_image_bytes, 64 * 1024 * 1024)
         with self.assertRaises(gate.GateError):
             gate._require_bound_policy(policy)
@@ -498,19 +500,27 @@ class C151InactiveApp0GateTests(unittest.TestCase):
             gate.bind_release(
                 policy,
                 "179849653f26027fafaea45ef9f4d289493363f4",
-                "0.4.0-beta.29",
+                "0.4.0-beta.30",
                 "b7128c77dbb52b809a749bbba27aa765be77684e52e33fe460acc492f399411f",
                 2_824_864,
+            )
+        with self.assertRaises(gate.GateError):
+            gate.bind_release(
+                policy,
+                "3" * 40,
+                "0.4.0-beta.32",
+                "b" * 64,
+                2_900_000,
             )
         bound = gate.bind_release(
             policy,
             "2" * 40,
-            "0.4.0-beta.30",
+            "0.4.0-beta.31",
             "a" * 64,
             2_900_000,
         )
         self.assertEqual(bound.commit, "2" * 40)
-        self.assertEqual(bound.version, "0.4.0-beta.30")
+        self.assertEqual(bound.version, "0.4.0-beta.31")
         self.assertEqual(bound.candidate_sha256, "a" * 64)
         self.assertEqual(bound.candidate_bytes, 2_900_000)
         self.assertEqual(policy.app0_offset, 0x10000)
@@ -930,6 +940,62 @@ class C151InactiveApp0GateTests(unittest.TestCase):
         missing_receipt.unlink()
         with self.assertRaisesRegex(gate.GateError, "diskutil-info-after"):
             self.fixture.gate_app(self.temporary / "receipt-rejected")
+
+    def test_gate_accepts_current_macos_unmounted_whole_disk_receipts(self) -> None:
+        info_names = (
+            "diskutil-info-before.json",
+            "diskutil-info-pre-read.json",
+            "diskutil-info-between.json",
+            "diskutil-info-after.json",
+        )
+        member_names = (
+            "diskutil-members-before.json",
+            "diskutil-members-pre-read.json",
+            "diskutil-members-between.json",
+            "diskutil-members-after.json",
+        )
+        target_info = json.loads(
+            (self.fixture.tf_custody_dir / info_names[0]).read_text()
+        )
+        target_info.pop("Whole", None)
+        target_info["WholeDisk"] = True
+        target_info.pop("Mounted", None)
+        target_info["MountPoint"] = ""
+        target_info["WritableVolume"] = False
+        member_infos = json.loads(
+            (self.fixture.tf_custody_dir / member_names[0]).read_text()
+        )
+        for member in member_infos:
+            member.pop("Mounted", None)
+            member["MountPoint"] = ""
+            member["WritableVolume"] = False
+            member["WholeDisk"] = member["DeviceIdentifier"] == "disk9"
+        for name in info_names:
+            (self.fixture.tf_custody_dir / name).write_text(
+                json.dumps(target_info), encoding="utf-8"
+            )
+        for name in member_names:
+            (self.fixture.tf_custody_dir / name).write_text(
+                json.dumps(member_infos), encoding="utf-8"
+            )
+
+        identity = gate._normalized_tf_identity(
+            target_info, member_infos, "/dev/disk9"
+        )
+        fingerprint = gate.canonical_json_sha256(identity)
+        custody = json.loads(self.fixture.tf_custody.read_text())
+        custody["identity"] = identity
+        custody["fingerprint"] = fingerprint
+        custody["snapshotFingerprints"] = {
+            "before": fingerprint,
+            "preRead": fingerprint,
+            "betweenPasses": fingerprint,
+            "after": fingerprint,
+        }
+        self.fixture.tf_custody.write_text(
+            json.dumps(custody), encoding="utf-8"
+        )
+        self.fixture.gate_app(self.temporary / "current-macos-pass")
 
     def test_capture_runner_has_a_strict_read_only_allowlist(self) -> None:
         for operation in gate.READ_ONLY_ESPTOOL_OPERATIONS:

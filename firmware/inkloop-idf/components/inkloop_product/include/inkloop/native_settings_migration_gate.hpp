@@ -102,6 +102,8 @@ class NativeSettingsMigrationGate final {
   settings::DeviceSettings defaults_;
   settings::EspNvsSettingsJournalStore settings_journal_{};
   settings::SettingsStoreCore settings_store_;
+  settings::EspNvsSettingsExtensionJournalStore settings_extension_journal_{};
+  settings::SettingsExtensionStoreCore settings_extension_store_;
   settings::EspNvsReadOnlyLegacyPortalSource legacy_{};
   settings::EspPsaLegacySha256Verifier legacy_sha_{};
   storage::EspNvsMigrationMarkerJournalStore marker_store_{};

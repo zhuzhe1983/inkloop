@@ -128,9 +128,12 @@ test("only a completed real user refresh arms the panel hold", () => {
   );
   assert.ok(
     handler.indexOf("manualPanelHoldActive(nowMs())") <
-      handler.indexOf("renderOrdinal(envelope.flags, user_initiated)"),
+      handler.lastIndexOf("renderOrdinal("),
   );
-  assert.match(handler, /renderOrdinal\(envelope\.flags, user_initiated\)/);
+  assert.match(
+    handler,
+    /renderOrdinal\([\s\S]{0,80}ordinal, user_initiated, constrained_asset\)/,
+  );
 });
 
 test("background writers defer while interactive paths remain explicit", () => {

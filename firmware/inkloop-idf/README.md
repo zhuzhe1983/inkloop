@@ -8,17 +8,24 @@ Status: the native Product graph now composes the C151 board, bounded dual-core
 runtime, Wi-Fi/Portal, storage, display, Inkloop, MyAI voice/AIGC, settings,
 power, Recovery and signed-OTA owners without an Arduino compatibility layer.
 Host fault matrices and official ESP-IDF v6.0.2 C151/mock links prove the
-digital composition. The current candidate worktree is `0.4.0-beta.30`; the
-complete repository suite passes 481/481 and lint has zero errors (19
-warnings). The exact beta28 independent gate failed on TF export, flash
+digital composition. The current candidate worktree is `0.4.0-beta.31`.
+The current working tree passes the complete repository suite 508/508 and lint
+with zero errors/19 existing warnings. Independent focused MyAI acceptance and
+the pinned ESP-IDF WebSocket secret-log audit both report P0=0/P1=0; provider
+diagnostics are fail-closed and the `transport_ws` credential-bearing upgrade
+buffer is suppressed before headers are configured. Its clean exact-commit reproducibility,
+fresh independent digital gate and attached-C151 physical evidence are still
+pending this round; no beta30 hash or acceptance receipt transfers to beta31.
+The exact beta28 independent
+gate failed on TF export, flash
 custody, build reproducibility, failed-wake admission and an undeclared host
 dependency;
 beta29 contains remediations for those findings. Development defaults now
 remove time/path inputs, and new candidate hashes must come from the two-build
-check below. A clean exact-commit reproducibility receipt and fresh independent
-beta30-or-newer gate are still required. Beta29 was never flashed or promoted
-and is revoked; beta30 has not been flashed or promoted. The attached device
-currently has only a beta27 Recovery-path physical pass;
+check below. Beta29 was never flashed or promoted and is revoked. Beta30 was
+never flashed, published or promoted; it is revoked after a real-device I2S
+DMA defect was found. Beta31 has not been flashed, published or promoted. The
+attached device currently has only a beta27 Recovery-path physical pass;
 Product Voice/AIGC/album/display evidence remains behind an explicit,
 operator-gated TF transaction choice.
 

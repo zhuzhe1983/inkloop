@@ -1,6 +1,7 @@
 #include "inkloop/status_led_owner.hpp"
 
 #include "esp_timer.h"
+#include "inkloop/button_latency_telemetry.hpp"
 #include "inkloop/product_opcodes.hpp"
 
 namespace inkloop {
@@ -8,6 +9,10 @@ namespace {
 
 uint32_t nowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+uint32_t nowUs() {
+  return static_cast<uint32_t>(esp_timer_get_time());
 }
 
 }  // namespace
@@ -106,11 +111,20 @@ WorkDisposition EspStatusLedOwner::handleCommand(
     valid = false;
   }
   portEXIT_CRITICAL(&mux_);
-  if (valid) service();
+  if (valid) {
+    // service() performs the physical board write before the feedback
+    // milestone is recorded. Non-button LED request IDs are ignored by the
+    // fixed tracker, so proactive MyAI state changes cannot forge a sample.
+    const bool hardware_written = service();
+    if (hardware_written && latency_) {
+      latency_->recordFeedback(envelope.request_id,
+                               ButtonLatencyOutcome::Led, nowUs());
+    }
+  }
   return valid ? WorkDisposition::Complete : WorkDisposition::Failed;
 }
 
-void EspStatusLedOwner::service() {
+bool EspStatusLedOwner::service() {
   StatusLedFrame frame;
   bool swap_roles = false;
   portENTER_CRITICAL(&mux_);
@@ -118,8 +132,9 @@ void EspStatusLedOwner::service() {
   frame = core_.render(nowMs(), physical_pixels_, swap_roles);
   portEXIT_CRITICAL(&mux_);
   if (frame.count > 0U) {
-    board_.setRgb(frame.pixels.data(), frame.count);
+    return board_.setRgb(frame.pixels.data(), frame.count) == ESP_OK;
   }
+  return false;
 }
 
 }  // namespace inkloop

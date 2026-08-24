@@ -19,6 +19,7 @@
 #include "inkloop/board_prompt_policy.hpp"
 #include "inkloop/diagnostics/diagnostic_detail.hpp"
 #include "inkloop/myai_authorization_retry_policy.hpp"
+#include "inkloop/native_display_service.hpp"
 #include "inkloop/product_opcodes.hpp"
 #include "inkloop/storage/album_index.hpp"
 #include "inkloop/voice_aigc_handoff_policy.hpp"
@@ -29,6 +30,16 @@ namespace inkloop {
 void InternalAudioDeviceDeleter::operator()(
     EspI2sAudioDevice* device) const {
   if (!device) return;
+  const esp_err_t status = device->shutdown();
+  if (status != ESP_OK) {
+    // The IDF TX callback retains `device` as user_context until the channel
+    // is deleted. Leaking internal SRAM on this terminal shutdown fault is
+    // safer than freeing a still-referenced object and causing an ISR UAF.
+    ESP_LOGE("ink-native-voice",
+             "I2S shutdown failed; retaining callback storage: %s",
+             esp_err_to_name(status));
+    return;
+  }
   device->~EspI2sAudioDevice();
   heap_caps_free(device);
 }
@@ -46,6 +57,7 @@ constexpr uint32_t kHeartbeatQueuedWatchdogMs = 5000U;
 constexpr uint32_t kHeartbeatRunningWatchdogMs = 10000U;
 constexpr uint32_t kMinimumReconnectMs = 1000;
 constexpr uint32_t kAigcPollMs = 5000;
+constexpr uint32_t kAudioDiagnosticsPublishMs = 250U;
 // Center permits a detached LocalAI image job to run for five minutes. Keep a
 // 30-second transport margin so a valid late terminal result can still be
 // downloaded, while retaining a finite owner deadline for orphaned jobs.
@@ -70,6 +82,45 @@ static_assert(static_cast<uint8_t>(myai::ErrorCode::InvalidArgument) ==
 static_assert(static_cast<uint8_t>(myai::ErrorCode::Cancelled) ==
               static_cast<uint8_t>(
                   diagnostics::SerialDiagnosticMyAiErrorCode::Cancelled));
+
+WorkDisposition localToolDisplayAdmissionDisposition(
+    AdmissionResult admission) {
+  switch (admission) {
+    case AdmissionResult::QueueFull:
+    case AdmissionResult::NotReady:
+      return WorkDisposition::Busy;
+    case AdmissionResult::StaleGeneration:
+      return WorkDisposition::Cancelled;
+    case AdmissionResult::Expired:
+      return WorkDisposition::TimedOut;
+    case AdmissionResult::Admitted:
+      return WorkDisposition::Complete;
+    case AdmissionResult::InvalidEnvelope:
+    case AdmissionResult::WrongLane:
+    case AdmissionResult::Underflow:
+      return WorkDisposition::Failed;
+  }
+  return WorkDisposition::Failed;
+}
+
+const char* localToolDisplayDispositionName(
+    WorkDisposition disposition) {
+  switch (disposition) {
+    case WorkDisposition::Busy:
+      return "busy";
+    case WorkDisposition::Cancelled:
+      return "cancelled";
+    case WorkDisposition::TimedOut:
+      return "timed_out";
+    case WorkDisposition::Failed:
+      return "failed";
+    case WorkDisposition::Complete:
+      return "complete";
+    case WorkDisposition::Accepted:
+      return "invalid_accepted";
+  }
+  return "failed";
+}
 
 uint32_t diagnosticNowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -315,10 +366,12 @@ NativeVoiceService::NativeVoiceService(IBoardAdapter& board,
                                        RuntimeSupervisor& supervisor,
                                        const char* storage_root,
                                        storage::IAlbumStagingStore* album_store,
+                                       NativeDisplayService* interactive_display,
                                        diagnostics::ISerialDiagnosticEventSink*
                                            serial_diagnostics)
     : board_(board), supervisor_(supervisor), storage_root_(storage_root),
-      album_store_(album_store), serial_diagnostics_(serial_diagnostics),
+      album_store_(album_store), interactive_display_(interactive_display),
+      serial_diagnostics_(serial_diagnostics),
       wire_codec_(board.descriptor().id ? board.descriptor().id
                                         : "inkloop-device") {}
 
@@ -576,7 +629,8 @@ myai::ClientConfig NativeVoiceService::makeConfig() const {
 }
 
 esp_err_t NativeVoiceService::initialize() {
-  if (initialized_ || !storage_root_ || storage_root_[0] != '/')
+  if (initialized_ || !storage_root_ || storage_root_[0] != '/' ||
+      !interactive_display_)
     return ESP_ERR_INVALID_STATE;
   const BoardDescriptor& descriptor = board_.descriptor();
   voice_hardware_available_ =
@@ -590,6 +644,33 @@ esp_err_t NativeVoiceService::initialize() {
     if (!codec) return ESP_ERR_NOT_SUPPORTED;
     status = audio_bridge_->initialize();
     if (status != ESP_OK) return status;
+
+    // Reserve both RX and TX DMA rings before mutexes, stores, networking and
+    // portal state can fragment internal SRAM. Interactive turns only switch
+    // the already-prepared half-duplex channels; they never allocate DMA.
+    void* audio_storage = heap_caps_malloc(
+        sizeof(EspI2sAudioDevice), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!audio_storage) {
+      audio_bridge_.reset();
+      return ESP_ERR_NO_MEM;
+    }
+    EspI2sAudioDevice* audio_device = new (audio_storage)
+        EspI2sAudioDevice(board_.audioConfig(), *codec);
+    if (!esp_ptr_internal(audio_device)) {
+      InternalAudioDeviceDeleter{}(audio_device);
+      audio_bridge_.reset();
+      return ESP_ERR_INVALID_STATE;
+    }
+    audio_device_.reset(audio_device);
+    status = audio_device_->prepare();
+    publishAudioDiagnostics(true);
+    if (status != ESP_OK) {
+      ESP_LOGE(kTag, "I2S DMA preparation failed: %s",
+               esp_err_to_name(status));
+      audio_device_.reset();
+      audio_bridge_.reset();
+      return status;
+    }
   }
   chat_snapshot_mutex_ =
       xSemaphoreCreateMutexStatic(&chat_snapshot_mutex_storage_);
@@ -604,19 +685,9 @@ esp_err_t NativeVoiceService::initialize() {
       vSemaphoreDelete(heartbeat_mutex_);
       heartbeat_mutex_ = nullptr;
     }
+    audio_device_.reset();
+    audio_bridge_.reset();
     return ESP_ERR_NO_MEM;
-  }
-  if (voice_hardware_available_) {
-    void* audio_storage = heap_caps_malloc(
-        sizeof(EspI2sAudioDevice), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!audio_storage) return ESP_ERR_NO_MEM;
-    EspI2sAudioDevice* audio_device = new (audio_storage)
-        EspI2sAudioDevice(board_.audioConfig(), *codec);
-    if (!esp_ptr_internal(audio_device)) {
-      InternalAudioDeviceDeleter{}(audio_device);
-      return ESP_ERR_INVALID_STATE;
-    }
-    audio_device_.reset(audio_device);
   }
 
   local_tools::ILocalToolsAdapter* settings = nullptr;
@@ -691,6 +762,7 @@ void NativeVoiceService::shutdown() {
   if (audio_device_) {
     if (local_prompts_.busy()) local_prompts_.cancel(*audio_device_);
     audio_device_->abort();
+    publishAudioDiagnostics(true);
   }
   if (audio_bridge_) audio_bridge_->abort();
   clearVoiceHeartbeatMailbox();
@@ -699,6 +771,12 @@ void NativeVoiceService::shutdown() {
   wss_.setIngressReadyGate(nullptr, nullptr);
   audio_device_.reset();
   audio_bridge_.reset();
+  portENTER_CRITICAL(&diagnostics_mux_);
+  diagnostics_.audio_available = false;
+  diagnostics_.audio = EspI2sAudioDiagnostics{};
+  portEXIT_CRITICAL(&diagnostics_mux_);
+  audio_diagnostics_published_ = false;
+  audio_diagnostics_last_publish_ms_ = 0U;
   if (album_store_) album_store_->abort();
   chat_log_.reset();
   chat_store_.reset();
@@ -713,6 +791,15 @@ void NativeVoiceService::shutdown() {
   local_prompts_ = LocalPromptPlayer();
   text_pool_.clear();
   local_tools_session_.cancelConfirmation();
+  uint64_t pending_display_request = 0U;
+  portENTER_CRITICAL(&local_tool_display_mux_);
+  pending_display_request = local_tool_display_correlation_.requestId();
+  local_tool_display_correlation_.reset();
+  portEXIT_CRITICAL(&local_tool_display_mux_);
+  if (interactive_display_ && pending_display_request != 0U) {
+    (void)interactive_display_->cancelInteractiveAlbumSelection(
+        pending_display_request);
+  }
   std::fill(local_confirmation_token_.begin(),
             local_confirmation_token_.end(), '\0');
   local_confirmation_token_.clear();
@@ -810,6 +897,9 @@ esp_err_t NativeVoiceService::attachLocalTools(
   local_confirmation_pending_ = false;
   local_confirmation_format_pending_ = false;
   portEXIT_CRITICAL(&local_tools_mux_);
+  portENTER_CRITICAL(&local_tool_display_mux_);
+  local_tool_display_correlation_.reset();
+  portEXIT_CRITICAL(&local_tool_display_mux_);
   local_tools_session_.cancelConfirmation();
   std::fill(local_confirmation_token_.begin(),
             local_confirmation_token_.end(), '\0');
@@ -834,10 +924,11 @@ esp_err_t NativeVoiceService::configureHandlers() {
 
 AdmissionResult NativeVoiceService::post(WorkClass work_class,
                                          ProductOpcode opcode, uint8_t flags,
-                                         uint32_t deadline_ms) {
+                                         uint32_t deadline_ms,
+                                         uint64_t request_id) {
   WorkEnvelope envelope{};
   envelope.generation = 1;
-  envelope.request_id = nextRequestId();
+  envelope.request_id = request_id == 0U ? nextRequestId() : request_id;
   envelope.deadline_ms = deadline_ms == 0 ? 0 : nowMs() + deadline_ms;
   envelope.opcode = productOpcode(opcode);
   envelope.work_class = work_class;
@@ -847,7 +938,29 @@ AdmissionResult NativeVoiceService::post(WorkClass work_class,
   return supervisor_.post(envelope);
 }
 
-AdmissionResult NativeVoiceService::enqueueTopButton() {
+AdmissionResult NativeVoiceService::postLocalToolDisplaySelection(
+    uint64_t request_id, uint8_t zero_based_ordinal) {
+  if (request_id == 0U ||
+      zero_based_ordinal >= local_tools::kMaximumImageOrdinal) {
+    return AdmissionResult::InvalidEnvelope;
+  }
+  WorkEnvelope envelope{};
+  envelope.generation = 1U;
+  envelope.request_id = request_id;
+  envelope.deadline_ms = nowMs() + kLocalToolDisplayResultTimeoutMs;
+  envelope.payload_bytes = kLocalToolDisplaySelectionPayloadMarker;
+  envelope.opcode =
+      productOpcode(ProductOpcode::DisplayInteractiveAlbumOrdinal);
+  envelope.work_class = WorkClass::Display;
+  envelope.kind = EnvelopeKind::Command;
+  envelope.disposition = WorkDisposition::Accepted;
+  envelope.flags = static_cast<uint8_t>(
+      kLocalToolDisplaySelectionFlag | zero_based_ordinal);
+  return supervisor_.post(envelope);
+}
+
+AdmissionResult NativeVoiceService::enqueueTopButton(
+    uint64_t button_event_id) {
   if (!voice_hardware_available_) return AdmissionResult::NotReady;
   if (maintenanceBlocksInteractiveWork()) return AdmissionResult::QueueFull;
   portENTER_CRITICAL(&local_tools_mux_);
@@ -860,17 +973,19 @@ AdmissionResult NativeVoiceService::enqueueTopButton() {
     const AdmissionResult admitted = post(
         WorkClass::Portal, ProductOpcode::PortalConfirmLocalTool,
         confirm_format ? 0U : 1U,
-        kLocalToolDeadlineMs);
+        kLocalToolDeadlineMs, button_event_id);
     if (!confirm_format && admitted != AdmissionResult::Admitted)
       finishTrackedStorageWork();
+    if (admitted == AdmissionResult::Admitted && button_event_id != 0U)
+      (void)postVoiceLed(VoiceLedMode::Thinking, button_event_id);
     return admitted;
   }
   return post(WorkClass::Voice, ProductOpcode::VoiceTopButton, 0,
-              kResponsiveDeadlineMs);
+              kResponsiveDeadlineMs, button_event_id);
 }
 
 AdmissionResult NativeVoiceService::enqueueAlbumOrdinal(
-    size_t one_based_ordinal, bool refresh_start) {
+    size_t one_based_ordinal, bool refresh_start, uint64_t request_id) {
   if (!voice_hardware_available_) return AdmissionResult::NotReady;
   if (maintenanceBlocksInteractiveWork()) return AdmissionResult::QueueFull;
   if (one_based_ordinal == 0 || one_based_ordinal > 99U)
@@ -878,10 +993,12 @@ AdmissionResult NativeVoiceService::enqueueAlbumOrdinal(
   return post(WorkClass::Voice,
               refresh_start ? ProductOpcode::VoicePromptRefreshOrdinal
                             : ProductOpcode::VoicePromptOrdinal,
-              static_cast<uint8_t>(one_based_ordinal), kResponsiveDeadlineMs);
+              static_cast<uint8_t>(one_based_ordinal), kResponsiveDeadlineMs,
+              request_id);
 }
 
-AdmissionResult NativeVoiceService::enqueueLocalPrompt(LocalPrompt prompt) {
+AdmissionResult NativeVoiceService::enqueueLocalPrompt(
+    LocalPrompt prompt, uint64_t request_id) {
   if (!voice_hardware_available_) return AdmissionResult::NotReady;
   if (maintenanceBlocksInteractiveWork()) return AdmissionResult::QueueFull;
   ProductOpcode opcode = ProductOpcode::None;
@@ -909,7 +1026,8 @@ AdmissionResult NativeVoiceService::enqueueLocalPrompt(LocalPrompt prompt) {
   const uint8_t flags = opcode == ProductOpcode::VoicePromptToolStatus
       ? static_cast<uint8_t>(prompt)
       : 0U;
-  return post(WorkClass::Voice, opcode, flags, kResponsiveDeadlineMs);
+  return post(WorkClass::Voice, opcode, flags, kResponsiveDeadlineMs,
+              request_id);
 }
 
 AdmissionResult NativeVoiceService::enqueueVolumePreview(
@@ -1126,9 +1244,11 @@ AdmissionResult NativeVoiceService::postVoiceState(myai::VoiceState state) {
               static_cast<uint8_t>(state), kResponsiveDeadlineMs);
 }
 
-AdmissionResult NativeVoiceService::postVoiceLed(VoiceLedMode mode) {
+AdmissionResult NativeVoiceService::postVoiceLed(VoiceLedMode mode,
+                                                  uint64_t request_id) {
   return post(WorkClass::LedStatus, ProductOpcode::SetVoiceLed,
-              static_cast<uint8_t>(mode), kResponsiveDeadlineMs);
+              static_cast<uint8_t>(mode), kResponsiveDeadlineMs,
+              request_id);
 }
 
 AdmissionResult NativeVoiceService::postImageLed(ImageLedMode mode) {
@@ -1168,7 +1288,7 @@ WorkDisposition NativeVoiceService::handleVoice(
       envelope.work_class != WorkClass::Voice)
     return WorkDisposition::Failed;
   if (envelope.opcode == productOpcode(ProductOpcode::VoiceTopButton))
-    return handleTopButton();
+    return handleTopButton(envelope);
   if (envelope.opcode == productOpcode(ProductOpcode::VoicePromptOrdinal) ||
       envelope.opcode ==
           productOpcode(ProductOpcode::VoicePromptRefreshOrdinal) ||
@@ -1342,7 +1462,8 @@ void NativeVoiceService::restoreVolumeAfterPreview() {
   hardware_volume_percent_ = saved;
 }
 
-WorkDisposition NativeVoiceService::handleTopButton() {
+WorkDisposition NativeVoiceService::handleTopButton(
+    const WorkEnvelope& envelope) {
   if (!client_ || !audio_device_) return WorkDisposition::Failed;
   if (local_prompts_.busy()) {
     local_prompts_.cancel(*audio_device_);
@@ -1354,14 +1475,14 @@ WorkDisposition NativeVoiceService::handleTopButton() {
       !audio_bridge_->captureBusy()) {
     voice_begin_pending_ = true;
     noteVoiceTurnActive(true);
-    postVoiceLed(VoiceLedMode::Thinking);
+    postVoiceLed(VoiceLedMode::Thinking, envelope.request_id);
     const AdmissionResult queued = post(
         WorkClass::MyAiNetwork, ProductOpcode::NetworkVoiceBegin, 0,
         kNetworkDeadlineMs);
     if (queued != AdmissionResult::Admitted) {
       voice_begin_pending_ = false;
       noteVoiceTurnActive(false);
-      postVoiceLed(VoiceLedMode::Error);
+      postVoiceLed(VoiceLedMode::Error, envelope.request_id);
       return WorkDisposition::Busy;
     }
     return WorkDisposition::Complete;
@@ -1373,8 +1494,9 @@ WorkDisposition NativeVoiceService::handleTopButton() {
       failVoiceHardware();
       return WorkDisposition::Failed;
     }
+    publishAudioDiagnostics(true);
     voice_task_state_ = myai::VoiceState::Thinking;
-    postVoiceLed(VoiceLedMode::Thinking);
+    postVoiceLed(VoiceLedMode::Thinking, envelope.request_id);
     return WorkDisposition::Complete;
   }
   if (voice_begin_pending_ ||
@@ -1387,11 +1509,11 @@ WorkDisposition NativeVoiceService::handleTopButton() {
     const AdmissionResult queued = post(
         WorkClass::MyAiNetwork, ProductOpcode::NetworkVoiceCancel, 0,
         kNetworkDeadlineMs);
-    postVoiceLed(VoiceLedMode::Blocked);
+    postVoiceLed(VoiceLedMode::Blocked, envelope.request_id);
     return queued == AdmissionResult::Admitted ? WorkDisposition::Complete
                                                 : WorkDisposition::Busy;
   }
-  postVoiceLed(VoiceLedMode::Blocked);
+  postVoiceLed(VoiceLedMode::Blocked, envelope.request_id);
   return WorkDisposition::Busy;
 }
 
@@ -1407,6 +1529,7 @@ WorkDisposition NativeVoiceService::startCapture() {
     failVoiceHardware();
     return WorkDisposition::Failed;
   }
+  publishAudioDiagnostics(true);
   postVoiceLed(VoiceLedMode::Listening);
   return WorkDisposition::Complete;
 }
@@ -1452,9 +1575,11 @@ void NativeVoiceService::reconcileVoiceState(myai::VoiceState state) {
       postVoiceLed(VoiceLedMode::Error);
       break;
   }
+  publishAudioDiagnostics(true);
 }
 
 void NativeVoiceService::failVoiceHardware() {
+  publishAudioDiagnostics(true);
   portENTER_CRITICAL(&diagnostics_mux_);
   ++diagnostics_.audio_failures;
   portEXIT_CRITICAL(&diagnostics_mux_);
@@ -1472,8 +1597,29 @@ void NativeVoiceService::failVoiceHardware() {
        kNetworkDeadlineMs);
 }
 
+void NativeVoiceService::publishAudioDiagnostics(bool force) {
+  const uint32_t now_ms = nowMs();
+  if (!force && audio_diagnostics_published_ &&
+      !due(now_ms, audio_diagnostics_last_publish_ms_ +
+                       kAudioDiagnosticsPublishMs)) {
+    return;
+  }
+  EspI2sAudioDiagnostics audio{};
+  const bool available = audio_device_ != nullptr;
+  if (available) audio = audio_device_->diagnostics();
+  portENTER_CRITICAL(&diagnostics_mux_);
+  diagnostics_.audio_available = available;
+  diagnostics_.audio = audio;
+  portEXIT_CRITICAL(&diagnostics_mux_);
+  audio_diagnostics_last_publish_ms_ = now_ms;
+  audio_diagnostics_published_ = true;
+}
+
 void NativeVoiceService::serviceVoice() {
-  if (!audio_device_) return;
+  if (!audio_device_) {
+    publishAudioDiagnostics();
+    return;
+  }
   portENTER_CRITICAL(&settings_mux_);
   const uint8_t saved_volume = saved_volume_percent_;
   const bool preview_active = volume_preview_active_;
@@ -1484,6 +1630,7 @@ void NativeVoiceService::serviceVoice() {
   }
   if (local_prompts_.busy()) {
     const esp_err_t local = local_prompts_.service(*audio_device_);
+    publishAudioDiagnostics(local != ESP_OK);
     if (local != ESP_OK) {
       restoreVolumeAfterPreview();
       noteLocalAudioActive(false);
@@ -1516,18 +1663,52 @@ void NativeVoiceService::serviceVoice() {
     voice_task_state_ = myai::VoiceState::Ready;
     postVoiceLed(VoiceLedMode::Ready);
   }
+  publishAudioDiagnostics();
 }
 
 bool NativeVoiceService::handleControlResult(
     const WorkEnvelope& envelope) {
   if (envelope.kind != EnvelopeKind::Result) return false;
+  if (envelope.work_class == WorkClass::Display &&
+      envelope.opcode ==
+          productOpcode(ProductOpcode::DisplayInteractiveAlbumOrdinal) &&
+      (envelope.flags & kLocalToolDisplaySelectionFlag) != 0U) {
+    // Control is the highest-priority consumer in this chain. It only copies
+    // the terminal disposition into the fixed correlation state while holding
+    // one short cross-core critical section; chat allocation, storage and
+    // prompt admission are deferred to Portal.
+    portENTER_CRITICAL(&local_tool_display_mux_);
+    const bool correlated =
+        local_tool_display_correlation_.matches(
+            envelope.request_id,
+            envelope.flags & kLocalToolDisplayOrdinalMask);
+    if (correlated) {
+      (void)local_tool_display_correlation_.resolve(
+          envelope.request_id, envelope.disposition);
+    }
+    portEXIT_CRITICAL(&local_tool_display_mux_);
+    if (correlated) return true;
+  }
   if (envelope.work_class == WorkClass::Voice &&
-      (envelope.opcode ==
+      (envelope.opcode == productOpcode(ProductOpcode::VoiceTopButton) ||
+       envelope.opcode ==
            productOpcode(ProductOpcode::VoiceApplyVolume) ||
        envelope.opcode ==
            productOpcode(ProductOpcode::VoiceApplyAssistance) ||
        envelope.opcode ==
-           productOpcode(ProductOpcode::VoicePreviewVolume)))
+           productOpcode(ProductOpcode::VoicePreviewVolume) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::VoicePromptOrdinal) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::VoicePromptRefreshOrdinal) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::VoicePromptPleaseWait) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::VoicePromptAlbumEmpty) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::VoicePromptDeviceRestored) ||
+       envelope.opcode ==
+           productOpcode(ProductOpcode::VoicePromptToolStatus)))
     return true;
   if (envelope.work_class == WorkClass::Storage &&
       (envelope.opcode == productOpcode(ProductOpcode::StorageAppendChat) ||
@@ -2413,10 +2594,17 @@ WorkDisposition NativeVoiceService::handlePortalCommand(
   if (envelope.opcode == productOpcode(ProductOpcode::PortalRunLocalTool) ||
       envelope.opcode ==
           productOpcode(ProductOpcode::PortalConfirmLocalTool)) {
+    // Drain an earlier Display terminal before admitting another selection.
+    // A still-awaiting first request remains owned and the second selection
+    // fails explicitly instead of replacing its correlation record.
+    serviceLocalToolDisplayResult(nowMs());
     const WorkDisposition disposition = handleLocalToolCommand(envelope);
-    if (envelope.opcode ==
+    const bool display_owns_request =
+        localToolDisplayOwns(envelope.request_id);
+    if (!display_owns_request &&
+        (envelope.opcode ==
             productOpcode(ProductOpcode::PortalRunLocalTool) ||
-        envelope.flags != 0U) {
+         envelope.flags != 0U)) {
       finishTrackedStorageWork();
     }
     return disposition;
@@ -2434,11 +2622,13 @@ WorkDisposition NativeVoiceService::handlePortalCommand(
 }
 
 void NativeVoiceService::portalTick(bool album_mutation_allowed) {
+  serviceLocalToolDisplayResult(nowMs());
   serviceAigc(album_mutation_allowed);
 }
 
 bool NativeVoiceService::portalBusy() const {
-  return aigcBusy() || storageMaintenanceActive() || voiceHeartbeatActive();
+  return aigcBusy() || localToolDisplayActive() ||
+      storageMaintenanceActive() || voiceHeartbeatActive();
 }
 
 bool NativeVoiceService::aigcBusy() const {
@@ -2479,6 +2669,7 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
     std::string configured_template;
     std::string configured_negative;
     std::string configured_render_strategy;
+    uint8_t configured_steps = 0U;
     local_tools::ILocalToolsAdapter* settings = nullptr;
     portENTER_CRITICAL(&local_tools_mux_);
     settings = local_tools_adapter_;
@@ -2497,6 +2688,12 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
         !settings->queryDefaultRenderStrategy(
              configured_render_strategy).ok()) {
       configured_render_strategy = kOfficialQualityRenderStrategy;
+    }
+    if (!settings || !settings->queryAigcSteps(configured_steps).ok() ||
+        configured_steps < local_tools::kMinimumAigcSteps ||
+        configured_steps > local_tools::kMaximumAigcSteps) {
+      finishAigc(false, "aigc.steps_unavailable");
+      return;
     }
     IBoardRenderer* renderer = board_.renderer();
     const BoardRenderStrategyCatalog catalog =
@@ -2522,7 +2719,7 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
     aigc_request_.negativePrompt = configured_negative;
     aigc_render_strategy_ = configured_render_strategy;
     aigc_request_.size = aigcImageSize(board_.descriptor());
-    aigc_request_.steps = 20;
+    aigc_request_.steps = configured_steps;
     aigc_request_.maxEncodedBytes = 2U * 1024U * 1024U;
     aigc_request_.maxDecodedBytes = storage::kMaximumAlbumAssetBytes;
     if (aigc_request_.prompt.empty()) {
@@ -2531,6 +2728,7 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
     }
     queueChat(ProductTextKind::AigcState,
               std::string("aigc.request size=") + aigc_request_.size +
+                  " steps=" + std::to_string(aigc_request_.steps) +
                   " prompt=" + aigc_request_.prompt);
     status = client_->startImage(aigc_request_, aigc_generated_);
     if (status.ok()) {
@@ -2921,6 +3119,87 @@ bool NativeVoiceService::queueLocalTool(
   return false;
 }
 
+bool NativeVoiceService::localToolDisplayOwns(uint64_t request_id) const {
+  portENTER_CRITICAL(&local_tool_display_mux_);
+  const bool owns = local_tool_display_correlation_.owns(request_id);
+  portEXIT_CRITICAL(&local_tool_display_mux_);
+  return owns;
+}
+
+bool NativeVoiceService::localToolDisplayActive() const {
+  portENTER_CRITICAL(&local_tool_display_mux_);
+  const bool active = local_tool_display_correlation_.active();
+  portEXIT_CRITICAL(&local_tool_display_mux_);
+  return active;
+}
+
+void NativeVoiceService::serviceLocalToolDisplayResult(uint32_t now_ms) {
+  LocalToolDisplayTerminal terminal;
+  portENTER_CRITICAL(&local_tool_display_mux_);
+  (void)local_tool_display_correlation_.expire(now_ms);
+  const bool ready = local_tool_display_correlation_.takeTerminal(terminal);
+  portEXIT_CRITICAL(&local_tool_display_mux_);
+  if (!ready) return;
+
+  // The selected-image command kept one tracked album operation alive from
+  // Portal admission through this exact terminal result. Release it once,
+  // after the correlation state is cleared, so maintenance and sleep cannot
+  // cross an in-flight Display request.
+  if (interactive_display_) {
+    (void)interactive_display_->cancelInteractiveAlbumSelection(
+        terminal.request_id);
+  }
+  finishTrackedStorageWork();
+
+  const char* command = local_tools::commandName(
+      local_tools::CommandKind::SelectImageOrdinal);
+  if (terminal.disposition != WorkDisposition::Complete) {
+    queueChat(ProductTextKind::ToolState,
+              std::string("local_tool.failed command=") + command +
+                  " stage=display disposition=" +
+                  localToolDisplayDispositionName(terminal.disposition) +
+                  " ordinal=" + std::to_string(terminal.ordinal) +
+                  " request_id=" + std::to_string(terminal.request_id));
+    if (enqueueLocalPrompt(LocalPrompt::Error, terminal.request_id) !=
+        AdmissionResult::Admitted) {
+      queueChat(ProductTextKind::ToolState,
+                std::string("local_tool.feedback_queue_busy command=") +
+                    command + " request_id=" +
+                    std::to_string(terminal.request_id));
+    }
+    return;
+  }
+
+  // Display Complete is the only state allowed to enqueue the ordinal speech.
+  // Reuse the same request_id so Control can diagnose the complete bounded
+  // Portal -> Display -> Control -> Voice chain without a heap-backed token.
+  const AdmissionResult announced = enqueueAlbumOrdinal(
+      terminal.ordinal, false, terminal.request_id);
+  if (announced != AdmissionResult::Admitted) {
+    queueChat(ProductTextKind::ToolState,
+              std::string("local_tool.failed command=") + command +
+                  " stage=voice_prompt display=complete admission=" +
+                  admissionResultName(announced) + " ordinal=" +
+                  std::to_string(terminal.ordinal) + " request_id=" +
+                  std::to_string(terminal.request_id));
+    (void)enqueueLocalPrompt(LocalPrompt::Error, terminal.request_id);
+    return;
+  }
+
+  local_tools::ToolOutcome completed;
+  completed.code = local_tools::ExecutionCode::Executed;
+  completed.parse_code = local_tools::ParseCode::Matched;
+  completed.command = local_tools::CommandKind::SelectImageOrdinal;
+  completed.album_selection.asset_id = terminal.expected_asset_id.data();
+  completed.album_selection.zero_based_index = terminal.ordinal - 1U;
+  completed.album_selection.ordinal = terminal.ordinal;
+  completed.album_selection.total = terminal.total;
+  queueChat(ProductTextKind::ToolState,
+            describeLocalToolOutcome(completed) +
+                " display=complete voice_prompt_queued=1 request_id=" +
+                std::to_string(terminal.request_id));
+}
+
 std::string NativeVoiceService::describeLocalToolOutcome(
     const local_tools::ToolOutcome& outcome) {
   const char* command = local_tools::commandName(outcome.command);
@@ -2958,15 +3237,34 @@ std::string NativeVoiceService::describeLocalToolOutcome(
           " remaining_bytes=" +
           std::to_string(outcome.storage.remaining_bytes) +
           " total_bytes=" + std::to_string(outcome.storage.total_bytes);
+    case local_tools::CommandKind::ListAlbum:
+      return std::string("local_tool.ok command=") + command +
+          " count=" + std::to_string(outcome.album_summary.count) +
+          " current_ordinal=" +
+          std::to_string(outcome.album_summary.current_ordinal);
+    case local_tools::CommandKind::SelectImageOrdinal:
+      // Do not put the resolved asset ID/path into chat. The bounded ordinal
+      // and count are enough to correlate the later Display result.
+      return std::string("local_tool.ok command=") + command +
+          " ordinal=" + std::to_string(outcome.album_selection.ordinal) +
+          " total=" + std::to_string(outcome.album_selection.total);
     case local_tools::CommandKind::QueryVolume:
     case local_tools::CommandKind::SetVolume:
     case local_tools::CommandKind::SetLedMaximumBrightness:
       return std::string("local_tool.ok command=") + command +
           " percent=" + std::to_string(outcome.percent);
+    case local_tools::CommandKind::QueryAigcSteps:
+    case local_tools::CommandKind::SetAigcSteps:
+      return std::string("local_tool.ok command=") + command +
+          " steps=" + std::to_string(outcome.steps);
     case local_tools::CommandKind::QueryAssistantPrompt:
     case local_tools::CommandKind::SetAssistantPrompt:
     case local_tools::CommandKind::QueryAigcPrompt:
     case local_tools::CommandKind::SetAigcPrompt:
+    case local_tools::CommandKind::QueryAigcNegativePrompt:
+    case local_tools::CommandKind::SetAigcNegativePrompt:
+    case local_tools::CommandKind::QueryDefaultRenderStrategy:
+    case local_tools::CommandKind::SetDefaultRenderStrategy:
       return std::string("local_tool.ok command=") + command +
           " value=" + outcome.text;
     case local_tools::CommandKind::DeleteImageOrdinal:
@@ -2981,13 +3279,17 @@ std::string NativeVoiceService::describeLocalToolOutcome(
 }
 
 void NativeVoiceService::publishLocalToolOutcome(
-    const local_tools::ToolOutcome& outcome) {
+    const local_tools::ToolOutcome& outcome, uint64_t request_id) {
   portENTER_CRITICAL(&local_tools_mux_);
   local_confirmation_pending_ = local_tools_session_.confirmationPending();
   local_confirmation_format_pending_ = local_confirmation_pending_ &&
       outcome.command == local_tools::CommandKind::FormatTfCard;
   portEXIT_CRITICAL(&local_tools_mux_);
-  queueChat(ProductTextKind::ToolState, describeLocalToolOutcome(outcome));
+  const std::string description = describeLocalToolOutcome(outcome);
+  const bool defer_select_log =
+      outcome.code == local_tools::ExecutionCode::Executed &&
+      outcome.command == local_tools::CommandKind::SelectImageOrdinal;
+  if (!defer_select_log) queueChat(ProductTextKind::ToolState, description);
   LocalPrompt feedback = LocalPrompt::Error;
   bool feedback_available = true;
   if (outcome.code == local_tools::ExecutionCode::ConfirmationRequired) {
@@ -3014,12 +3316,20 @@ void NativeVoiceService::publishLocalToolOutcome(
       case local_tools::CommandKind::SetVolume:
       case local_tools::CommandKind::SetAssistantPrompt:
       case local_tools::CommandKind::SetAigcPrompt:
+      case local_tools::CommandKind::SetAigcSteps:
+      case local_tools::CommandKind::SetAigcNegativePrompt:
+      case local_tools::CommandKind::SetDefaultRenderStrategy:
       case local_tools::CommandKind::SetLedMaximumBrightness:
         feedback = LocalPrompt::SettingsSaved;
         break;
+      case local_tools::CommandKind::ListAlbum:
+      case local_tools::CommandKind::SelectImageOrdinal:
       case local_tools::CommandKind::QueryVolume:
       case local_tools::CommandKind::QueryAssistantPrompt:
       case local_tools::CommandKind::QueryAigcPrompt:
+      case local_tools::CommandKind::QueryAigcSteps:
+      case local_tools::CommandKind::QueryAigcNegativePrompt:
+      case local_tools::CommandKind::QueryDefaultRenderStrategy:
       case local_tools::CommandKind::None:
         // Exact dynamic results stay in the local chat log. Avoid a false
         // fixed phrase for these queries until dynamic TTS is available.
@@ -3041,6 +3351,57 @@ void NativeVoiceService::publishLocalToolOutcome(
     emitSerialDiagnostic(event);
   }
   if (outcome.code != local_tools::ExecutionCode::Executed) return;
+
+  if (outcome.command == local_tools::CommandKind::SelectImageOrdinal) {
+    LocalToolDisplayArmResult armed = LocalToolDisplayArmResult::Invalid;
+    portENTER_CRITICAL(&local_tool_display_mux_);
+    armed = local_tool_display_correlation_.arm(
+        request_id, outcome.album_selection.ordinal,
+        outcome.album_selection.total, outcome.album_selection.asset_id,
+        nowMs(), kLocalToolDisplayResultTimeoutMs);
+    portEXIT_CRITICAL(&local_tool_display_mux_);
+    if (armed != LocalToolDisplayArmResult::Armed) {
+      queueChat(ProductTextKind::ToolState,
+                std::string("local_tool.failed command=") +
+                    local_tools::commandName(outcome.command) +
+                    " stage=correlation reason=" +
+                    (armed == LocalToolDisplayArmResult::Busy
+                         ? "selection_busy"
+                         : "invalid_selection") +
+                    " request_id=" + std::to_string(request_id));
+      (void)enqueueLocalPrompt(LocalPrompt::Error, request_id);
+      return;
+    }
+
+    WorkDisposition terminal = WorkDisposition::Accepted;
+    const NativeInteractiveSelectionStageResult staged = interactive_display_
+        ? interactive_display_->stageInteractiveAlbumSelection(
+              request_id, outcome.album_selection.zero_based_index,
+              outcome.album_selection.asset_id)
+        : NativeInteractiveSelectionStageResult::Invalid;
+    if (staged != NativeInteractiveSelectionStageResult::Staged) {
+      terminal = staged == NativeInteractiveSelectionStageResult::Busy
+          ? WorkDisposition::Busy
+          : WorkDisposition::Failed;
+    } else {
+      const AdmissionResult displayed = postLocalToolDisplaySelection(
+          request_id,
+          static_cast<uint8_t>(outcome.album_selection.zero_based_index));
+      if (displayed != AdmissionResult::Admitted) {
+        (void)interactive_display_->cancelInteractiveAlbumSelection(request_id);
+        terminal = localToolDisplayAdmissionDisposition(displayed);
+      }
+    }
+    if (terminal != WorkDisposition::Accepted) {
+      portENTER_CRITICAL(&local_tool_display_mux_);
+      (void)local_tool_display_correlation_.resolve(request_id, terminal);
+      portEXIT_CRITICAL(&local_tool_display_mux_);
+    }
+    // No local_tool.ok and no ordinal speech are emitted here. The exact
+    // Display Result, or the bounded result timeout, is settled later on the
+    // Portal lane by serviceLocalToolDisplayResult().
+    return;
+  }
 
   AdmissionResult applied = AdmissionResult::Admitted;
   if (outcome.command == local_tools::CommandKind::SetVolume) {
@@ -3109,7 +3470,7 @@ WorkDisposition NativeVoiceService::handleLocalToolCommand(
   } else {
     return WorkDisposition::Failed;
   }
-  publishLocalToolOutcome(outcome);
+  publishLocalToolOutcome(outcome, envelope.request_id);
   return WorkDisposition::Complete;
 }
 

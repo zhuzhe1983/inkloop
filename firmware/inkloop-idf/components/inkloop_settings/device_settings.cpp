@@ -33,6 +33,7 @@ bool operator==(const DeviceSettings& left, const DeviceSettings& right) {
       left.voice_assistance_enabled == right.voice_assistance_enabled &&
       left.assistant_prompt == right.assistant_prompt &&
       left.aigc_prompt_template == right.aigc_prompt_template &&
+      left.aigc_steps == right.aigc_steps &&
       left.negative_prompt == right.negative_prompt &&
       left.asset_storage_preference == right.asset_storage_preference &&
       left.default_render_strategy == right.default_render_strategy &&
@@ -116,6 +117,8 @@ bool validDeviceSettings(const DeviceSettings& value) {
                     false) &&
       validUtf8Text(value.aigc_prompt_template,
                     kMaximumAigcPromptTemplateBytes, false) &&
+      value.aigc_steps >= kMinimumAigcSteps &&
+      value.aigc_steps <= kMaximumAigcSteps &&
       validUtf8Text(value.negative_prompt, kMaximumNegativePromptBytes, true) &&
       validRenderStrategyId(value.default_render_strategy) &&
       validLocalManagementPasswordOverride(

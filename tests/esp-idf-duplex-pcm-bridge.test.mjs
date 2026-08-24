@@ -493,12 +493,15 @@ class EspI2sAudioDevice {
   int abortCalls = 0;
   int preloadedStartCalls = 0;
   int finishCalls = 0;
+  int pauseIngressCalls = 0;
+  int resumeIngressCalls = 0;
   int invalidWriteCalls = 0;
   bool drained = true;
   bool modelPreload = false;
   bool playbackOpen = false;
   bool playbackEnabled = false;
   bool playbackSourceFinished = false;
+  bool playbackIngressOpen = false;
   bool emulateResamplerPriming = false;
   size_t preloadTargetBytes = 0;
   size_t preloadedBytes = 0;
@@ -516,6 +519,7 @@ class EspI2sAudioDevice {
       playbackOpen = true;
       playbackEnabled = false;
       playbackSourceFinished = false;
+      playbackIngressOpen = true;
       preloadedBytes = 0;
       sourceFrames = 0;
       playbackChannels = channels;
@@ -545,6 +549,21 @@ class EspI2sAudioDevice {
     }
     played.insert(played.end(), bytes, bytes + length);
     if (onWrite) onWrite();
+    return ESP_OK;
+  }
+  esp_err_t pausePlaybackIngress() {
+    ++pauseIngressCalls;
+    if (modelPreload && !playbackOpen) return ESP_ERR_INVALID_STATE;
+    playbackIngressOpen = false;
+    return ESP_OK;
+  }
+  esp_err_t resumePlaybackIngress() {
+    ++resumeIngressCalls;
+    if (modelPreload &&
+        (!playbackOpen || playbackSourceFinished)) {
+      return ESP_ERR_INVALID_STATE;
+    }
+    playbackIngressOpen = true;
     return ESP_OK;
   }
   esp_err_t startPreloadedPlayback() {
@@ -582,6 +601,7 @@ class EspI2sAudioDevice {
       playbackOpen = false;
       playbackEnabled = false;
       playbackSourceFinished = false;
+      playbackIngressOpen = false;
       preloadedBytes = 0;
       sourceFrames = 0;
       playbackChannels = 0;
@@ -601,6 +621,7 @@ class EspI2sAudioDevice {
     playbackOpen = false;
     playbackEnabled = false;
     playbackSourceFinished = false;
+    playbackIngressOpen = false;
     preloadedBytes = 0;
     sourceFrames = 0;
     playbackChannels = 0;

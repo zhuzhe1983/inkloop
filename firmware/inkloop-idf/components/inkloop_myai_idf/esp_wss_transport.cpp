@@ -1,6 +1,7 @@
 #include "inkloop/myai/esp_wss_transport.hpp"
 
 #include "esp_crt_bundle.h"
+#include "esp_log.h"
 #include "esp_transport.h"
 #include "esp_transport_ssl.h"
 #include "esp_transport_tcp.h"
@@ -20,6 +21,10 @@
 
 #if CONFIG_LOG_MAXIMUM_LEVEL > 3
 #error "Inkloop MyAI WSS forbids debug/verbose transport logs containing headers"
+#endif
+
+#if !CONFIG_LOG_DYNAMIC_LEVEL_CONTROL || CONFIG_LOG_TAG_LEVEL_IMPL_NONE
+#error "Inkloop MyAI WSS requires effective per-tag log suppression"
 #endif
 
 namespace inkloop {
@@ -194,6 +199,16 @@ Status EspWssTransport::connect(
     return Status(ErrorCode::InvalidState, 0,
                   "MyAI WSS is already active");
   }
+  // ESP-IDF v6.0.2 transport_ws logs its complete upgrade buffer at Error
+  // level when the socket write fails. That buffer contains the gateway
+  // Authorization headers. Install a process-lifetime tag override before the
+  // token-bearing headers are copied into the transport, then read it back:
+  // the IDF setter can silently fail when its first tag allocation is OOM.
+  esp_log_level_set("transport_ws", ESP_LOG_NONE);
+  if (esp_log_level_get("transport_ws") != ESP_LOG_NONE) {
+    return Status(ErrorCode::Security, 0,
+                  "MyAI WSS credential log suppression unavailable");
+  }
   Status status = configure(url, headers);
   if (!status.ok()) return status;
   EspNetworkOperationLease network_lease(kConnectTimeoutMs);
@@ -203,12 +218,26 @@ Status EspWssTransport::connect(
   }
   const int result = esp_transport_connect(websocket_, host_.c_str(), port_,
                                            kConnectTimeoutMs);
+  // ESP-IDF records the HTTP upgrade status even when the low-level connect
+  // returns -1 because a 401/402 response has no Sec-WebSocket-Accept header.
+  // Capture it before releaseTransport() destroys the websocket context.
+  const int upgrade_status =
+      esp_transport_ws_get_upgrade_request_status(websocket_);
   // esp_transport_ws returns zero only for the exact 101 upgrade. Positive
   // 3xx values are redirects and are deliberately rejected before any retry.
-  if (result != 0 ||
-      esp_transport_ws_get_upgrade_request_status(websocket_) != 101) {
-    const bool redirect = result > 0;
+  if (result != 0 || upgrade_status != 101) {
+    const bool redirect =
+        (upgrade_status >= 300 && upgrade_status < 400) ||
+        (result >= 300 && result < 400);
     releaseTransport();
+    if (upgrade_status == 401) {
+      return Status(ErrorCode::Unauthorized, 401,
+                    "MyAI gateway WebSocket authorization rejected; reselect required");
+    }
+    if (upgrade_status == 402) {
+      return Status(ErrorCode::PaymentRequired, 402,
+                    "MyAI activation/payment required");
+    }
     return Status(redirect ? ErrorCode::Security : ErrorCode::Transport, 0,
                   redirect ? "MyAI WSS redirect rejected"
                            : "MyAI WSS handshake failed");

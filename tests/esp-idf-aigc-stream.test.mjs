@@ -16,6 +16,7 @@ const harness = String.raw`
 #include <vector>
 
 #include "AigcStreamDecoder.h"
+#include "inkloop/myai/esp_aigc_output_transport.hpp"
 
 using namespace inkloop::myai;
 
@@ -55,6 +56,9 @@ Status feed(AigcStreamDecoder& decoder, const std::string& input,
 }
 
 int main() {
+  assert(detail::aigcOutputHttpErrorCode(401) == ErrorCode::Unauthorized);
+  assert(detail::aigcOutputHttpErrorCode(402) == ErrorCode::PaymentRequired);
+  assert(detail::aigcOutputHttpErrorCode(500) == ErrorCode::Protocol);
   const std::string valid =
       "{\"content_type\":\"image/png\",\"content_base64\":\""
       "iVBORw0KGgo=\"}";
@@ -125,6 +129,10 @@ function buildAndRun(sanitized) {
       "-pedantic",
       "-I",
       join(core, "include/inkloop/myai"),
+      "-I",
+      join(core, "include"),
+      "-I",
+      join(native, "include"),
       source,
       join(core, "AigcStreamDecoder.cpp"),
       "-o",
@@ -168,6 +176,10 @@ test("native AIGC transport streams HTTP into a sink with fail-closed policy", (
   assert.match(source, /esp_http_client_read/);
   assert.match(source, /AigcStreamDecoder decoder/);
   assert.match(source, /esp_http_client_is_complete_data_received/);
+  assert.match(source, /kMaximumErrorBodyBytes = 4096U/);
+  assert.match(source, /parseErrorCode\(body\)/);
+  assert.match(source, /parseErrorDiagnostic\(body\)/);
+  assert.match(source, /aigcOutputHttpErrorCode\(http_status\)/);
   assert.match(source, /sink\.commit\(metadata\)/);
   assert.match(source, /sink\.abort\(\)/);
   assert.match(source, /EspNetworkOperationLease network_lease\(request\.timeoutMs\)/);

@@ -17,6 +17,6 @@ test("C151 accepted-candidate inactive-app0 gate is fail-closed under simulated 
     0,
     `python gate tests failed\nstdout:\n${completed.stdout}\nstderr:\n${completed.stderr}`,
   );
-  assert.match(completed.stderr, /Ran 13 tests/u);
+  assert.match(completed.stderr, /Ran 14 tests/u);
   assert.match(completed.stderr, /OK/u);
 });

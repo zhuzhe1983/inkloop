@@ -107,6 +107,7 @@ struct Cache final : IPortalReadCache {
   mutable bool bad_myai_error = false;
   mutable bool bad_myai_detail = false;
   mutable bool minimal_capabilities = false;
+  mutable uint8_t image_steps = 32U;
   mutable PortalFirmwareUpdateSnapshot firmware_update{};
 
   PortalResult readState(PortalStateSnapshot& value) const override {
@@ -126,6 +127,28 @@ struct Cache final : IPortalReadCache {
     value.display_conversion_ms = 870;
     value.display_panel_refresh_ms = 18400;
     value.display_total_ms = 19710;
+    value.audio_diagnostics.available = !minimal_capabilities;
+    if (!minimal_capabilities) {
+      value.audio_diagnostics.capture_starts = 2;
+      value.audio_diagnostics.playback_starts = 5;
+      value.audio_diagnostics.capture_timeouts = 1;
+      value.audio_diagnostics.playback_timeouts = 0;
+      value.audio_diagnostics.playback_dma_callbacks = 321;
+      value.audio_diagnostics.playback_dma_underruns = 2;
+      value.audio_diagnostics.playback_dma_expected_drain_overflows = 1;
+      value.audio_diagnostics.feed_streams = 5;
+      value.audio_diagnostics.feed_submit_calls = 90;
+      value.audio_diagnostics.feed_late_submits = 3;
+      value.audio_diagnostics.feed_estimated_underruns = 2;
+      value.audio_diagnostics.feed_max_submit_gap_us = 25000;
+      value.audio_diagnostics.feed_minimum_queue_lead_us = 12000;
+      value.audio_diagnostics.feed_maximum_queue_lead_us = 93000;
+      value.audio_diagnostics.captured_bytes = 4294967297ULL;
+      value.audio_diagnostics.feed_estimated_underrun_frames = 8589934593ULL;
+      value.audio_diagnostics.feed_queue_overflow_frames = 12884901889ULL;
+      value.audio_diagnostics.feed_current_queue_frames = 160;
+      value.audio_diagnostics.feed_peak_queue_frames = 960;
+    }
     value.capabilities.has_microphone = !minimal_capabilities;
     value.capabilities.has_speaker = !minimal_capabilities;
     value.capabilities.rgb_pixels = minimal_capabilities ? 0 : 2;
@@ -202,6 +225,7 @@ struct Cache final : IPortalReadCache {
     value.settings.voice_assistance_enabled = !minimal_capabilities;
     value.settings.assistant_prompt = "简洁回答";
     value.settings.image_prompt_template = "六色海报：{prompt}";
+    value.settings.image_generation_steps = image_steps;
     value.settings.negative_prompt = "文字，水印";
     value.settings.asset_storage_preference =
         minimal_capabilities ? "automatic" : "removable";
@@ -342,6 +366,8 @@ int main() {
   assert(rendered.body.find("id=\"tutorial-restart\"") != std::string::npos);
   assert(rendered.body.find("name=\"storage_preference\"") != std::string::npos);
   assert(rendered.body.find("name=\"default_render_strategy\"") != std::string::npos);
+  assert(rendered.body.find("name=\"image_steps\"") != std::string::npos);
+  assert(rendered.body.find("min=\"1\" max=\"50\"") != std::string::npos);
   assert(rendered.body.find("name=\"local_password\"") != std::string::npos);
   assert(rendered.body.find("name=\"led_swap\"") != std::string::npos);
   assert(rendered.body.find("c.rgbPixels>1") != std::string::npos);
@@ -406,6 +432,13 @@ int main() {
   assert(state_response.body.find("\"displayTiming\":{\"completedRefreshes\":3") != std::string::npos);
   assert(state_response.body.find("\"panelRefreshMs\":18400") != std::string::npos);
   assert(state_response.body.find("\"runtimeTelemetry\":{\"available\":true") != std::string::npos);
+  assert(state_response.body.find("\"audioDiagnostics\":{\"available\":true") != std::string::npos);
+  assert(state_response.body.find("\"dma\":{\"callbacks\":321,\"underruns\":2,\"expectedDrainOverflows\":1}") != std::string::npos);
+  assert(state_response.body.find("\"lateSubmits\":3,\"estimatedUnderruns\":2") != std::string::npos);
+  assert(state_response.body.find("\"maxSubmitGapUs\":25000,\"minimumQueueLeadUs\":12000,\"maximumQueueLeadUs\":93000") != std::string::npos);
+  assert(state_response.body.find("\"bytes\":4294967297") != std::string::npos);
+  assert(state_response.body.find("\"estimatedUnderrunFrames\":8589934593,\"queueOverflowFrames\":12884901889") != std::string::npos);
+  assert(state_response.body.find("\"currentQueueFrames\":160,\"peakQueueFrames\":960") != std::string::npos);
   assert(state_response.body.find("\"laneCount\":8") != std::string::npos);
   assert(state_response.body.find("\"queueHighWater\":3") != std::string::npos);
   assert(state_response.body.find("\"stackLowWaterBytes\":2048") != std::string::npos);
@@ -415,6 +448,8 @@ int main() {
   assert(state_response.body.find("ink-input") == std::string::npos);
   assert(state_response.body.find("0x") == std::string::npos);
   assert(state_response.body.find("\"defaultRenderStrategy\":\"solid-clean\"") != std::string::npos);
+  assert(state_response.body.find("\"imageGenerationSteps\":32") !=
+         std::string::npos);
   assert(state_response.body.find("\"microphone\":true") != std::string::npos);
   assert(state_response.body.find("\"speaker\":true") != std::string::npos);
   assert(state_response.body.find("\"duplexAudio\":true") != std::string::npos);
@@ -444,6 +479,11 @@ int main() {
   cache.bad_myai_detail = true;
   assert(portal.handle(state).status == 422);
   cache.bad_myai_detail = false;
+  cache.image_steps = 0U;
+  assert(portal.handle(state).status == 422);
+  cache.image_steps = 51U;
+  assert(portal.handle(state).status == 422);
+  cache.image_steps = 32U;
 
   PortalRequest expired = state;
   expired.now_seconds = 1000;
@@ -596,19 +636,32 @@ int main() {
   PortalRequest myai_settings_request =
       authenticated("POST", "/api/settings", cookie);
   myai_settings_request.body =
-      "assistant_prompt=Inkloop+helper&image_prompt_template=Six-color+%7Bprompt%7D&negative_prompt=watermark";
+      "assistant_prompt=Inkloop+helper&image_prompt_template=Six-color+%7Bprompt%7D&image_steps=37&negative_prompt=watermark";
   assert(portal.handle(myai_settings_request).status == 202);
   const PortalSettingsPatch& myai_patch = commands.received.back().settings;
   assert(myai_patch.has_assistant_prompt &&
          myai_patch.assistant_prompt == "Inkloop helper");
   assert(myai_patch.has_image_prompt_template &&
          myai_patch.image_prompt_template == "Six-color {prompt}");
+  assert(myai_patch.has_image_generation_steps &&
+         myai_patch.image_generation_steps == 37);
   assert(myai_patch.has_negative_prompt &&
          myai_patch.negative_prompt == "watermark");
   assert(!myai_patch.has_volume && !myai_patch.has_led_maximum_brightness &&
          !myai_patch.has_led_roles_swapped &&
          !myai_patch.has_asset_storage_preference &&
          !myai_patch.has_local_management_password_override);
+  for (const unsigned int boundary_steps : {1U, 50U}) {
+    PortalRequest boundary_steps_request =
+        authenticated("POST", "/api/settings", cookie);
+    boundary_steps_request.body =
+        "image_steps=" + std::to_string(boundary_steps);
+    assert(portal.handle(boundary_steps_request).status == 202);
+    const PortalSettingsPatch& boundary_patch =
+        commands.received.back().settings;
+    assert(boundary_patch.has_image_generation_steps);
+    assert(boundary_patch.image_generation_steps == boundary_steps);
+  }
 
   PortalRequest invalid_utf8 = authenticated("POST", "/api/settings", cookie);
   invalid_utf8.body = "assistant_prompt=%FF";
@@ -619,6 +672,13 @@ int main() {
   PortalRequest bad_led = authenticated("POST", "/api/settings", cookie);
   bad_led.body = "led_brightness=101";
   assert(portal.handle(bad_led).status == 422);
+  PortalRequest bad_steps = authenticated("POST", "/api/settings", cookie);
+  bad_steps.body = "image_steps=0";
+  assert(portal.handle(bad_steps).status == 422);
+  bad_steps.body = "image_steps=51";
+  assert(portal.handle(bad_steps).status == 422);
+  bad_steps.body = "image_steps=-1";
+  assert(portal.handle(bad_steps).status == 422);
   PortalRequest bad_led_swap = authenticated("POST", "/api/settings", cookie);
   bad_led_swap.body = "led_swap=2";
   assert(portal.handle(bad_led_swap).status == 422);
@@ -724,6 +784,8 @@ int main() {
   assert(minimal_state.body.find("\"microphone\":false") != std::string::npos);
   assert(minimal_state.body.find("\"speaker\":false") != std::string::npos);
   assert(minimal_state.body.find("\"duplexAudio\":false") != std::string::npos);
+  assert(minimal_state.body.find("\"audioDiagnostics\":{\"available\":false") != std::string::npos);
+  assert(minimal_state.body.find("\"lateSubmits\":0,\"estimatedUnderruns\":0") != std::string::npos);
   assert(minimal_state.body.find("\"rgbPixels\":0") != std::string::npos);
   assert(minimal_state.body.find("\"removableStorage\":false") != std::string::npos);
   assert(minimal_state.body.find("\"official-quality\"") != std::string::npos);

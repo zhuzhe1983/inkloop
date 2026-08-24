@@ -214,6 +214,68 @@ portal::TutorialPortalStep portalTutorialStep(
   return portal::TutorialPortalStep::PressToTalk;
 }
 
+portal::PortalAudioDiagnostics portalAudioDiagnostics(
+    const NativeVoiceDiagnostics& voice) {
+  portal::PortalAudioDiagnostics output;
+  output.available = voice.audio_available;
+  const EspI2sAudioDiagnostics& audio = voice.audio;
+  output.prepared = audio.prepared;
+  output.capture_channel_enabled = audio.capture_channel_enabled;
+  output.playback_channel_enabled = audio.playback_channel_enabled;
+  output.prepare_attempts = audio.prepare_attempts;
+  output.prepare_successes = audio.prepare_successes;
+  output.prepare_failures = audio.prepare_failures;
+  output.shutdowns = audio.shutdowns;
+  output.shutdown_failures = audio.shutdown_failures;
+  output.playback_clock_reconfigurations =
+      audio.playback_clock_reconfigurations;
+  output.playback_clock_reconfiguration_failures =
+      audio.playback_clock_reconfiguration_failures;
+  output.shared_pin_selections = audio.shared_pin_selections;
+  output.shared_pin_selection_failures =
+      audio.shared_pin_selection_failures;
+  output.prepared_playback_rate_hz = audio.prepared_playback_rate_hz;
+  output.last_prepare_error = audio.last_prepare_error;
+  output.capture_starts = audio.capture_starts;
+  output.playback_starts = audio.playback_starts;
+  output.capture_timeouts = audio.capture_timeouts;
+  output.playback_timeouts = audio.playback_timeouts;
+  output.capture_failures = audio.capture_failures;
+  output.playback_failures = audio.playback_failures;
+  output.playback_preload_starts = audio.playback_preload_starts;
+  output.forced_aborts = audio.forced_aborts;
+  output.captured_bytes = static_cast<uint64_t>(audio.captured_bytes);
+  output.played_source_bytes =
+      static_cast<uint64_t>(audio.played_source_bytes);
+  output.played_output_frames =
+      static_cast<uint64_t>(audio.played_output_frames);
+  output.peak_preloaded_bytes =
+      static_cast<uint64_t>(audio.peak_preloaded_bytes);
+  output.playback_dma_callbacks = audio.playback_dma_callbacks;
+  output.playback_dma_underruns = audio.playback_dma_underruns;
+  output.playback_dma_expected_drain_overflows =
+      audio.playback_dma_expected_drain_overflows;
+  const PlaybackFeedDiagnostics& feed = audio.playback_feed;
+  output.feed_streams = feed.streams;
+  output.feed_submit_calls = feed.submit_calls;
+  output.feed_late_submits = feed.late_submit_count;
+  output.feed_estimated_underruns = feed.estimated_underrun_count;
+  output.feed_queue_clamps = feed.queue_clamp_count;
+  output.feed_max_submit_gap_us = feed.max_submit_gap_us;
+  output.feed_minimum_queue_lead_us = feed.minimum_queue_lead_us;
+  output.feed_maximum_queue_lead_us = feed.maximum_queue_lead_us;
+  output.feed_preloaded_frames = feed.preloaded_frames;
+  output.feed_submitted_frames = feed.submitted_frames;
+  output.feed_consumed_frames = feed.consumed_frames;
+  output.feed_estimated_underrun_frames = feed.estimated_underrun_frames;
+  output.feed_queue_overflow_frames = feed.queue_overflow_frames;
+  output.feed_current_queue_frames =
+      static_cast<uint64_t>(feed.current_queue_frames);
+  output.feed_peak_queue_frames =
+      static_cast<uint64_t>(feed.peak_queue_frames);
+  return output;
+}
+
 }  // namespace
 
 NativePortalOwner::NativePortalOwner(
@@ -1329,6 +1391,9 @@ void NativePortalOwner::refreshState() {
   next.display_panel_refresh_ms =
       display_diagnostics.last_panel_refresh_ms;
   next.display_total_ms = display_diagnostics.last_album_total_ms;
+  // `diagnostics()` returns one critical-section-protected Voice-owner
+  // mirror. Never read the I2S device/feed monitor from the Portal core.
+  next.audio_diagnostics = portalAudioDiagnostics(voice_.diagnostics());
   next.myai_state = portalMyAiState(onboarding.activation_state,
                                     onboarding.authorization_verified);
   const NativeMyAiErrorSnapshot myai_error = voice_.myAiErrorSnapshot();

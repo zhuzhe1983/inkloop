@@ -21,6 +21,11 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=256
 CONFIG_WS_BUFFER_SIZE=4096
+# ESP-IDF v6.0.2 transport_ws can log its token-bearing upgrade buffer at
+# Error level. The MyAI adapter fails closed unless this per-tag override is
+# supported and confirms that the tag is disabled before headers are copied.
+CONFIG_LOG_DYNAMIC_LEVEL_CONTROL=y
+CONFIG_LOG_TAG_LEVEL_IMPL_CACHE_AND_LINKED_LIST=y
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
 CONFIG_LITTLEFS_MULTIVERSION=y
 CONFIG_LITTLEFS_DISK_VERSION_2_0=y

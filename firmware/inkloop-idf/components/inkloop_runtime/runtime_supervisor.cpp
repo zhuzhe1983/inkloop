@@ -18,6 +18,10 @@ uint32_t nowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
 }
 
+uint32_t nowUs() {
+  return static_cast<uint32_t>(esp_timer_get_time());
+}
+
 uint32_t elapsedUs(int64_t started_us) {
   const int64_t elapsed = esp_timer_get_time() - started_us;
   if (elapsed <= 0) return 0;
@@ -38,10 +42,15 @@ uint8_t boundedPriority(UBaseType_t value) {
              : static_cast<uint8_t>(value);
 }
 
-WorkDisposition rejectionDisposition(AdmissionResult result) {
+WorkDisposition rejectionDisposition(AdmissionResult result,
+                                     WorkClass work_class) {
   switch (result) {
     case AdmissionResult::StaleGeneration:
-      return WorkDisposition::Cancelled;
+      // Cancelled is reserved for a Button handler's debounce decision. A
+      // stale command never ran that policy and must reach Control as a
+      // fail-closed NotReady outcome instead of a false Debounced sample.
+      return work_class == WorkClass::Button ? WorkDisposition::Failed
+                                             : WorkDisposition::Cancelled;
     case AdmissionResult::Expired:
       return WorkDisposition::TimedOut;
     case AdmissionResult::QueueFull:
@@ -159,6 +168,20 @@ esp_err_t RuntimeSupervisor::registerTickHandler(
   slots_[index].tick_handler = handler;
   slots_[index].tick_context = context;
   slots_[index].tick_interval = interval;
+  portEXIT_CRITICAL(&mux_);
+  return ESP_OK;
+}
+
+esp_err_t RuntimeSupervisor::registerButtonControlAdmissionObserver(
+    ButtonControlAdmissionObserver observer, void* context) {
+  if (!observer || !context) return ESP_ERR_INVALID_ARG;
+  portENTER_CRITICAL(&mux_);
+  if (lifecycle_ != Lifecycle::Ready || button_control_observer_) {
+    portEXIT_CRITICAL(&mux_);
+    return ESP_ERR_INVALID_STATE;
+  }
+  button_control_observer_ = observer;
+  button_control_observer_context_ = context;
   portEXIT_CRITICAL(&mux_);
   return ESP_OK;
 }
@@ -361,6 +384,8 @@ esp_err_t RuntimeSupervisor::shutdown() {
     slot.tick_context = nullptr;
     slot.tick_interval = 0;
   }
+  button_control_observer_ = nullptr;
+  button_control_observer_context_ = nullptr;
   if (stop_events_) {
     vEventGroupDelete(stop_events_);
     stop_events_ = nullptr;
@@ -603,10 +628,15 @@ void RuntimeSupervisor::handleDequeued(TaskLane lane,
   portEXIT_CRITICAL(&mux_);
 
   if (execution != AdmissionResult::Admitted) {
-    if (lane != TaskLane::Control && envelope.kind == EnvelopeKind::Command &&
-        post(makeResult(envelope, rejectionDisposition(execution))) !=
-            AdmissionResult::Admitted) {
-      recordResultFailure();
+    if (lane != TaskLane::Control && envelope.kind == EnvelopeKind::Command) {
+      const WorkEnvelope result =
+          makeResult(envelope,
+                     rejectionDisposition(execution, envelope.work_class));
+      if (post(result) != AdmissionResult::Admitted) {
+        recordResultFailure();
+      } else {
+        notifyButtonControlAdmission(result);
+      }
     }
     return;
   }
@@ -621,13 +651,32 @@ void RuntimeSupervisor::handleDequeued(TaskLane lane,
     recordHandlerFailure(lane);
   }
 
-  if (lane != TaskLane::Control && envelope.kind == EnvelopeKind::Command &&
-      post(makeResult(envelope, disposition)) != AdmissionResult::Admitted) {
-    recordResultFailure();
+  if (lane != TaskLane::Control && envelope.kind == EnvelopeKind::Command) {
+    const WorkEnvelope result = makeResult(envelope, disposition);
+    if (post(result) != AdmissionResult::Admitted) {
+      recordResultFailure();
+    } else {
+      notifyButtonControlAdmission(result);
+    }
   }
   portENTER_CRITICAL(&mux_);
   if (index < callback_active_.size()) callback_active_[index] = false;
   portEXIT_CRITICAL(&mux_);
+}
+
+void RuntimeSupervisor::notifyButtonControlAdmission(
+    const WorkEnvelope& result) {
+  if (result.kind != EnvelopeKind::Result ||
+      result.work_class != WorkClass::Button) {
+    return;
+  }
+  ButtonControlAdmissionObserver observer = nullptr;
+  void* context = nullptr;
+  portENTER_CRITICAL(&mux_);
+  observer = button_control_observer_;
+  context = button_control_observer_context_;
+  portEXIT_CRITICAL(&mux_);
+  if (observer) observer(result.request_id, nowUs(), context);
 }
 
 void RuntimeSupervisor::recordHandlerFailure(TaskLane lane) {

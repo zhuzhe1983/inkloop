@@ -273,6 +273,7 @@ esp_err_t NativeDisplayService::configure() {
 void NativeDisplayService::shutdown() {
   portENTER_CRITICAL(&mux_);
   clearMailbox(onboarding_mailbox_);
+  interactive_selection_mailbox_ = InteractiveSelectionMailbox{};
   navigation_ = AlbumNavigationCore();
   manual_panel_guard_.reset();
   visible_onboarding_fingerprint_ = PageFingerprint{};
@@ -295,7 +296,8 @@ bool NativeDisplayService::beginStorageMaintenance() {
       !catalog_refreshing_ && !album_rendering_ && !navigation_.pending() &&
       !navigation_.refreshing() && !onboarding_pending_ &&
       !onboarding_rendering_ && !onboarding_replacement_pending_ &&
-      !album_restore_pending_ && album_store_;
+      !album_restore_pending_ && !interactive_selection_mailbox_.active &&
+      album_store_;
   if (quiescent) storage_maintenance_ = true;
   portEXIT_CRITICAL(&mux_);
   return quiescent;
@@ -512,6 +514,77 @@ NativeDisplayPageRequestResult NativeDisplayService::requestAlbumRestore() {
   return result;
 }
 
+NativeInteractiveSelectionStageResult
+NativeDisplayService::stageInteractiveAlbumSelection(
+    uint64_t request_id, size_t zero_based_ordinal,
+    std::string_view expected_asset_id) {
+  if (request_id == 0U ||
+      zero_based_ordinal >= local_tools::kMaximumImageOrdinal ||
+      !local_tools::LocalCommandParser::validImageId(expected_asset_id)) {
+    return NativeInteractiveSelectionStageResult::Invalid;
+  }
+  InteractiveSelectionMailbox staged;
+  staged.request_id = request_id;
+  staged.zero_based_ordinal = zero_based_ordinal;
+  staged.active = copyBounded(expected_asset_id, staged.expected_asset_id);
+  if (!staged.active) return NativeInteractiveSelectionStageResult::Invalid;
+
+  portENTER_CRITICAL(&mux_);
+  if (!configured_ || storage_maintenance_) {
+    portEXIT_CRITICAL(&mux_);
+    return NativeInteractiveSelectionStageResult::Invalid;
+  }
+  if (interactive_selection_mailbox_.active) {
+    portEXIT_CRITICAL(&mux_);
+    return NativeInteractiveSelectionStageResult::Busy;
+  }
+  interactive_selection_mailbox_ = staged;
+  portEXIT_CRITICAL(&mux_);
+  return NativeInteractiveSelectionStageResult::Staged;
+}
+
+bool NativeDisplayService::cancelInteractiveAlbumSelection(
+    uint64_t request_id) {
+  if (request_id == 0U) return false;
+  portENTER_CRITICAL(&mux_);
+  const bool matched = interactive_selection_mailbox_.active &&
+      interactive_selection_mailbox_.request_id == request_id;
+  if (matched)
+    interactive_selection_mailbox_ = InteractiveSelectionMailbox{};
+  portEXIT_CRITICAL(&mux_);
+  return matched;
+}
+
+NativeDisplayService::ExpectedSelectionConsumeResult
+NativeDisplayService::consumeInteractiveAlbumSelection(
+    const WorkEnvelope& envelope,
+    std::array<char, local_tools::kMaximumImageIdBytes + 1U>&
+        expected_asset_id) {
+  expected_asset_id.fill('\0');
+  if (envelope.payload_bytes == 0U) {
+    return (envelope.flags & kLocalToolDisplaySelectionFlag) == 0U
+        ? ExpectedSelectionConsumeResult::Unmarked
+        : ExpectedSelectionConsumeResult::MissingOrConflicting;
+  }
+  if (envelope.payload_bytes != kLocalToolDisplaySelectionPayloadMarker ||
+      (envelope.flags & kLocalToolDisplaySelectionFlag) == 0U)
+    return ExpectedSelectionConsumeResult::MissingOrConflicting;
+
+  portENTER_CRITICAL(&mux_);
+  const bool matched = interactive_selection_mailbox_.active &&
+      interactive_selection_mailbox_.request_id == envelope.request_id &&
+      interactive_selection_mailbox_.zero_based_ordinal ==
+          (envelope.flags & kLocalToolDisplayOrdinalMask);
+  if (matched) {
+    expected_asset_id =
+        interactive_selection_mailbox_.expected_asset_id;
+    interactive_selection_mailbox_ = InteractiveSelectionMailbox{};
+  }
+  portEXIT_CRITICAL(&mux_);
+  return matched ? ExpectedSelectionConsumeResult::Matched
+                 : ExpectedSelectionConsumeResult::MissingOrConflicting;
+}
+
 AlbumStepResult NativeDisplayService::selectRelative(int direction,
                                                       size_t& ordinal) {
   portENTER_CRITICAL(&mux_);
@@ -542,8 +615,11 @@ bool NativeDisplayService::busy() const {
       onboarding_pending_ || onboarding_rendering_ ||
       onboarding_replacement_pending_ || album_restore_pending_ ||
       catalog_refreshing_ || album_rendering_ || storage_maintenance_;
+  const bool interactive_selection_staged =
+      interactive_selection_mailbox_.active;
   portEXIT_CRITICAL(&mux_);
-  return navigation_busy || (album_store_ && album_store_->active());
+  return navigation_busy || interactive_selection_staged ||
+      (album_store_ && album_store_->active());
 }
 
 WorkDisposition NativeDisplayService::handler(
@@ -728,6 +804,11 @@ WorkDisposition NativeDisplayService::handle(
       productOpcode(ProductOpcode::DisplayDiagnosticAigcOrdinal);
   const bool user_initiated = envelope.opcode ==
       productOpcode(ProductOpcode::DisplayInteractiveAlbumOrdinal);
+  const size_t ordinal =
+      user_initiated &&
+          (envelope.flags & kLocalToolDisplaySelectionFlag) != 0U
+      ? static_cast<size_t>(envelope.flags & kLocalToolDisplayOrdinalMask)
+      : static_cast<size_t>(envelope.flags);
   const bool scheduled_background = envelope.opcode ==
       productOpcode(ProductOpcode::DisplayAlbumOrdinal);
   // The Portal lane checks the hold before admitting scheduled work, but an
@@ -747,11 +828,30 @@ WorkDisposition NativeDisplayService::handle(
     if (serial_diagnostic) emitSerialAigcError();
     return WorkDisposition::Busy;
   }
+  std::array<char, local_tools::kMaximumImageIdBytes + 1U>
+      expected_asset_id{};
+  const ExpectedSelectionConsumeResult expected = user_initiated
+      ? consumeInteractiveAlbumSelection(envelope, expected_asset_id)
+      : envelope.payload_bytes == 0U
+          ? ExpectedSelectionConsumeResult::Unmarked
+          : ExpectedSelectionConsumeResult::MissingOrConflicting;
+  if (expected == ExpectedSelectionConsumeResult::MissingOrConflicting) {
+    portENTER_CRITICAL(&mux_);
+    ++diagnostics_.interactive_selection_conflicts;
+    portEXIT_CRITICAL(&mux_);
+    postImageLed(static_cast<uint8_t>(ImageLedMode::Error));
+    return WorkDisposition::Failed;
+  }
   if (serial_diagnostic) {
     emitSerialAigcPhase(
         diagnostics::SerialDiagnosticAigcPhase::DisplayStart);
   }
-  const bool rendered = renderOrdinal(envelope.flags, user_initiated);
+  const std::string_view constrained_asset =
+      expected == ExpectedSelectionConsumeResult::Matched
+      ? std::string_view(expected_asset_id.data())
+      : std::string_view{};
+  const bool rendered = renderOrdinal(
+      ordinal, user_initiated, constrained_asset);
   if (serial_diagnostic) {
     if (rendered) {
       emitSerialAigcPhase(
@@ -764,7 +864,8 @@ WorkDisposition NativeDisplayService::handle(
 }
 
 bool NativeDisplayService::renderOrdinal(size_t ordinal,
-                                         bool user_initiated) {
+    bool user_initiated,
+    std::string_view expected_asset_id) {
   portENTER_CRITICAL(&mux_);
   if (storage_maintenance_ || catalog_refreshing_ || album_rendering_) {
     portEXIT_CRITICAL(&mux_);
@@ -773,7 +874,8 @@ bool NativeDisplayService::renderOrdinal(size_t ordinal,
   album_rendering_ = true;
   portEXIT_CRITICAL(&mux_);
 
-  const bool rendered = renderOrdinalAdmitted(ordinal, user_initiated);
+  const bool rendered = renderOrdinalAdmitted(
+      ordinal, user_initiated, expected_asset_id);
 
   portENTER_CRITICAL(&mux_);
   album_rendering_ = false;
@@ -782,7 +884,8 @@ bool NativeDisplayService::renderOrdinal(size_t ordinal,
 }
 
 bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal,
-                                                 bool user_initiated) {
+    bool user_initiated,
+    std::string_view expected_asset_id) {
   storage::AlbumIndex index;
   const bool restore_onboarding = ordinal == AlbumNavigationCore::kNoOrdinal;
   if (!album_store_->readCatalog(index).ok() ||
@@ -812,6 +915,20 @@ bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal,
   portEXIT_CRITICAL(&mux_);
   if (restore_onboarding) {
     ordinal = current == AlbumNavigationCore::kNoOrdinal ? 0U : current;
+  }
+  // The Portal-local tool resolved an immutable asset ID before admitting the
+  // Display command. Re-check that ID against the Display owner's fresh
+  // catalog snapshot before decoding or touching the panel. An upload/delete
+  // that moved the ordinal therefore fails closed instead of flashing a
+  // different image and reporting success for the requested one.
+  if (!expected_asset_id.empty() &&
+      index.assets[ordinal].id != expected_asset_id) {
+    portENTER_CRITICAL(&mux_);
+    ++diagnostics_.interactive_selection_conflicts;
+    navigation_.finish(index.assets.size(), current);
+    portEXIT_CRITICAL(&mux_);
+    postImageLed(static_cast<uint8_t>(ImageLedMode::Error));
+    return false;
   }
   bool announce = false;
   bool onboarding_visible = false;

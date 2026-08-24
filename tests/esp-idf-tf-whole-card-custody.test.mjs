@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,6 +133,30 @@ test("disk snapshot records a stable fingerprint for explicit removable media", 
     validateDiskSnapshot(changed, "/dev/disk9").fingerprint,
     first.fingerprint,
   );
+});
+
+test("disk snapshot accepts current macOS WholeDisk spelling and rejects contradictory flags", () => {
+  const currentMacOs = snapshot({
+    targetInfo: {
+      Whole: undefined, WholeDisk: true, Mounted: undefined,
+      MountPoint: "", WritableVolume: false,
+    },
+    partitionInfo: {
+      Mounted: undefined, MountPoint: "", WritableVolume: false,
+    },
+  });
+  const validated = validateDiskSnapshot(currentMacOs, "/dev/disk9");
+  assert.equal(validated.totalSize, CARD_BYTES);
+  assert.equal(validated.identity.members.find(
+    (member) => member.deviceIdentifier === "disk9").mounted, false);
+  assert.throws(() => validateDiskSnapshot(snapshot({
+    targetInfo: { Whole: false, WholeDisk: true },
+  }), "/dev/disk9"), /exact requested whole disk/);
+  assert.throws(() => validateDiskSnapshot(snapshot({
+    partitionInfo: {
+      Mounted: undefined, MountPoint: "", WritableVolume: true,
+    },
+  }), "/dev/disk9"), /mounted or mount state is indeterminate/);
 });
 
 test("disk snapshot fails closed for internal, boot, virtual, mounted and system media", () => {
@@ -292,6 +319,66 @@ test("capture leaves complete=false when a second raw read differs", async () =>
       join(value.output, "custody.json"), "utf8"));
     assert.equal(custody.complete, false);
     assert.match(custody.error, /do not match/);
+    assert.equal(custody.captureStage, "compare-digests");
+    const firstHash = createHash("sha256").update(first).digest("hex");
+    const secondHash = createHash("sha256").update(second).digest("hex");
+    assert.deepEqual(custody.digestSummaries, {
+      sourcePass1: { bytes: CARD_BYTES, sha256: firstHash },
+      sourcePass2: { bytes: CARD_BYTES, sha256: secondHash },
+      capturedImage: { bytes: CARD_BYTES, sha256: firstHash },
+    });
+    assert.deepEqual(custody.digestAgreement, {
+      sourcePassesMatch: false,
+      sourcePass1MatchesImage: true,
+      sourcePass2MatchesImage: false,
+    });
+    assert.equal(existsSync(join(value.output, "SHA256SUMS")), false);
+  } finally {
+    rmSync(value.scratch, { recursive: true, force: true });
+  }
+});
+
+test("failed custody distinguishes stable source reads from captured image damage", async () => {
+  const value = outputFixture();
+  const confirmation = validateDiskSnapshot(snapshot(), "/dev/disk9");
+  const source = Buffer.alloc(CARD_BYTES, 0x44);
+  const expectedHash = createHash("sha256").update(source).digest("hex");
+  let snapshotAt = 0;
+  try {
+    await assert.rejects(() => runCli(captureArgs(value.output, confirmation), {
+      platform: "darwin",
+      takeSnapshot: () => {
+        snapshotAt += 1;
+        if (snapshotAt === 4) {
+          const descriptor = openSync(
+            join(value.output, "tf-whole-card.img"), "r+",
+          );
+          try {
+            writeSync(descriptor, Buffer.from([0x45]), 0, 1, 0);
+          } finally {
+            closeSync(descriptor);
+          }
+        }
+        return snapshot();
+      },
+      openRaw: () => Readable.from([source]),
+      statfs: () => ({ bavail: 1024 * 1024, bsize: 4096 }),
+      now: () => new Date("2026-08-24T00:00:00.000Z"),
+      stdout: { write() { return true; } },
+    }), /do not match/);
+    const custody = JSON.parse(readFileSync(
+      join(value.output, "custody.json"), "utf8"));
+    assert.equal(custody.complete, false);
+    assert.equal(custody.captureStage, "compare-digests");
+    assert.equal(custody.digestSummaries.sourcePass1.sha256, expectedHash);
+    assert.equal(custody.digestSummaries.sourcePass2.sha256, expectedHash);
+    assert.notEqual(custody.digestSummaries.capturedImage.sha256, expectedHash);
+    assert.deepEqual(custody.digestAgreement, {
+      sourcePassesMatch: true,
+      sourcePass1MatchesImage: false,
+      sourcePass2MatchesImage: false,
+    });
+    assert.equal(existsSync(join(value.output, "SHA256SUMS")), false);
   } finally {
     rmSync(value.scratch, { recursive: true, force: true });
   }

@@ -310,6 +310,7 @@ bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value,
   bool have_refresh = false;
   bool voice_seen = false;
   bool aigc_seen = false;
+  bool steps_seen = false;
   bool brightness_seen = false;
   bool led_swap_seen = false;
   bool local_password_seen = false;
@@ -320,7 +321,7 @@ bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value,
     std::string key;
     if (!cursor.string(key, 64U) || !cursor.consume(':')) return false;
     if (key == "storage" || key == "volume" || key == "refresh" ||
-        key == "led_brightness") {
+        key == "led_brightness" || key == "steps") {
       std::uint64_t number = 0U;
       if (!cursor.unsigned64(number)) return false;
       if (key == "storage") {
@@ -337,6 +338,13 @@ bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value,
         value.led_maximum_brightness_percent =
             static_cast<std::uint8_t>(number);
         brightness_seen = true;
+      } else if (key == "steps") {
+        if (steps_seen || number < kMinimumAigcSteps ||
+            number > kMaximumAigcSteps) {
+          return false;
+        }
+        value.aigc_steps = static_cast<std::uint8_t>(number);
+        steps_seen = true;
       } else {
         if (have_refresh || number > 3U) return false;
         static const char* const kStrategies[] = {
@@ -396,6 +404,10 @@ bool parseLegacyPayload(const std::string& input,
   bool have_settings = false;
   LegacyParsedSettings parsed;
   parsed.values = defaults;
+  // `steps` existed in some Arduino snapshots but was not part of the
+  // required legacy field mask. Its historical omission value is fixed by
+  // product contract, not inherited from a caller-specific default profile.
+  parsed.values.aigc_steps = kDefaultAigcSteps;
   while (true) {
     if (cursor.consume('}')) break;
     if (!first && !cursor.consume(',')) return false;
@@ -579,6 +591,11 @@ bool matchesHistoricalIncompleteImport(
   }
 
   DeviceSettings historical = verified_legacy_candidate.values;
+  // Native schemas 1/2 predate persisted steps; the historical importer
+  // omitted Arduino's field and therefore always materialized the native
+  // default. This exact projection remains eligible for one marker-backed
+  // completion migration that restores the verified Arduino value.
+  historical.aigc_steps = kDefaultAigcSteps;
   historical.local_management_password_override.clear();
   historical.led_roles_swapped = false;
   if (historical.default_render_strategy == "classic-six-color") {

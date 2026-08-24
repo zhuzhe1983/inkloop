@@ -6,6 +6,16 @@
 namespace inkloop {
 namespace myai {
 
+namespace detail {
+
+inline ErrorCode aigcOutputHttpErrorCode(int http_status) {
+  if (http_status == 401) return ErrorCode::Unauthorized;
+  if (http_status == 402) return ErrorCode::PaymentRequired;
+  return ErrorCode::Protocol;
+}
+
+}  // namespace detail
+
 // Blocking transport intended to run only on the slow network owner. HTTP
 // framing is removed by esp_http_client_read(), while the JSON/base64 body is
 // decoded incrementally into the storage-owner sink.

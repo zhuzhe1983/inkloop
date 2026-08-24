@@ -35,11 +35,29 @@ struct Device final : ILocalToolsAdapter {
   int led = -1;
   std::string assistant = "简洁回答";
   std::string aigc = "水墨画";
+  int image_steps = 20;
+  std::string negative = "watermark";
+  std::string render = "solid-clean";
+  AlbumSummary album{4, 2};
 
   AdapterResult queryStorage(StorageInfo& output) override {
     ++storage_queries;
     output.remaining_bytes = 25;
     output.total_bytes = 100;
+    return {};
+  }
+  AdapterResult queryAlbumSummary(AlbumSummary& output) override {
+    output = album;
+    return {};
+  }
+  AdapterResult resolveImageByOrdinal(
+      uint32_t ordinal, AlbumSelection& output) override {
+    if (ordinal == 0 || ordinal > album.count)
+      return {AdapterCode::NotFound};
+    output.asset_id = std::string(64, 'a');
+    output.zero_based_index = ordinal - 1;
+    output.ordinal = ordinal;
+    output.total = album.count;
     return {};
   }
   AdapterResult deleteImageByOrdinal(uint32_t ordinal) override {
@@ -72,16 +90,34 @@ struct Device final : ILocalToolsAdapter {
     output = aigc;
     return {};
   }
+  AdapterResult queryAigcSteps(uint8_t& output) override {
+    output = static_cast<uint8_t>(image_steps);
+    return {};
+  }
   AdapterResult queryAigcNegativePrompt(std::string& output) override {
-    output = "watermark";
+    output = negative;
     return {AdapterCode::Ok};
   }
   AdapterResult queryDefaultRenderStrategy(std::string& output) override {
-    output = "solid-clean";
+    output = render;
     return {AdapterCode::Ok};
   }
   AdapterResult setAigcPrompt(const std::string& prompt) override {
     aigc = prompt;
+    return {};
+  }
+  AdapterResult setAigcSteps(uint8_t steps) override {
+    image_steps = steps;
+    return {};
+  }
+  AdapterResult setAigcNegativePrompt(const std::string& prompt) override {
+    negative = prompt;
+    return {};
+  }
+  AdapterResult setDefaultRenderStrategy(const std::string& strategy) override {
+    if (strategy != "official-quality" && strategy != "solid-clean")
+      return {AdapterCode::Unsupported};
+    render = strategy;
     return {};
   }
   AdapterResult setLedMaximumBrightness(uint8_t percent) override {
@@ -100,6 +136,24 @@ int main() {
   assert(parser.parseFinalAsr("查询剩余空间。").matched());
   parsed = parser.parseFinalAsr("查询总空间和剩余空间");
   assert(parsed.matched() && parsed.command.storage_metric == StorageMetric::Both);
+  assert(parser.parseFinalAsr("query free space").matched());
+  assert(parser.parseFinalAsr("query total space").command.storage_metric ==
+         StorageMetric::Total);
+
+  parsed = parser.parseFinalAsr("列出相册");
+  assert(parsed.matched() && parsed.command.kind == CommandKind::ListAlbum);
+  assert(parser.parseFinalAsr("list images").command.kind ==
+         CommandKind::ListAlbum);
+  parsed = parser.parseFinalAsr("上屏第二十七张");
+  assert(parsed.matched() &&
+         parsed.command.kind == CommandKind::SelectImageOrdinal &&
+         parsed.command.number == 27);
+  parsed = parser.parseFinalAsr("show the 12th image");
+  assert(parsed.matched() && parsed.command.number == 12);
+  parsed = parser.parseFinalAsr("display image number 3");
+  assert(parsed.matched() && parsed.command.number == 3);
+  assert(parser.parseFinalAsr("show image 0").code == ParseCode::NoMatch);
+  assert(parser.parseFinalAsr("show image 97").code == ParseCode::NoMatch);
 
   parsed = parser.parseFinalAsr("删除第二十七张图片");
   assert(parsed.matched() && parsed.command.kind == CommandKind::DeleteImageOrdinal);
@@ -119,7 +173,13 @@ int main() {
   assert(parser.parseFinalAsr(std::string(513, 'a')).code == ParseCode::TooLong);
   assert(parser.parseFinalAsr(std::string("bad") + char(0xff)).code ==
          ParseCode::InvalidEncoding);
+  assert(parser.parseFinalAsr(std::string("bad") + char(0x7f)).code ==
+         ParseCode::InvalidEncoding);
+  assert(parser.parseFinalAsr(std::string("bad\xef\xbf\xbe")).code ==
+         ParseCode::InvalidEncoding);
   assert(parser.parseFinalAsr("查询空间并把音量调到50").code ==
+         ParseCode::Ambiguous);
+  assert(parser.parseFinalAsr("query storage and set volume 50").code ==
          ParseCode::Ambiguous);
 
   parsed = parser.parseFinalAsr("设置音量为百分之三十");
@@ -142,6 +202,51 @@ int main() {
   assert(parsed.command.text == "暖色水墨风格");
   assert(parser.parseFinalAsr("查询AIGC图片提示词").command.kind ==
          CommandKind::QueryAigcPrompt);
+  parsed = parser.parseFinalAsr("设置图片生成步数为三十七");
+  assert(parsed.matched() && parsed.command.kind == CommandKind::SetAigcSteps &&
+         parsed.command.number == 37);
+  assert(parser.parseFinalAsr("query image generation steps").command.kind ==
+         CommandKind::QueryAigcSteps);
+  assert(parser.parseFinalAsr("image steps 1").command.number == 1);
+  assert(parser.parseFinalAsr("set image steps to 50").command.number == 50);
+  assert(parser.parseFinalAsr("image steps 0").code == ParseCode::InvalidValue);
+  assert(parser.parseFinalAsr("image steps 51").code == ParseCode::InvalidValue);
+  parsed = parser.parseFinalAsr("设置AIGC负面提示词为watermark, blurry");
+  assert(parsed.matched() &&
+         parsed.command.kind == CommandKind::SetAigcNegativePrompt &&
+         parsed.command.text == "watermark, blurry");
+  assert(parser.parseFinalAsr("query negative prompt").command.kind ==
+         CommandKind::QueryAigcNegativePrompt);
+  parsed = parser.parseFinalAsr("clear negative prompt");
+  assert(parsed.matched() &&
+         parsed.command.kind == CommandKind::SetAigcNegativePrompt &&
+         parsed.command.text.empty());
+  assert(parser.parseFinalAsr(
+      "设置AIGC负面提示词为" + std::string(385, 'x')).code ==
+      ParseCode::InvalidValue);
+  parsed = parser.parseFinalAsr("设置默认渲染方式为 solid-clean");
+  assert(parsed.matched() &&
+         parsed.command.kind == CommandKind::SetDefaultRenderStrategy &&
+         parsed.command.text == "solid-clean");
+  assert(parser.parseFinalAsr("query default render strategy").command.kind ==
+         CommandKind::QueryDefaultRenderStrategy);
+  assert(parser.parseFinalAsr("设置默认渲染方式为 ../bad").code ==
+         ParseCode::InvalidValue);
+  assert(LocalCommandParser::validRenderStrategyId("official-quality"));
+  assert(!LocalCommandParser::validRenderStrategyId("Official-Quality"));
+  assert(!LocalCommandParser::validRenderStrategyId("bad--strategy"));
+  assert(LocalCommandParser::validNegativePrompt("", true));
+  assert(!LocalCommandParser::validNegativePrompt(""));
+
+  // Legacy Arduino accepted these strings but either overrode SKU metadata,
+  // selected a model without an input-image contract, or routed credential
+  // destruction through a voice transcript. Native local tools fail closed;
+  // those policies remain owned by Board/MyAI/Portal composition.
+  for (const char* retired : {
+           "image size 400x600", "image model t2i",
+           "reset wifi", "reset myai"}) {
+    assert(parser.parseFinalAsr(retired).code == ParseCode::NoMatch);
+  }
   parsed = parser.parseFinalAsr("设置智能体提示词为" + std::string(400, 'x'));
   assert(parsed.matched() && parsed.command.text.size() == 400);
   assert(!LocalCommandParser::validPrompt(std::string(513, 'x')));
@@ -155,6 +260,16 @@ int main() {
   assert(outcome.code == ExecutionCode::Executed && device.storage_queries == 1);
   assert(outcome.storage.remaining_bytes == 25 && outcome.storage.total_bytes == 100);
   assert(outcome.storage_metric == StorageMetric::Remaining);
+  outcome = session.handleFinalAsr("列出相册", 1001, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed &&
+         outcome.album_summary.count == 4 &&
+         outcome.album_summary.current_ordinal == 2 && outcome.text.empty());
+  outcome = session.handleFinalAsr("显示第三张", 1001, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed &&
+         outcome.album_selection.ordinal == 3 &&
+         outcome.album_selection.zero_based_index == 2 &&
+         outcome.album_selection.total == 4 &&
+         outcome.album_selection.asset_id == std::string(64, 'a'));
   outcome = session.handleFinalAsr("删除第十张", 1001, device, tokens);
   assert(outcome.code == ExecutionCode::ConfirmationRequired &&
          device.deleted_ordinal == 0);
@@ -180,6 +295,27 @@ int main() {
   assert(outcome.code == ExecutionCode::Executed && device.aigc == "版画风格");
   outcome = session.handleFinalAsr("查询AIGC图片提示词", 1009, device, tokens);
   assert(outcome.code == ExecutionCode::Executed && outcome.text == "版画风格");
+  outcome = session.handleFinalAsr("set image steps to 33", 1009, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed && outcome.steps == 33 &&
+         device.image_steps == 33);
+  outcome = session.handleFinalAsr("查询图片生成步数", 1009, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed && outcome.steps == 33);
+  outcome = session.handleFinalAsr(
+      "set aigc negative prompt to watermark, blurry", 1009, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed &&
+         device.negative == "watermark, blurry");
+  outcome = session.handleFinalAsr("query negative prompt", 1009, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed &&
+         outcome.text == "watermark, blurry");
+  outcome = session.handleFinalAsr(
+      "set default render strategy to official-quality", 1009, device, tokens);
+  assert(outcome.code == ExecutionCode::Executed &&
+         device.render == "official-quality");
+  outcome = session.handleFinalAsr(
+      "set default render strategy to future-policy", 1009, device, tokens);
+  assert(outcome.code == ExecutionCode::AdapterFailure &&
+         outcome.adapter_code == AdapterCode::Unsupported &&
+         device.render == "official-quality");
   device.assistant.assign(1024, 's');
   outcome = session.handleFinalAsr("查询智能体提示词", 1010, device, tokens);
   assert(outcome.code == ExecutionCode::Executed && outcome.text.size() == 1024);
@@ -228,6 +364,24 @@ int main() {
   device.volume = 101;
   outcome = session.handleFinalAsr("查询音量", 6000, device, tokens);
   assert(outcome.code == ExecutionCode::AdapterContractViolation);
+  device.album = {3, 4};
+  outcome = session.handleFinalAsr("list album", 6001, device, tokens);
+  assert(outcome.code == ExecutionCode::AdapterContractViolation);
+  device.album = {4, 2};
+  device.render = "BAD/strategy";
+  outcome = session.handleFinalAsr(
+      "query default render strategy", 6002, device, tokens);
+  assert(outcome.code == ExecutionCode::AdapterContractViolation &&
+         outcome.text.empty());
+  device.negative.assign(385, 'x');
+  outcome = session.handleFinalAsr("query negative prompt", 6003, device, tokens);
+  assert(outcome.code == ExecutionCode::AdapterContractViolation &&
+         outcome.text.empty());
+  device.image_steps = 0;
+  outcome = session.handleFinalAsr("query image generation steps", 6004,
+                                   device, tokens);
+  assert(outcome.code == ExecutionCode::AdapterContractViolation &&
+         outcome.steps == 0);
   return 0;
 }
 `;
@@ -295,4 +449,64 @@ test("local tools remain portable and carry no audio payload or runtime dependen
   assert.doesNotMatch(header, /format(?:Storage|TfCard)\([^)]*string/);
   assert.match(header, /kMaximumTranscriptBytes/);
   assert.match(header, /kMaximumConfirmationTokenBytes/);
+});
+
+test("native Voice owner defers selection success until correlated Display completion", () => {
+  const voice = readFileSync(
+    join(
+      repo,
+      "firmware/inkloop-idf/components/inkloop_product/native_voice_service.cpp",
+    ),
+    "utf8",
+  );
+  for (const command of [
+    "ListAlbum",
+    "SelectImageOrdinal",
+    "QueryAigcNegativePrompt",
+    "SetAigcNegativePrompt",
+    "QueryAigcSteps",
+    "SetAigcSteps",
+    "QueryDefaultRenderStrategy",
+    "SetDefaultRenderStrategy",
+  ]) {
+    assert.match(
+      voice,
+      new RegExp(`CommandKind::${command}`),
+      `missing NativeVoiceService integration for ${command}`,
+    );
+  }
+  const describe = voice.slice(
+    voice.indexOf("NativeVoiceService::describeLocalToolOutcome"),
+    voice.indexOf("void NativeVoiceService::publishLocalToolOutcome"),
+  );
+  assert.match(describe, /album_summary\.count/);
+  assert.match(describe, /album_summary\.current_ordinal/);
+  assert.match(describe, /album_selection\.ordinal/);
+  assert.match(describe, /album_selection\.total/);
+  assert.doesNotMatch(describe, /album_selection\.asset_id/);
+
+  const publish = voice.slice(
+    voice.indexOf("void NativeVoiceService::publishLocalToolOutcome"),
+    voice.indexOf("WorkDisposition NativeVoiceService::handleLocalToolCommand"),
+  );
+  assert.match(publish, /local_tool_display_correlation_\.arm/);
+  assert.match(
+    publish,
+    /stageInteractiveAlbumSelection[\s\S]*postLocalToolDisplaySelection/,
+  );
+  assert.doesNotMatch(
+    publish,
+    /display_queued=1 voice_prompt_queued=1/,
+  );
+  const settle = voice.slice(
+    voice.indexOf("void NativeVoiceService::serviceLocalToolDisplayResult"),
+    voice.indexOf("std::string NativeVoiceService::describeLocalToolOutcome"),
+  );
+  assert.match(settle, /terminal\.disposition != WorkDisposition::Complete/);
+  assert.match(settle, /local_tool\.failed[\s\S]*stage=display/);
+  assert.match(
+    settle,
+    /enqueueAlbumOrdinal\([\s\S]*terminal\.ordinal, false, terminal\.request_id/,
+  );
+  assert.match(settle, /describeLocalToolOutcome\(completed\)/);
 });

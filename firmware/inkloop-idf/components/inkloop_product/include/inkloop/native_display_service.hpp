@@ -3,10 +3,12 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 
 #include "inkloop/album_navigation_core.hpp"
 #include "inkloop/board.hpp"
 #include "inkloop/diagnostics/serial_diagnostic_events.hpp"
+#include "inkloop/local_tool_display_correlation.hpp"
 #include "inkloop/manual_panel_guard.hpp"
 #include "inkloop/runtime_supervisor.hpp"
 #include "inkloop/storage/posix_atomic_album_store.hpp"
@@ -21,6 +23,7 @@ struct NativeDisplayDiagnostics {
   uint32_t unchanged_skips = 0;
   uint32_t onboarding_failures = 0;
   uint32_t onboarding_unchanged_skips = 0;
+  uint32_t interactive_selection_conflicts = 0;
   uint32_t completed_album_refreshes = 0;
   uint32_t panel_writes = 0;
   uint32_t last_load_decode_ms = 0;
@@ -52,6 +55,12 @@ enum class NativeDisplayPageRequestResult : uint8_t {
   NotReady,
   Busy,
   InvalidInput,
+};
+
+enum class NativeInteractiveSelectionStageResult : uint8_t {
+  Staged,
+  Busy,
+  Invalid,
 };
 
 // Sole product display owner. It normalizes a PNG into the selected board's
@@ -98,6 +107,14 @@ class NativeDisplayService final {
   // to replace a visible onboarding page with the persisted current album
   // page (falling back to ordinal zero). The request carries no page secrets.
   NativeDisplayPageRequestResult requestAlbumRestore();
+  // Portal stages the exact, already-resolved asset before posting the
+  // correlated Display command. The Display lane consumes this fixed mailbox
+  // by request_id and refuses a marked command if the ordinal now resolves to
+  // another asset, preventing ordinal-to-asset TOCTOU panel writes.
+  NativeInteractiveSelectionStageResult stageInteractiveAlbumSelection(
+      uint64_t request_id, size_t zero_based_ordinal,
+      std::string_view expected_asset_id);
+  bool cancelInteractiveAlbumSelection(uint64_t request_id);
   AlbumStepResult selectRelative(int direction, size_t& ordinal);
   bool busy() const;
   bool refreshing() const;
@@ -113,8 +130,10 @@ class NativeDisplayService final {
   WorkDisposition handle(const WorkEnvelope& envelope);
   void service();
   bool synchronizeCatalog();
-  bool renderOrdinal(size_t ordinal, bool user_initiated = false);
-  bool renderOrdinalAdmitted(size_t ordinal, bool user_initiated);
+  bool renderOrdinal(size_t ordinal, bool user_initiated = false,
+                     std::string_view expected_asset_id = {});
+  bool renderOrdinalAdmitted(size_t ordinal, bool user_initiated,
+                             std::string_view expected_asset_id);
   bool renderOnboardingPage();
   bool writePanelFrame(const uint8_t* frame, size_t frame_bytes);
   AdmissionResult postRefreshStarting(size_t ordinal);
@@ -157,6 +176,28 @@ class NativeDisplayService final {
       std::string_view fourth = {});
   static void clearMailbox(OnboardingMailbox& mailbox);
 
+  enum class ExpectedSelectionConsumeResult : uint8_t {
+    Unmarked,
+    Matched,
+    MissingOrConflicting,
+  };
+
+  struct InteractiveSelectionMailbox {
+    std::array<char, local_tools::kMaximumImageIdBytes + 1U>
+        expected_asset_id{};
+    uint64_t request_id = 0U;
+    size_t zero_based_ordinal = 0U;
+    bool active = false;
+  };
+  static_assert(
+      std::is_trivially_copyable<InteractiveSelectionMailbox>::value,
+      "interactive selection mailbox must remain POD");
+
+  ExpectedSelectionConsumeResult consumeInteractiveAlbumSelection(
+      const WorkEnvelope& envelope,
+      std::array<char, local_tools::kMaximumImageIdBytes + 1U>&
+          expected_asset_id);
+
   IBoardAdapter& board_;
   RuntimeSupervisor& supervisor_;
   storage::PosixAtomicAlbumStore* album_store_;
@@ -166,6 +207,7 @@ class NativeDisplayService final {
   AlbumNavigationCore navigation_{};
   ManualPanelGuard manual_panel_guard_{};
   OnboardingMailbox onboarding_mailbox_{};
+  InteractiveSelectionMailbox interactive_selection_mailbox_{};
   PageFingerprint visible_onboarding_fingerprint_{};
   uint64_t sequence_ = 0;
   bool configured_ = false;

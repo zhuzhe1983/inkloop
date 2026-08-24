@@ -18,6 +18,11 @@ const opcodes = readFileSync(
 const productCmake = readFileSync(join(product, "CMakeLists.txt"), "utf8");
 const localTools = readFileSync(join(tools, "local_tools.cpp"), "utf8");
 const cloud = readFileSync(join(product, "native_inkloop_service.cpp"), "utf8");
+const display = readFileSync(join(product, "native_display_service.cpp"), "utf8");
+const displayHeader = readFileSync(
+  join(product, "include/inkloop/native_display_service.hpp"),
+  "utf8",
+);
 
 function section(source, start, end) {
   const from = source.indexOf(start);
@@ -79,8 +84,91 @@ test("local chat persists final text and real tool outcomes only", () => {
     "void NativeVoiceService::onVoiceAction",
   );
   assert.doesNotMatch(recognized, /queueChat/);
-  assert.match(voice, /ProductTextKind::ToolState, describeLocalToolOutcome/);
+  assert.match(
+    voice,
+    /ProductTextKind::ToolState,[\s\S]{0,80}describeLocalToolOutcome/,
+  );
   assert.doesNotMatch(voice, /fetch(?:Remote|MyAi)Chat|downloadChatHistory/);
+});
+
+test("spoken image selection settles only the exact correlated Display result", () => {
+  const publish = section(
+    voice,
+    "void NativeVoiceService::publishLocalToolOutcome",
+    "WorkDisposition NativeVoiceService::handleLocalToolCommand",
+  );
+  assert.match(publish, /local_tool_display_correlation_\.arm/);
+  assert.match(publish, /stageInteractiveAlbumSelection/);
+  assert.match(publish, /postLocalToolDisplaySelection/);
+  assert.match(publish, /No local_tool\.ok and no ordinal speech/);
+  assert.doesNotMatch(publish, /display_queued=1 voice_prompt_queued=1/);
+
+  const control = section(
+    voice,
+    "bool NativeVoiceService::handleControlResult",
+    "WorkDisposition NativeVoiceService::handleNetworkCommand",
+  );
+  assert.match(control, /DisplayInteractiveAlbumOrdinal/);
+  assert.match(control, /kLocalToolDisplaySelectionFlag/);
+  assert.match(control, /local_tool_display_correlation_\.matches/);
+  assert.match(control, /local_tool_display_correlation_\.resolve/);
+  assert.doesNotMatch(control, /queueChat|enqueueAlbumOrdinal|std::string/);
+
+  const settle = section(
+    voice,
+    "void NativeVoiceService::serviceLocalToolDisplayResult",
+    "std::string NativeVoiceService::describeLocalToolOutcome",
+  );
+  const failedAt = settle.indexOf(
+    "terminal.disposition != WorkDisposition::Complete",
+  );
+  const announceAt = settle.indexOf("enqueueAlbumOrdinal(");
+  const okAt = settle.indexOf("describeLocalToolOutcome(completed)");
+  assert.ok(failedAt >= 0 && announceAt > failedAt && okAt > announceAt);
+  assert.match(settle, /local_tool\.failed[\s\S]*stage=display/);
+  assert.match(
+    settle,
+    /terminal\.ordinal, false, terminal\.request_id/,
+  );
+  assert.match(settle, /finishTrackedStorageWork\(\)/);
+
+  const post = section(
+    voice,
+    "AdmissionResult NativeVoiceService::postLocalToolDisplaySelection",
+    "AdmissionResult NativeVoiceService::enqueueTopButton",
+  );
+  assert.match(post, /request_id = request_id/);
+  assert.match(post, /kLocalToolDisplayResultTimeoutMs/);
+  assert.match(post, /kLocalToolDisplaySelectionPayloadMarker/);
+  assert.match(post, /kLocalToolDisplaySelectionFlag/);
+
+  const displayHandle = section(
+    display,
+    "WorkDisposition NativeDisplayService::handle",
+    "bool NativeDisplayService::renderOrdinal",
+  );
+  assert.match(displayHandle, /consumeInteractiveAlbumSelection/);
+  assert.match(displayHandle, /MissingOrConflicting/);
+  const displayRender = section(
+    display,
+    "bool NativeDisplayService::renderOrdinalAdmitted",
+    "NativeDisplayDiagnostics NativeDisplayService::diagnostics",
+  );
+  const identityCheckAt = displayRender.indexOf(
+    "index.assets[ordinal].id != expected_asset_id",
+  );
+  const panelAt = displayRender.indexOf("writePanelFrame(");
+  assert.ok(identityCheckAt >= 0 && panelAt > identityCheckAt);
+  assert.match(displayHeader, /InteractiveSelectionMailbox/);
+  assert.match(displayHeader, /is_trivially_copyable/);
+
+  const aigc = section(
+    voice,
+    "void NativeVoiceService::serviceAigc",
+    "void NativeVoiceService::finishAigc",
+  );
+  assert.match(aigc, /DisplayInteractiveAlbumOrdinal/);
+  assert.doesNotMatch(aigc, /stageInteractiveAlbumSelection/);
 });
 
 test("Portal reads local chat through a bounded Storage-owner snapshot", () => {

@@ -87,10 +87,53 @@ class PlaybackFeedMonitor final {
     return true;
   }
 
-  void finishSource(uint64_t now_us) {
-    if (!configured_) return;
+  // A logical TTS segment has no more ingress, but the hardware queue and
+  // resampler may remain alive briefly for an adjacent same-format segment.
+  // Advance once while the segment is still open, then suspend starvation
+  // classification until resumeSource(). Expected DMA drain during that
+  // continuation window must not be reported as producer starvation.
+  bool pauseSource(uint64_t now_us) {
+    if (!configured_) return false;
     if (running_) advance(now_us);
     source_open_ = false;
+    starving_ = false;
+    return true;
+  }
+
+  // Reopen a paused logical segment without resetting the bounded queue or
+  // resampler. Time spent paused is consumed with source_open_ false, and the
+  // next submit cadence starts at this resume point rather than including the
+  // intentional continuation gap.
+  bool resumeSource(uint64_t now_us) {
+    if (!configured_) return false;
+    if (source_open_) return true;
+    if (running_) advance(now_us);
+    source_open_ = true;
+    starving_ = false;
+    last_submit_us_ = now_us;
+    return true;
+  }
+
+  // The streaming resampler may emit a final held interval only when the
+  // continuation grace expires. Feed that terminal tail into the queue while
+  // keeping logical ingress closed; reopening here would make an expected
+  // drain look like a new producer starvation window.
+  bool submitTerminal(size_t frames, uint64_t now_us) {
+    if (!configured_ || !running_ || source_open_ || frames == 0U)
+      return false;
+    advance(now_us);
+    diagnostics_.submit_calls =
+        saturatingIncrement(diagnostics_.submit_calls);
+    diagnostics_.submitted_frames =
+        saturatingAdd(diagnostics_.submitted_frames, frames);
+    append(frames);
+    starving_ = false;
+    last_submit_us_ = now_us;
+    return true;
+  }
+
+  void finishSource(uint64_t now_us) {
+    (void)pauseSource(now_us);
   }
 
   void stop() {

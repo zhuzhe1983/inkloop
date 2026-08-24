@@ -51,7 +51,8 @@ test("maintenance admission atomically gates every active Display-owned state", 
     "!onboarding_pending_",
     "!onboarding_rendering_",
     "!onboarding_replacement_pending_",
-    "!album_restore_pending_ && album_store_",
+    "!album_restore_pending_ && !interactive_selection_mailbox_.active",
+    "album_store_",
     "storage_maintenance_ = true",
     "portEXIT_CRITICAL(&mux_)",
   ]);
@@ -129,7 +130,8 @@ test("catalog, onboarding, selection, tick and command admissions fail closed", 
   ordered(handler, [
     "storage_maintenance_ || catalog_refreshing_",
     "return WorkDisposition::Busy",
-    "renderOrdinal(envelope.flags, user_initiated)",
+    "renderOrdinal(",
+    "ordinal, user_initiated, constrained_asset",
   ]);
 });
 
@@ -143,7 +145,8 @@ test("an admitted album render holds an explicit lease across all album I/O", ()
     "portENTER_CRITICAL(&mux_)",
     "storage_maintenance_ || catalog_refreshing_ || album_rendering_",
     "album_rendering_ = true",
-    "renderOrdinalAdmitted(ordinal, user_initiated)",
+    "renderOrdinalAdmitted(",
+    "ordinal, user_initiated, expected_asset_id",
     "album_rendering_ = false",
     "portEXIT_CRITICAL(&mux_)",
   ]);

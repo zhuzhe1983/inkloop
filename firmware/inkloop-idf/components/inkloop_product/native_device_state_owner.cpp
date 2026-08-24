@@ -1,6 +1,7 @@
 #include "inkloop/native_device_state_owner.hpp"
 
 #include "inkloop/board_prompt_policy.hpp"
+#include "inkloop/native_device_aigc_settings.hpp"
 
 namespace inkloop {
 namespace {
@@ -14,6 +15,17 @@ bool capacity(storage::PosixAtomicAlbumStore* album,
   output = local_tools::StorageInfo{};
   return album &&
       album->queryCapacity(output.total_bytes, output.remaining_bytes);
+}
+
+local_tools::AdapterResult albumRead(const myai::Status& status) {
+  if (status.ok()) return local(local_tools::AdapterCode::Ok);
+  if (status.code == myai::ErrorCode::InvalidState ||
+      status.code == myai::ErrorCode::Conflict) {
+    return local(local_tools::AdapterCode::Conflict);
+  }
+  if (status.code == myai::ErrorCode::Storage)
+    return local(local_tools::AdapterCode::NotReady);
+  return local(local_tools::AdapterCode::IoError);
 }
 
 }  // namespace
@@ -34,7 +46,13 @@ settings::DeviceSettings NativeDeviceStateOwner::defaultsFor(
 NativeDeviceStateOwner::NativeDeviceStateOwner(
     const BoardDescriptor& board, storage::EspStorageMountOwner& storage)
     : storage_(storage), defaults_(defaultsFor(board)),
-      store_(journal_, defaults_) {}
+      store_(journal_, defaults_), extension_store_(extension_journal_) {}
+
+NativeDeviceStateOwner::NativeDeviceStateOwner(
+    const BoardDescriptor& board, storage::EspStorageMountOwner& storage,
+    IBoardRenderer& renderer)
+    : storage_(storage), renderer_(&renderer), defaults_(defaultsFor(board)),
+      store_(journal_, defaults_), extension_store_(extension_journal_) {}
 
 esp_err_t NativeDeviceStateOwner::attachStorageMaintenanceCoordinator(
     IStorageMaintenanceCoordinator& coordinator) {
@@ -56,7 +74,9 @@ esp_err_t NativeDeviceStateOwner::initialize(
   if (initialized_ || !authorization.valid()) return ESP_ERR_INVALID_STATE;
   mutex_ = xSemaphoreCreateMutexStatic(&mutex_storage_);
   if (!mutex_) return ESP_ERR_NO_MEM;
-  const settings::SettingsStatus loaded = store_.load(snapshot_);
+  const settings::SettingsStatus loaded =
+      settings::loadRollbackCompatibleSettings(
+          store_, extension_store_, snapshot_);
   if (!loaded.ok()) return ESP_FAIL;
   const bool authorized_fresh =
       authorization.kind == NativeSettingsAuthorityKind::FreshDefaults &&
@@ -122,6 +142,7 @@ portal::PortalSettingsSnapshot NativeDeviceStateOwner::portalSnapshot(
   output.voice_assistance_enabled = value.voice_assistance_enabled;
   output.assistant_prompt = value.assistant_prompt;
   output.image_prompt_template = value.aigc_prompt_template;
+  output.image_generation_steps = value.aigc_steps;
   output.negative_prompt = value.negative_prompt;
   output.asset_storage_preference =
       settings::assetStoragePreferenceName(value.asset_storage_preference);
@@ -191,8 +212,26 @@ settings::SettingsStatus NativeDeviceStateOwner::commitLocked(
     const settings::DeviceSettings& next) {
   settings::SettingsSnapshot committed;
   const settings::SettingsStatus status =
-      store_.save(next, snapshot_.generation, committed);
-  if (status.ok()) snapshot_ = std::move(committed);
+      settings::saveRollbackCompatibleSettings(
+          store_, extension_store_, next, snapshot_.generation, committed);
+  if (settings::validDeviceSettings(committed.values) &&
+      (committed.generation == 0U ||
+       (committed.decoded_record_schema >= 1U &&
+        committed.decoded_record_schema <=
+            settings::kMaximumReadableSettingsRecordSchema))) {
+    // On a mixed main+extension failure this is the authoritative reloaded
+    // partial state (new schema-2 main plus old committed extension). Keep it
+    // visible while returning the failure so callers never report that the
+    // requested LED/steps value was persisted.
+    snapshot_ = std::move(committed);
+  } else if (!status.ok() &&
+             status.code != settings::SettingsError::InvalidArgument &&
+             status.code != settings::SettingsError::TooLarge) {
+    // A main/sidecar storage, conflict, exhaustion, or verification failure
+    // makes the in-memory snapshot potentially non-authoritative. Refuse all
+    // further Portal/voice mutations until a reboot re-audits both journals.
+    initialized_ = false;
+  }
   return status;
 }
 
@@ -223,6 +262,7 @@ portal::PortalResult NativeDeviceStateOwner::applyPortalSettings(
   if (patch.has_assistant_prompt) next.assistant_prompt = patch.assistant_prompt;
   if (patch.has_image_prompt_template)
     next.aigc_prompt_template = patch.image_prompt_template;
+  applyNativeDeviceAigcSettingsPatch(patch, next);
   if (patch.has_negative_prompt) next.negative_prompt = patch.negative_prompt;
   if (patch.has_asset_storage_preference) {
     if (patch.asset_storage_preference == "automatic") {
@@ -278,6 +318,58 @@ local_tools::AdapterResult NativeDeviceStateOwner::queryStorage(
   return capacity(selectedAlbum(), output)
       ? local(local_tools::AdapterCode::Ok)
       : local(local_tools::AdapterCode::NotReady);
+}
+
+local_tools::AdapterResult NativeDeviceStateOwner::queryAlbumSummary(
+    local_tools::AlbumSummary& output) {
+  output = local_tools::AlbumSummary{};
+  if (!initialized_) return local(local_tools::AdapterCode::NotReady);
+  storage::PosixAtomicAlbumStore* album = selectedAlbum();
+  if (!album) return local(local_tools::AdapterCode::NotReady);
+  storage::AlbumIndex index;
+  const local_tools::AdapterResult read = albumRead(album->readCatalog(index));
+  if (!read.ok()) return read;
+  if (index.assets.size() > local_tools::kMaximumImageOrdinal)
+    return local(local_tools::AdapterCode::IoError);
+  output.count = static_cast<uint32_t>(index.assets.size());
+  if (index.current.empty()) return local(local_tools::AdapterCode::Ok);
+  for (size_t at = 0U; at < index.assets.size(); ++at) {
+    if (index.assets[at].id != index.current) continue;
+    output.current_ordinal = static_cast<uint32_t>(at + 1U);
+    return local(local_tools::AdapterCode::Ok);
+  }
+  output = local_tools::AlbumSummary{};
+  return local(local_tools::AdapterCode::IoError);
+}
+
+local_tools::AdapterResult NativeDeviceStateOwner::resolveImageByOrdinal(
+    uint32_t one_based_ordinal, local_tools::AlbumSelection& output) {
+  output = local_tools::AlbumSelection{};
+  if (!initialized_) return local(local_tools::AdapterCode::NotReady);
+  if (one_based_ordinal == 0U ||
+      one_based_ordinal > local_tools::kMaximumImageOrdinal) {
+    return local(local_tools::AdapterCode::Unsupported);
+  }
+  storage::PosixAtomicAlbumStore* album = selectedAlbum();
+  if (!album) return local(local_tools::AdapterCode::NotReady);
+  storage::AlbumIndex index;
+  const local_tools::AdapterResult read = albumRead(album->readCatalog(index));
+  if (!read.ok()) return read;
+  if (index.assets.size() > local_tools::kMaximumImageOrdinal)
+    return local(local_tools::AdapterCode::IoError);
+  if (one_based_ordinal > index.assets.size())
+    return local(local_tools::AdapterCode::NotFound);
+  const storage::AlbumIndexAsset& selected =
+      index.assets[one_based_ordinal - 1U];
+  if (!storage::validAlbumAssetId(selected.id) ||
+      !local_tools::LocalCommandParser::validImageId(selected.id)) {
+    return local(local_tools::AdapterCode::IoError);
+  }
+  output.asset_id = selected.id;
+  output.zero_based_index = one_based_ordinal - 1U;
+  output.ordinal = one_based_ordinal;
+  output.total = static_cast<uint32_t>(index.assets.size());
+  return local(local_tools::AdapterCode::Ok);
 }
 
 local_tools::AdapterResult NativeDeviceStateOwner::deleteImageByOrdinal(
@@ -369,6 +461,15 @@ local_tools::AdapterResult NativeDeviceStateOwner::queryAigcPrompt(
   return local(local_tools::AdapterCode::Ok);
 }
 
+local_tools::AdapterResult NativeDeviceStateOwner::queryAigcSteps(
+    uint8_t& steps) {
+  steps = settings::kDefaultAigcSteps;
+  if (!initialized_ || !take()) return local(local_tools::AdapterCode::NotReady);
+  steps = nativeDeviceAigcSteps(snapshot_.values);
+  give();
+  return local(local_tools::AdapterCode::Ok);
+}
+
 local_tools::AdapterResult NativeDeviceStateOwner::queryAigcNegativePrompt(
     std::string& output) {
   output.clear();
@@ -384,6 +485,19 @@ local_tools::AdapterResult NativeDeviceStateOwner::queryDefaultRenderStrategy(
   if (!initialized_ || !take()) return local(local_tools::AdapterCode::NotReady);
   output = snapshot_.values.default_render_strategy;
   give();
+  if (!local_tools::LocalCommandParser::validRenderStrategyId(output)) {
+    output.clear();
+    return local(local_tools::AdapterCode::IoError);
+  }
+  if (renderer_) {
+    const BoardRenderStrategyCatalog catalog =
+        renderer_->renderStrategyCatalog();
+    if (!catalog.valid() || !catalog.contains(output) ||
+        !renderer_->supportsRenderStrategy(output)) {
+      output.clear();
+      return local(local_tools::AdapterCode::Unsupported);
+    }
+  }
   return local(local_tools::AdapterCode::Ok);
 }
 
@@ -392,6 +506,51 @@ local_tools::AdapterResult NativeDeviceStateOwner::setAigcPrompt(
   if (!initialized_ || !take()) return local(local_tools::AdapterCode::NotReady);
   settings::DeviceSettings next = snapshot_.values;
   next.aigc_prompt_template = prompt;
+  const settings::SettingsStatus saved = commitLocked(next);
+  give();
+  return localSettingsResult(saved);
+}
+
+local_tools::AdapterResult NativeDeviceStateOwner::setAigcSteps(
+    uint8_t steps) {
+  if (steps < settings::kMinimumAigcSteps ||
+      steps > settings::kMaximumAigcSteps) {
+    return local(local_tools::AdapterCode::Unsupported);
+  }
+  if (!initialized_ || !take()) return local(local_tools::AdapterCode::NotReady);
+  settings::DeviceSettings next = snapshot_.values;
+  next.aigc_steps = steps;
+  const settings::SettingsStatus saved = commitLocked(next);
+  give();
+  return localSettingsResult(saved);
+}
+
+local_tools::AdapterResult NativeDeviceStateOwner::setAigcNegativePrompt(
+    const std::string& prompt) {
+  if (!local_tools::LocalCommandParser::validNegativePrompt(prompt, true))
+    return local(local_tools::AdapterCode::Unsupported);
+  if (!initialized_ || !take()) return local(local_tools::AdapterCode::NotReady);
+  settings::DeviceSettings next = snapshot_.values;
+  next.negative_prompt = prompt;
+  const settings::SettingsStatus saved = commitLocked(next);
+  give();
+  return localSettingsResult(saved);
+}
+
+local_tools::AdapterResult NativeDeviceStateOwner::setDefaultRenderStrategy(
+    const std::string& strategy) {
+  if (!local_tools::LocalCommandParser::validRenderStrategyId(strategy) ||
+      !renderer_) {
+    return local(local_tools::AdapterCode::Unsupported);
+  }
+  const BoardRenderStrategyCatalog catalog = renderer_->renderStrategyCatalog();
+  if (!catalog.valid() || !catalog.contains(strategy) ||
+      !renderer_->supportsRenderStrategy(strategy)) {
+    return local(local_tools::AdapterCode::Unsupported);
+  }
+  if (!initialized_ || !take()) return local(local_tools::AdapterCode::NotReady);
+  settings::DeviceSettings next = snapshot_.values;
+  next.default_render_strategy = strategy;
   const settings::SettingsStatus saved = commitLocked(next);
   give();
   return localSettingsResult(saved);

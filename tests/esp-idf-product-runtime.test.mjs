@@ -45,7 +45,10 @@ test("native composition starts pinned owners and arms buttons last", () => {
 test("voice, AIGC cache and album display are native product owners", () => {
   const source = readFileSync(join(product, "product_runtime.cpp"), "utf8");
   const voice = readFileSync(join(product, "native_voice_service.cpp"), "utf8");
-  assert.match(source, /RawButtonVoice[\s\S]*voice_\.enqueueTopButton\(\)/);
+  assert.match(
+    source,
+    /RawButtonVoice[\s\S]*voice_\.enqueueTopButton\(envelope\.request_id\)/,
+  );
   assert.match(source, /handleNetworkCommand\(envelope\)/);
   assert.match(source, /voice_\.networkTick\(wifi_\.online\(\)\)/);
   assert.match(voice, /TaskLane::Voice[\s\S]*voiceTick[\s\S]*5/);
@@ -73,6 +76,10 @@ test("voice, AIGC cache and album display are native product owners", () => {
   assert.match(source, /SerialDiagnosticEventKind::AigcState/);
   assert.match(source, /SerialDiagnosticEventKind::NetworkState/);
   assert.match(source, /SerialDiagnosticEventKind::SerialState/);
+  assert.match(
+    source,
+    /SerialDiagnosticEventKind::SerialState[\s\S]{0,300}event\.third\s*=\s*buttons_\.rawEdgeOverflowCount\(\)/,
+  );
   assert.match(voice, /kAigcPollMs = 5000/);
   assert.match(voice, /AigcAlbumSink[\s\S]*takeCommittedAsset/);
   assert.doesNotMatch(voice, /audio_base64|appendAudio|StorageAppendAudio/);

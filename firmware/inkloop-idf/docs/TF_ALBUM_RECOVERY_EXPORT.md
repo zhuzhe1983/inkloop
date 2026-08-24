@@ -3,7 +3,7 @@
 This procedure is mandatory before choosing a removable-album recovery slot
 when `index.json`, `index.next`, and `index.prev` are all valid and divergent.
 Only the offline whole-card workflow below satisfies the pre-flash physical TF
-custody gate. The beta30-or-newer accepted candidate's HTTP path is an
+custody gate. A receipt-bound beta31-or-newer accepted candidate's HTTP path is an
 additional logical export for selection and content verification after that
 exact candidate is already running; it does not replace the whole-card image.
 
@@ -13,10 +13,10 @@ and the export implementation intends only reads, mounting/using that
 filesystem is not equivalent to a hardware- or VFS-enforced read-only source.
 Filesystem metadata writes cannot be excluded by this workflow. Therefore do
 not describe the HTTP path as a read-only custody path, do not use it as proof
-that TF bytes were unchanged, and do not flash a beta30-or-newer candidate in
+that TF bytes were unchanged, and do not flash a beta31-or-newer candidate in
 order to obtain it before the offline image exists.
 
-## Beta30+ authenticated HTTP logical export (additional evidence only)
+## Beta31+ authenticated HTTP logical export (additional evidence only)
 
 Prerequisite: the pre-flash whole-card image and its hash have already been
 captured and verified through the offline boundary below. If they do not
@@ -84,7 +84,7 @@ first network request. A pre-existing file, directory, or symlink is refused.
 This is a complete logical export of the three indexes and their referenced
 asset union, not physical pre-flash custody, not proof of source immutability,
 and not a raw image of unused sectors or unrelated TF files. The offline
-whole-card workflow below is mandatory before writing any beta30-or-newer
+whole-card workflow below is mandatory before writing any beta31-or-newer
 candidate to the device.
 
 ## Mandatory pre-flash offline whole-card safety boundary
@@ -165,6 +165,11 @@ reads. The final durable write atomically changes `custody.json` from
 hash mismatch, destination race or write failure therefore cannot authorize
 flashing.
 
+An incomplete run retains `captureStage`, the available source/image digest
+summaries and their pairwise agreement in `custody.json`. These fields are
+diagnostic evidence only: they can distinguish unstable source reads from a
+changed destination image, but `complete: false` never authorizes staging.
+
 Retain together, outside the repository:
 
 - `tf-whole-card.img` and `SHA256SUMS`;
@@ -218,7 +223,7 @@ The exporter re-reads and re-hashes the complete source set before and after
 copying. A failure after destination creation leaves `INCOMPLETE.json`; that
 directory is not valid backup evidence and must never authorize selection.
 
-Only after the whole-card image and its hash are retained may a beta30-or-newer
+Only after the whole-card image and its hash are retained may a beta31-or-newer
 image be staged. After the exact accepted candidate's Recovery boots, the HTTP
 logical export may be used as additional selection evidence; the offline
 exporter may instead validate the mounted image. Before submitting exactly one

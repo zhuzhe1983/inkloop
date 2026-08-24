@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inkloop/settings/legacy_portal_import.hpp"
+#include "inkloop/settings/settings_extension_journal.hpp"
 #include "inkloop/settings/settings_journal.hpp"
 
 namespace inkloop {
@@ -16,6 +17,19 @@ class EspNvsSettingsJournalStore final : public ISettingsJournalStore {
       const std::vector<std::uint8_t>& encoded) override;
   SettingsStatus writeHeadAndMarkerAndCommit(
       std::uint32_t generation) override;
+};
+
+// Rollback-safe extensions use keys unknown to beta27 in the existing settings
+// namespace. beta27 reads/writes only its known tuple and never enumerates or
+// erases the extension keys. ext-head is the sole extension commit selector.
+class EspNvsSettingsExtensionJournalStore final
+    : public ISettingsExtensionJournalStore {
+ public:
+  SettingsStatus inspect(SettingsExtensionJournalState& state) override;
+  SettingsStatus writeSlot(
+      std::uint8_t slot,
+      const std::vector<std::uint8_t>& encoded) override;
+  SettingsStatus writeHead(std::uint32_t sequence) override;
 };
 
 // Compatibility adapter for released Arduino images. It only opens

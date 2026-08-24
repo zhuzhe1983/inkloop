@@ -540,6 +540,10 @@ test("native wake composition is capability-injected and preserves the panel", (
   );
   assert.match(
     nativePower,
+    /sleepAdmissionStillSafe\(\)[\s\S]{0,700}quiesceVoiceAndAudio\(\)[\s\S]{0,120}!buttons_\.hasPendingRawEdge\(\)/,
+  );
+  assert.match(
+    nativePower,
     /restoreAwakeServices\(\)[\s\S]{0,1500}if \(restored && !board_restore_needed_ && !network_quiesced_[\s\S]{0,300}supervisor_\.thawAdmissionAfterSleepAbort\(\)/,
   );
   assert.match(

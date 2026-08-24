@@ -461,7 +461,13 @@ Status MyAiClient::pollPairing(bool& bound) {
     if (parsed.paymentRequired) {
       status = Status(ErrorCode::PaymentRequired, 402,
                       "MyAI activation/payment required");
-      setActivation(ActivationState::PaymentRequired, status);
+      // Center can leave a failed claim pending while the owner fixes billing
+      // or device quota.  There is no durable device credential yet, so this
+      // is still a pairing transaction: retain the pending token and keep the
+      // bounded status poll alive.  PaymentRequired becomes the activation
+      // state only after a token-bearing response says the device is inactive.
+      setActivation(ActivationState::Pairing, status);
+      events_.onError(status);
       return status;
     }
     return Status::success();
@@ -717,7 +723,10 @@ Status MyAiClient::connectVoice() {
   if (!status.ok()) {
     ++voiceReconnectAttempts_;
     disconnectLease(voiceLease_, "websocket_connect_failed");
+    if (status.code == ErrorCode::PaymentRequired)
+      setActivation(ActivationState::PaymentRequired, status);
     setVoice(VoiceState::Error);
+    if (status.code != ErrorCode::Storage) events_.onError(status);
   }
   return status;
 }
@@ -960,7 +969,10 @@ Status MyAiClient::downloadImage(const std::string& promptId,
   }
   if (!status.ok()) {
     sink.abort();
+    if (status.code == ErrorCode::PaymentRequired)
+      setActivation(ActivationState::PaymentRequired, status);
     setAigc(AigcState::Error, status.detail);
+    if (status.code != ErrorCode::Storage) events_.onError(status);
     return status;
   }
   imageLease_.requestCount++;
@@ -1308,8 +1320,12 @@ void MyAiClient::onWebSocketText(const std::string& message) {
   } else if (event.type == "action.execute") {
     events_.onVoiceAction(event);
   } else if (event.type == "error") {
-    status = Status(ErrorCode::Protocol, 0,
-                    event.code.empty() ? event.message : event.code);
+    const std::string provider_detail =
+        !event.code.empty() ? event.code
+                            : (!event.message.empty()
+                                   ? event.message
+                                   : "MyAI voice provider error");
+    status = Status(ErrorCode::Protocol, 0, provider_detail);
     resetVoiceTtsTracking();
     setVoice(VoiceState::Error);
     events_.onError(status);

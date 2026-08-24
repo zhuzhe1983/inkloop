@@ -105,7 +105,14 @@ struct Store final : ICredentialStore {
   }
 };
 
-enum class HttpMode { PairSuccess, PairError, Voice, Image, ImageGatewayUnauthorized };
+enum class HttpMode {
+  PairSuccess,
+  PairPendingPayment,
+  PairError,
+  Voice,
+  Image,
+  ImageGatewayUnauthorized
+};
 
 struct Http final : IHttpTransport {
   HttpMode mode;
@@ -131,6 +138,11 @@ struct Http final : IHttpTransport {
         response.body = "{\"error\":{\"code\":\"" + pairingErrorCode +
                         "\",\"message\":\"" + pairingErrorMessage +
                         "\"}}";
+      } else if (mode == HttpMode::PairPendingPayment) {
+        response.body =
+            "{\"device_id\":\"123456\",\"app_id\":\"inkloop\","
+            "\"status\":\"pending\",\"expires_at\":\"later\","
+            "\"bound\":false,\"payment_required\":true}";
       } else {
         response.body =
             "{\"device_id\":\"123456\",\"app_id\":\"inkloop\","
@@ -261,6 +273,7 @@ struct WebSocket final : IWebSocketTransport {
   std::vector<std::string> text;
   size_t binaryBytes = 0;
   int closes = 0;
+  Status connectStatus;
   Status connect(const std::string& url,
                  const std::map<std::string, std::string>& headers,
                  IWebSocketListener& next) override {
@@ -272,6 +285,7 @@ struct WebSocket final : IWebSocketTransport {
     assert(headers.at("X-Gateway-Session-Token") == "gateway-secret");
     assert(headers.at("X-Gateway-Session-ID") == "session-1");
     assert(headers.at("X-Gateway-ID") == "fast");
+    if (!connectStatus.ok()) return connectStatus;
     listener = &next;
     listener->onWebSocketOpen();
     return Status::success();
@@ -292,10 +306,11 @@ struct WebSocket final : IWebSocketTransport {
 
 struct Output final : IAigcOutputTransport {
   int calls = 0;
+  Status result = Status(ErrorCode::InvalidState);
   Status postAndDecodeBase64(const HttpRequest&, size_t, size_t, IImageSink&,
                              AigcOutputMetadata&) override {
     ++calls;
-    return Status(ErrorCode::InvalidState);
+    return result;
   }
 };
 
@@ -337,7 +352,13 @@ struct Events final : IMyAiEvents {
   int partialAssistant = 0;
   int finalAssistant = 0;
   int errors = 0;
-  void onActivationState(ActivationState, const Status&) override {}
+  ActivationState activation = ActivationState::Unconfigured;
+  Status activationStatus;
+  Status lastError;
+  void onActivationState(ActivationState state, const Status& status) override {
+    activation = state;
+    activationStatus = status;
+  }
   void onPairingReady(const PairingView&) override {}
   void onVoiceState(VoiceState) override {}
   void onTranscript(const std::string& text, bool final) override {
@@ -351,7 +372,10 @@ struct Events final : IMyAiEvents {
   void onLocalCommand(const std::string&, const std::string&) override {}
   void onVoiceAction(const VoiceEvent&) override {}
   void onAigcState(AigcState, const std::string&) override {}
-  void onError(const Status&) override { ++errors; }
+  void onError(const Status& status) override {
+    ++errors;
+    lastError = status;
+  }
 };
 
 struct Sink final : IImageSink {
@@ -415,6 +439,42 @@ void checkPairingDiagnostic(int httpStatus, const char* error,
          std::string::npos);
 }
 
+void checkPendingPaymentKeepsPairing(CanonicalJsonCodec& codec,
+                                     Security& security, Clock& clock,
+                                     Probes& probes, Output& output,
+                                     Audio& audio, Local& local) {
+  Store store(true);
+  Http http(HttpMode::PairPendingPayment);
+  WebSocket socket;
+  Events events;
+  MyAiClient client(config(), http, probes, socket, output, security, store,
+                    codec, clock, audio, local, events);
+  assert(client.initialize().ok());
+  bool bound = false;
+  Status payment = client.pollPairing(bound);
+  assert(payment.code == ErrorCode::PaymentRequired &&
+         payment.httpStatus == 402 && !bound);
+  assert(client.activationState() == ActivationState::Pairing);
+  assert(events.activation == ActivationState::Pairing);
+  assert(events.activationStatus.code == ErrorCode::PaymentRequired);
+  assert(events.errors == 1 &&
+         events.lastError.code == ErrorCode::PaymentRequired);
+  assert(store.value.deviceToken.empty() && store.value.pending.valid());
+
+  // A bounded scheduler may continue the pending transaction without rotating
+  // or inventing another code.  Once Center returns the token-bearing success,
+  // promotion stops every subsequent poll locally in the same client turn.
+  payment = client.pollPairing(bound);
+  assert(payment.code == ErrorCode::PaymentRequired && !bound);
+  assert(http.pairingPolls == 2 && store.value.pending.valid());
+  http.mode = HttpMode::PairSuccess;
+  assert(client.pollPairing(bound).ok() && bound);
+  assert(client.activationState() == ActivationState::Bound);
+  assert(http.pairingPolls == 3 && store.value.pending.empty());
+  assert(client.pollPairing(bound).code == ErrorCode::InvalidState);
+  assert(http.pairingPolls == 3);
+}
+
 int main() {
   CanonicalJsonCodec codec("contract-test");
   GatewayLease schema_lease;
@@ -440,6 +500,143 @@ int main() {
       "\"}").empty());
   assert(codec.parseErrorDiagnostic(
       "{\"message\":\"Bearer device-secret\"}").empty());
+
+  const std::string jwtNoPadding =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+      "c2lnbmF0dXJlMTIzNDU2Nzg5MA";
+  const std::string jwtWithPadding =
+      "eyJhbGciOiJIUzI1NiJ9==.eyJzdWIiOiIxMjM0NTY3ODkwIn0=."
+      "c2lnbmF0dXJlMTIzNDU2Nzg5MA==";
+  const std::string longOpaque =
+      "AbCdEf0123456789_-AbCdEf0123456789_-AbCdEf0123456789";
+  const std::string longHex =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const std::string opaque32 =
+      "AbCdEf0123456789_-AbCdEf01234567";
+  const std::string hex32 =
+      "0123456789abcdef0123456789abcdef";
+  const std::string lower32 =
+      "abcdefghijklmnopqrstuvwxyzabcdef";
+  const std::string upper32 =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF";
+  const std::string segmentedOpaque =
+      "abcd1234_efgh5678_ijkl9012_mnop3456";
+  const std::string segmentedOpaqueHyphen =
+      "abcd1234-efgh5678-ijkl9012-mnop3456";
+  assert(opaque32.size() == 32U && hex32.size() == 32U);
+  assert(lower32.size() == 32U && upper32.size() == 32U);
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"message\":\"") + jwtNoPadding + "\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"error\":{\"message\":\"") + jwtWithPadding +
+      "\"}}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"error\":{\"detail\":\"") + longOpaque +
+      "\"}}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"detail\":\"") + longHex + "\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"message\":\"") + opaque32 + "\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"detail\":\"") + hex32 + "\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"message\":\"before ") + lower32 +
+      " after\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"detail\":\"before ") + upper32 +
+      " after\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"error\":\"") + longOpaque + "\"}").empty());
+  assert(codec.parseErrorCode(
+      std::string("{\"error\":\"") + longOpaque + "\"}").empty());
+  assert(codec.parseErrorCode(
+      "{\"error\":\"ags_live_1234567890\"}").empty());
+  for (const std::string& unknownCode :
+       {segmentedOpaque, segmentedOpaqueHyphen}) {
+    assert(codec.parseErrorCode(
+        std::string("{\"error\":\"") + unknownCode + "\"}").empty());
+    assert(codec.parseErrorDiagnostic(
+        std::string("{\"error\":\"") + unknownCode + "\"}").empty());
+    assert(codec.parseErrorCode(
+        std::string("{\"error\":{\"code\":\"") + unknownCode +
+        "\",\"message\":\"" + lower32 + "\"}}").empty());
+    assert(codec.parseErrorDiagnostic(
+        std::string("{\"error\":{\"code\":\"") + unknownCode +
+        "\",\"message\":\"before " + lower32 +
+        " after\"}}").empty());
+  }
+  std::string escapedOpaque;
+  for (size_t index = 0; index < 32U; ++index) escapedOpaque += "\\u0061";
+  assert(escapedOpaque.size() == 192U);
+  assert(codec.parseErrorDiagnostic(
+      std::string("{\"message\":\"") + escapedOpaque + "\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      "{\"message\":\"Bearer=opaque-value\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      "{\"detail\":\"token=short-opaque\"}").empty());
+  assert(codec.parseErrorDiagnostic(
+      "{\"message\":\"设备尚未激活，请稍后重试\"}") ==
+      "设备尚未激活，请稍后重试");
+  assert(codec.parseErrorDiagnostic(
+      "{\"detail\":\"Gateway is temporarily busy\"}") ==
+      "Gateway is temporarily busy");
+  assert(codec.parseErrorCode(
+      "{\"error\":\"subscription_required\"}") ==
+      "subscription_required");
+  assert(codec.parseErrorCode(
+      "{\"error\":{\"code\":\"device_credential_recovery_required\"}}") ==
+      "device_credential_recovery_required");
+
+  for (const std::string& providerSecret :
+       {jwtNoPadding, jwtWithPadding, longOpaque, longHex, opaque32, hex32,
+        lower32, upper32, segmentedOpaque, segmentedOpaqueHyphen}) {
+    VoiceEvent providerError;
+    assert(codec.parseVoiceEvent(
+        std::string("{\"type\":\"error\",\"payload\":{\"code\":\"") +
+            providerSecret + "\",\"message\":\"" + providerSecret +
+            "\"}}",
+        providerError).ok());
+    assert(providerError.code.empty() && providerError.message.empty());
+  }
+  VoiceEvent ordinaryProviderError;
+  assert(codec.parseVoiceEvent(
+      "{\"type\":\"error\",\"payload\":{\"code\":\"provider_busy\","
+      "\"message\":\"服务暂时繁忙\"}}",
+      ordinaryProviderError).ok());
+  assert(ordinaryProviderError.code == "provider_busy");
+  assert(ordinaryProviderError.message == "服务暂时繁忙");
+
+  AigcStatusResponse filteredAigcStatus;
+  assert(codec.parseAigcStatus(
+      std::string("{\"prompt_id\":\"prompt-1\",\"status\":\"failed\","
+                  "\"message\":\"") + jwtWithPadding + "\"}",
+      filteredAigcStatus).ok());
+  assert(filteredAigcStatus.status == "failed" &&
+         filteredAigcStatus.message.empty());
+  filteredAigcStatus = AigcStatusResponse();
+  assert(codec.parseAigcStatus(
+      std::string("{\"prompt_id\":\"prompt-2\",\"status\":\"failed\","
+                  "\"message\":\"before ") + lower32 + " after\"}",
+      filteredAigcStatus).ok());
+  assert(filteredAigcStatus.message.empty());
+  assert(codec.parseAigcStatus(
+      std::string("{\"prompt_id\":\"prompt-3\",\"status\":\"") +
+          segmentedOpaque + "\"}",
+      filteredAigcStatus).code == ErrorCode::Protocol);
+  AigcGenerateResponse invalidAigcGenerate;
+  assert(codec.parseAigcGenerate(
+      std::string("{\"prompt_id\":\"prompt-4\",\"status\":\"") +
+          segmentedOpaque + "\"}",
+      invalidAigcGenerate).code == ErrorCode::Protocol);
+  AigcGenerateResponse queuedAigcGenerate;
+  assert(codec.parseAigcGenerate(
+      "{\"prompt_id\":\"prompt-5\",\"status\":\"queued\"}",
+      queuedAigcGenerate).ok());
+  assert(queuedAigcGenerate.status == "queued");
+  AigcGenerateResponse statusOptionalAigcGenerate;
+  assert(codec.parseAigcGenerate(
+      "{\"prompt_id\":\"prompt-6\"}", statusOptionalAigcGenerate).ok());
+  assert(statusOptionalAigcGenerate.status.empty());
 
   VoiceEvent action;
   assert(codec.parseVoiceEvent(
@@ -499,6 +696,8 @@ int main() {
 
   checkPairingPromotion(codec, security, clock, probes, output, audio, local,
                         events);
+  checkPendingPaymentKeepsPairing(codec, security, clock, probes, output,
+                                  audio, local);
   checkPairingDiagnostic(401, "invalid_pairing_token", ErrorCode::Unauthorized,
                          codec, security, clock, probes, output, audio, local,
                          events);
@@ -665,6 +864,102 @@ int main() {
     client.onWebSocketBinary(downlink, sizeof(downlink));
     assert(voiceAudio.writes == writesBeforeStale);
     assert(socket.closes == 1 && voiceAudio.aborts >= 1);
+  }
+
+  {
+    Store store;
+    Http http(HttpMode::Voice);
+    WebSocket socket;
+    Events providerEvents;
+    MyAiClient client(config(), http, probes, socket, output, security, store,
+                      codec, clock, audio, local, providerEvents);
+    assert(client.initialize().ok());
+    for (const std::string& providerSecret :
+         {jwtNoPadding, jwtWithPadding, longOpaque, longHex, opaque32, hex32,
+          lower32, upper32, segmentedOpaque, segmentedOpaqueHyphen}) {
+      client.onWebSocketText(
+          std::string("{\"type\":\"error\",\"payload\":{\"code\":\"") +
+          providerSecret + "\",\"message\":\"" + providerSecret +
+          "\"}}");
+      assert(providerEvents.lastError.code == ErrorCode::Protocol);
+      assert(providerEvents.lastError.detail == "MyAI voice provider error");
+      assert(providerEvents.lastError.detail.find(providerSecret) ==
+             std::string::npos);
+    }
+    client.onWebSocketText(
+        "{\"type\":\"error\",\"payload\":{\"code\":\"provider_busy\","
+        "\"message\":\"服务暂时繁忙\"}}");
+    assert(providerEvents.lastError.detail == "provider_busy");
+    client.onWebSocketText(
+        "{\"type\":\"error\",\"payload\":{"
+        "\"message\":\"服务暂时繁忙\"}}");
+    assert(providerEvents.lastError.detail == "服务暂时繁忙");
+  }
+
+  for (const Status& rejected : {
+           Status(ErrorCode::Unauthorized, 401,
+                  "MyAI gateway WebSocket authorization rejected; reselect required"),
+           Status(ErrorCode::PaymentRequired, 402,
+                  "MyAI activation/payment required")}) {
+    Store store;
+    Http http(HttpMode::Voice);
+    WebSocket socket;
+    socket.connectStatus = rejected;
+    Events rejectedEvents;
+    MyAiClient client(config(), http, probes, socket, output, security, store,
+                      codec, clock, audio, local, rejectedEvents);
+    assert(client.initialize().ok());
+    const Status connected = client.connectVoice();
+    assert(connected.code == rejected.code &&
+           connected.httpStatus == rejected.httpStatus);
+    assert(rejectedEvents.errors == 1);
+    assert(rejectedEvents.lastError.code == rejected.code);
+    assert(rejectedEvents.lastError.httpStatus == rejected.httpStatus);
+    assert(store.value.deviceToken == "device-secret" && store.value.active);
+    if (rejected.code == ErrorCode::PaymentRequired) {
+      assert(client.activationState() == ActivationState::PaymentRequired);
+    } else {
+      assert(client.activationState() == ActivationState::Bound);
+    }
+  }
+
+  for (const Status& rejected : {
+           Status(ErrorCode::Unauthorized, 401,
+                  "MyAI AIGC output HTTP rejected; error=gateway_token_expired"),
+           Status(ErrorCode::PaymentRequired, 402,
+                  "MyAI AIGC output HTTP rejected; error=payment_required")}) {
+    Store store;
+    Http http(HttpMode::Image);
+    WebSocket socket;
+    Output rejectedOutput;
+    rejectedOutput.result = rejected;
+    Events rejectedEvents;
+    MyAiClient client(config(), http, probes, socket, rejectedOutput, security,
+                      store, codec, clock, audio, local, rejectedEvents);
+    assert(client.initialize().ok());
+    ImageRequest request;
+    request.prompt = "diagnostic boundary";
+    AigcGenerateResponse generated;
+    assert(client.startImage(request, generated).ok());
+    AigcOutputRef ref;
+    ref.nodeId = "9";
+    ref.filename = "paper.png";
+    ref.type = "output";
+    Sink sink;
+    AigcOutputMetadata metadata;
+    const Status downloaded = client.downloadImage(
+        generated.promptId, ref, request, sink, metadata);
+    assert(downloaded.code == rejected.code &&
+           downloaded.httpStatus == rejected.httpStatus);
+    assert(rejectedEvents.errors == 1);
+    assert(rejectedEvents.lastError.code == rejected.code);
+    assert(rejectedEvents.lastError.httpStatus == rejected.httpStatus);
+    assert(store.value.deviceToken == "device-secret" && store.value.active);
+    if (rejected.code == ErrorCode::PaymentRequired) {
+      assert(client.activationState() == ActivationState::PaymentRequired);
+    } else {
+      assert(client.activationState() == ActivationState::Bound);
+    }
   }
 
   {

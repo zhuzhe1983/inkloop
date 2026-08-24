@@ -321,39 +321,129 @@ Status requireFields(bool condition, const char* detail) {
   return condition ? Status::success() : Status(ErrorCode::Protocol, 0, detail);
 }
 
-bool validContractErrorCode(const std::string& value) {
-  if (value.empty() || value.size() > 128) return false;
-  for (size_t index = 0; index < value.size(); ++index) {
-    const char ch = value[index];
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == ' ')) {
-      return false;
-    }
-  }
-  return true;
+bool asciiAlphaNumeric(unsigned char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+         (ch >= '0' && ch <= '9');
 }
 
-bool validErrorDiagnostic(const std::string& value) {
-  if (value.empty() || value.size() > 256) return false;
-  for (size_t index = 0; index < value.size(); ++index) {
-    const unsigned char ch = static_cast<unsigned char>(value[index]);
-    // Error diagnostics are surfaced in the local UI/log. Reject control
-    // characters rather than allowing an upstream body to forge log lines or
-    // terminal escapes. UTF-8 bytes and ordinary punctuation remain intact.
-    if (ch < 0x20 || ch == 0x7f) return false;
+bool base64TokenCharacter(unsigned char ch) {
+  return asciiAlphaNumeric(ch) || ch == '_' || ch == '-' || ch == '+' ||
+         ch == '/' || ch == '=';
+}
+
+bool containsJwtLikeToken(const std::string& value) {
+  size_t begin = 0;
+  while (begin < value.size()) {
+    while (begin < value.size() &&
+           !base64TokenCharacter(
+               static_cast<unsigned char>(value[begin]))) {
+      ++begin;
+    }
+    size_t end = begin;
+    size_t dots = 0;
+    size_t segment_length = 0;
+    size_t shortest_segment = value.size();
+    while (end < value.size()) {
+      const unsigned char ch = static_cast<unsigned char>(value[end]);
+      if (base64TokenCharacter(ch)) {
+        ++segment_length;
+      } else if (ch == '.') {
+        shortest_segment = std::min(shortest_segment, segment_length);
+        segment_length = 0;
+        ++dots;
+      } else {
+        break;
+      }
+      ++end;
+    }
+    if (dots != 0) shortest_segment = std::min(shortest_segment, segment_length);
+    if (dots == 2 && end - begin >= 24U && shortest_segment >= 4U)
+      return true;
+    begin = end == begin ? begin + 1U : end;
   }
+  return false;
+}
+
+bool containsLongOpaqueToken(const std::string& value) {
+  size_t begin = 0;
+  while (begin < value.size()) {
+    while (begin < value.size() &&
+           !base64TokenCharacter(
+               static_cast<unsigned char>(value[begin]))) {
+      ++begin;
+    }
+    size_t end = begin;
+    bool has_alphanumeric = false;
+    while (end < value.size() &&
+           base64TokenCharacter(
+               static_cast<unsigned char>(value[end]))) {
+      const unsigned char ch = static_cast<unsigned char>(value[end]);
+      has_alphanumeric = has_alphanumeric || asciiAlphaNumeric(ch);
+      ++end;
+    }
+    const size_t length = end - begin;
+    if (has_alphanumeric && length >= 32U) return true;
+    begin = end == begin ? begin + 1U : end;
+  }
+  return false;
+}
+
+bool tokenLikeDiagnostic(const std::string& value) {
   std::string lowercase = value;
   std::transform(lowercase.begin(), lowercase.end(), lowercase.begin(),
                  [](unsigned char ch) {
                    return static_cast<char>(
                        ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
                  });
-  for (const char* marker : {"bearer ", "device_token", "pairing_token",
-                             "gateway_token", "authorization:",
-                             "authorization=", "cookie:", "password=",
-                             "secret=", "http://", "https://", "ws://",
-                             "wss://", "ags_"}) {
-    if (lowercase.find(marker) != std::string::npos) return false;
+  for (const char* marker : {
+           "bearer", "device_token", "pairing_token", "gateway_token",
+           "access_token", "refresh_token", "authorization:",
+           "authorization=", "token:", "token=", "cookie:", "cookie=",
+           "password:", "password=", "secret:", "secret=", "api_key",
+           "x-api-key", "http://", "https://", "ws://", "wss://",
+           "ags_"}) {
+    if (lowercase.find(marker) != std::string::npos) return true;
+  }
+  return containsJwtLikeToken(value) || containsLongOpaqueToken(value);
+}
+
+bool validContractErrorCode(const std::string& value) {
+  // These are the public Center/Gateway/Voice contract codes consumed by the
+  // maintained Flutter client and Inkloop. Unknown provider strings are never
+  // promoted to diagnostics merely because they resemble a snake-case enum.
+  for (const char* code : {
+           "app_not_found", "app_not_registered", "asr_failed",
+           "device_credential_recovery_required",
+           "device_subscription_required", "event_rejected",
+           "gateway_token_expired", "invalid_input",
+           "invalid_pairing_token", "llm_failed", "not found", "not_found",
+           "pairing_expired", "payment_required", "provider_busy",
+           "subscription_required", "tts_failed", "unauthorized"}) {
+    if (value == code) return true;
+  }
+  return false;
+}
+
+bool validAigcStatus(const std::string& value) {
+  for (const char* status : {
+           "pending", "queued", "running", "processing", "generating",
+           "ready", "complete", "completed", "success", "succeeded",
+           "failed", "error", "cancelled", "canceled", "rejected",
+           "refused", "blocked", "moderated"}) {
+    if (value == status) return true;
+  }
+  return false;
+}
+
+bool validErrorDiagnostic(const std::string& value) {
+  if (value.empty() || value.size() > 256 || tokenLikeDiagnostic(value))
+    return false;
+  for (size_t index = 0; index < value.size(); ++index) {
+    const unsigned char ch = static_cast<unsigned char>(value[index]);
+    // Error diagnostics are surfaced in the local UI/log. Reject control
+    // characters rather than allowing an upstream body to forge log lines or
+    // terminal escapes. UTF-8 bytes and ordinary punctuation remain intact.
+    if (ch < 0x20 || ch == 0x7f || ch == '\\') return false;
   }
   return true;
 }
@@ -469,7 +559,7 @@ std::string CanonicalJsonCodec::parseErrorDiagnostic(
       validErrorDiagnostic(value))
     return value;
   if (topLevelStringField(body, "error", value) &&
-      validErrorDiagnostic(value))
+      validContractErrorCode(value))
     return value;
   return std::string();
 }
@@ -692,10 +782,21 @@ Status CanonicalJsonCodec::parseVoiceEvent(const std::string& message,
       rangeForValue(message, "payload", '{', '}', begin, end)
           ? message.substr(begin, end - begin)
           : std::string("{}");
-  event.rawPayload = payload;
+  // Only action consumers can need the bounded provider payload. Error
+  // envelopes may contain credentials and must not leave a second raw copy in
+  // the event after their safe code/message fields have been extracted.
+  if (event.type == "action.execute") event.rawPayload = payload;
   stringField(payload, "text", event.text);
-  stringField(payload, "code", event.code);
-  stringField(payload, "message", event.message);
+  std::string provider_error;
+  if (stringField(payload, "code", provider_error) &&
+      validContractErrorCode(provider_error)) {
+    event.code = provider_error;
+  }
+  provider_error.clear();
+  if (stringField(payload, "message", provider_error) &&
+      validErrorDiagnostic(provider_error)) {
+    event.message = provider_error;
+  }
   stringField(payload, "stream_id", event.streamId);
   stringField(payload, "action_id", event.actionId);
   if (event.type == "action.execute") {
@@ -779,8 +880,17 @@ Status CanonicalJsonCodec::parseAigcGenerate(
     return Status(ErrorCode::Protocol, 0, "missing AIGC prompt_id");
   stringField(body, "provider", output.provider);
   stringField(body, "model", output.model);
-  stringField(body, "status", output.status);
-  stringField(body, "message", output.message);
+  std::string provider_value;
+  if (stringField(body, "status", provider_value)) {
+    if (!validAigcStatus(provider_value))
+      return Status(ErrorCode::Protocol, 0, "invalid AIGC generate status");
+    output.status = provider_value;
+  }
+  provider_value.clear();
+  if (stringField(body, "message", provider_value) &&
+      validErrorDiagnostic(provider_value)) {
+    output.message = provider_value;
+  }
   return Status::success();
 }
 
@@ -796,10 +906,17 @@ std::string CanonicalJsonCodec::aigcStatusBody(
 
 Status CanonicalJsonCodec::parseAigcStatus(
     const std::string& body, AigcStatusResponse& output) const {
+  std::string provider_status;
   if (!stringField(body, "prompt_id", output.promptId) ||
-      !stringField(body, "status", output.status))
+      !stringField(body, "status", provider_status) ||
+      !validAigcStatus(provider_status))
     return Status(ErrorCode::Protocol, 0, "invalid AIGC status response");
-  stringField(body, "message", output.message);
+  output.status = provider_status;
+  std::string provider_message;
+  if (stringField(body, "message", provider_message) &&
+      validErrorDiagnostic(provider_message)) {
+    output.message = provider_message;
+  }
   size_t begin = 0, end = 0;
   if (!rangeForValue(body, "outputs", '[', ']', begin, end)) return Status::success();
   const std::vector<std::string> items =

@@ -74,6 +74,11 @@ bool sameSnapshot(const SettingsSnapshot& left,
       left.values == right.values;
 }
 
+bool mainJournalValuesCompatible(const DeviceSettings& value) {
+  return validDeviceSettings(value) && !value.led_roles_swapped &&
+      value.aigc_steps == kDefaultAigcSteps;
+}
+
 }  // namespace
 
 void SettingsJournalState::clear() {
@@ -87,7 +92,8 @@ void SettingsJournalState::clear() {
 SettingsStatus encodeSettingsRecord(const SettingsSnapshot& snapshot,
                                     std::vector<std::uint8_t>& output) {
   output.clear();
-  if (snapshot.generation == 0U || !validDeviceSettings(snapshot.values))
+  if (snapshot.generation == 0U ||
+      !mainJournalValuesCompatible(snapshot.values))
     return {SettingsError::InvalidArgument, "invalid settings snapshot"};
   const DeviceSettings& value = snapshot.values;
   const std::size_t payload_bytes = value.assistant_prompt.size() +
@@ -101,14 +107,15 @@ SettingsStatus encodeSettingsRecord(const SettingsSnapshot& snapshot,
   output.reserve(kFixedHeaderBytes + payload_bytes + kChecksumBytes);
   output.insert(output.end(), std::begin(kMagic), std::end(kMagic));
   append16(kSettingsRecordSchema, output);
-  append16((value.voice_assistance_enabled ? kVoiceAssistanceFlag : 0U) |
-               (value.led_roles_swapped ? kLedRolesSwappedFlag : 0U),
+  append16(value.voice_assistance_enabled ? kVoiceAssistanceFlag : 0U,
            output);
   append32(snapshot.generation, output);
   output.push_back(value.volume_percent);
   output.push_back(value.led_maximum_brightness_percent);
   output.push_back(
       static_cast<std::uint8_t>(value.asset_storage_preference));
+  // This byte was reserved and required to be zero by beta27. Never consume it
+  // for an extension while that image remains the protected rollback target.
   output.push_back(0U);
   append16(static_cast<std::uint16_t>(value.assistant_prompt.size()), output);
   append16(static_cast<std::uint16_t>(value.aigc_prompt_template.size()),
@@ -142,7 +149,7 @@ SettingsStatus decodeSettingsRecord(const std::vector<std::uint8_t>& input,
   std::uint32_t generation = 0U;
   if (!read16(input, at, schema) || !read16(input, at, flags) ||
       !read32(input, at, generation) ||
-      (schema != 1U && schema != 2U && schema != kSettingsRecordSchema) ||
+      (schema < 1U || schema > kMaximumReadableSettingsRecordSchema) ||
       (flags & ~(kVoiceAssistanceFlag |
                  (schema >= 3U ? kLedRolesSwappedFlag : 0U))) != 0U ||
       generation == 0U)
@@ -153,7 +160,11 @@ SettingsStatus decodeSettingsRecord(const std::vector<std::uint8_t>& input,
   decoded.led_maximum_brightness_percent = input[at++];
   decoded.asset_storage_preference =
       static_cast<AssetStoragePreference>(input[at++]);
-  if (input[at++] != 0U) return corrupt("settings record reserved byte invalid");
+  const std::uint8_t reserved = input[at++];
+  if (reserved != 0U) {
+    return corrupt("settings record reserved byte invalid");
+  }
+  decoded.aigc_steps = kDefaultAigcSteps;
   std::uint16_t lengths[5]{};
   const std::size_t field_count = schema == 1U ? 4U : 5U;
   for (std::size_t index = 0; index < field_count; ++index) {
@@ -255,8 +266,17 @@ SettingsStatus SettingsStoreCore::load(SettingsSnapshot& snapshot) {
 SettingsStatus SettingsStoreCore::save(
     const DeviceSettings& values, std::uint32_t expected_generation,
     SettingsSnapshot& committed_snapshot) {
-  committed_snapshot = SettingsSnapshot{};
-  if (!validDeviceSettings(values))
+  SettingsSnapshot prepared;
+  SettingsStatus status = prepare(values, expected_generation, prepared);
+  if (!status.ok()) return status;
+  return commitPrepared(prepared, committed_snapshot);
+}
+
+SettingsStatus SettingsStoreCore::prepare(
+    const DeviceSettings& values, std::uint32_t expected_generation,
+    SettingsSnapshot& prepared_snapshot) {
+  prepared_snapshot = SettingsSnapshot{};
+  if (!mainJournalValuesCompatible(values))
     return {SettingsError::InvalidArgument, "device settings invalid"};
   SettingsSnapshot current;
   SettingsStatus status = load(current);
@@ -288,11 +308,51 @@ SettingsStatus SettingsStoreCore::save(
       sameSnapshot(decoded, next);
   verify.clear();
   if (!slot_verified) return storage("settings slot verification failed");
+  prepared_snapshot = std::move(next);
+  return SettingsStatus::success();
+}
 
-  status = journal_.writeHeadAndMarkerAndCommit(next.generation);
+SettingsStatus SettingsStoreCore::commitPrepared(
+    const SettingsSnapshot& prepared_snapshot,
+    SettingsSnapshot& committed_snapshot) {
+  return commitPreparedInternal(
+      prepared_snapshot, committed_snapshot);
+}
+
+SettingsStatus SettingsStoreCore::commitPreparedInternal(
+    const SettingsSnapshot& prepared_snapshot,
+    SettingsSnapshot& committed_snapshot) {
+  committed_snapshot = SettingsSnapshot{};
+  if (prepared_snapshot.generation == 0U ||
+      prepared_snapshot.decoded_record_schema != kSettingsRecordSchema ||
+      !mainJournalValuesCompatible(prepared_snapshot.values)) {
+    return {SettingsError::InvalidArgument,
+            "prepared settings snapshot invalid"};
+  }
+  SettingsSnapshot current;
+  SettingsStatus status = load(current);
+  if (!status.ok()) return status;
+  if (current.generation == std::numeric_limits<std::uint32_t>::max() ||
+      current.generation + 1U != prepared_snapshot.generation)
+    return {SettingsError::Conflict, "settings generation conflict"};
+  const std::uint8_t slot =
+      static_cast<std::uint8_t>(prepared_snapshot.generation & 1U);
+  SettingsJournalState verify;
+  status = journal_.inspect(verify);
+  SettingsSnapshot decoded;
+  const bool slot_verified = status.ok() && verify.namespace_available &&
+      verify.slot_present[slot] &&
+      decodeSettingsRecord(verify.slot[slot], decoded).ok() &&
+      sameSnapshot(decoded, prepared_snapshot);
+  verify.clear();
+  if (!slot_verified) return storage("settings slot verification failed");
+
+  status = journal_.writeHeadAndMarkerAndCommit(
+      prepared_snapshot.generation);
   SettingsSnapshot authoritative;
   const SettingsStatus load_after_commit = load(authoritative);
-  if (!load_after_commit.ok() || !sameSnapshot(authoritative, next))
+  if (!load_after_commit.ok() ||
+      !sameSnapshot(authoritative, prepared_snapshot))
     return status.ok() ? storage("settings commit verification failed")
                        : storage("settings head commit failed");
   committed_snapshot = std::move(authoritative);

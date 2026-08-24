@@ -6370,7 +6370,7 @@ export default function InkStudio() {
               <article className="verdict-card caution">
                 <span>{t("ESP32 模式")}</span>
                 <h2>{t("设备主动同步")}</h2>
-                <p>{t("计划保存在设备端；开机联网后每 15 秒同步变更，按本机时钟执行并拉取最新画面。")}</p>
+                <p>{t("计划保存在设备端；开机联网后每 30 秒同步变更，按本机时钟执行并拉取最新画面。")}</p>
               </article>
               <article className="verdict-card no">
                 <span>{t("无法保证")}</span>

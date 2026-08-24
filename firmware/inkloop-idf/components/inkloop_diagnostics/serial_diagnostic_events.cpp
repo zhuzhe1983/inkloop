@@ -44,6 +44,25 @@ const char* aigcPhaseName(uint8_t value) {
   return nullptr;
 }
 
+const char* buttonName(uint8_t value) {
+  switch (static_cast<SerialDiagnosticButton>(value)) {
+    case SerialDiagnosticButton::Previous: return "previous";
+    case SerialDiagnosticButton::Next: return "next";
+    case SerialDiagnosticButton::Top: return "top";
+  }
+  return nullptr;
+}
+
+const char* buttonOutcomeName(uint8_t value) {
+  switch (static_cast<SerialDiagnosticButtonOutcome>(value)) {
+    case SerialDiagnosticButtonOutcome::Led: return "led";
+    case SerialDiagnosticButtonOutcome::Navigation: return "navigation";
+    case SerialDiagnosticButtonOutcome::Debounced: return "debounced";
+    case SerialDiagnosticButtonOutcome::NotReady: return "not_ready";
+  }
+  return nullptr;
+}
+
 const char* myAiErrorSourceName(uint8_t value) {
   switch (static_cast<SerialDiagnosticMyAiErrorSource>(value)) {
     case SerialDiagnosticMyAiErrorSource::Command: return "command";
@@ -108,6 +127,14 @@ bool serialDetail(const SerialDiagnosticEvent& event, std::string& output) {
       output, kMaximumSerialDiagnosticDetailBytes);
 }
 
+bool validAudioEvent(const SerialDiagnosticEvent& event) {
+  if ((event.flags & ~static_cast<uint8_t>(AudioDiagnosticsAvailable)) != 0U)
+    return false;
+  if ((event.flags & AudioDiagnosticsAvailable) != 0U) return true;
+  return event.first == 0U && event.second == 0U && event.third == 0U &&
+         event.fourth == 0U;
+}
+
 }  // namespace
 
 size_t formatSerialDiagnosticEvent(const SerialDiagnosticEvent& event,
@@ -169,9 +196,11 @@ size_t formatSerialDiagnosticEvent(const SerialDiagnosticEvent& event,
     case SerialDiagnosticEventKind::SerialState:
       written = std::snprintf(
           output, capacity,
-          "INKLOOP_SERIAL_STATE:drops=%lu,write_failures=%lu\n",
+          "INKLOOP_SERIAL_STATE:drops=%lu,write_failures=%lu,"
+          "button_mailbox_overflows=%lu\n",
           static_cast<unsigned long>(event.first),
-          static_cast<unsigned long>(event.second));
+          static_cast<unsigned long>(event.second),
+          static_cast<unsigned long>(event.third));
       break;
     case SerialDiagnosticEventKind::Album:
       written = event.flags != 0U
@@ -245,6 +274,79 @@ size_t formatSerialDiagnosticEvent(const SerialDiagnosticEvent& event,
       if (!phase) return 0U;
       written = std::snprintf(output, capacity, "INKLOOP_AIGC_PHASE:%s\n",
                               phase);
+      break;
+    }
+    case SerialDiagnosticEventKind::AudioDma:
+      if (!validAudioEvent(event)) return 0U;
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_AUDIO_DMA:available=%u,callbacks=%lu,underruns=%lu,"
+          "expected_drain_overflows=%lu\n",
+          (event.flags & AudioDiagnosticsAvailable) != 0U,
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second),
+          static_cast<unsigned long>(event.third));
+      break;
+    case SerialDiagnosticEventKind::AudioFeed:
+      if (!validAudioEvent(event)) return 0U;
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_AUDIO_FEED:available=%u,streams=%lu,submits=%lu,"
+          "late_submits=%lu,estimated_underruns=%lu\n",
+          (event.flags & AudioDiagnosticsAvailable) != 0U,
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second),
+          static_cast<unsigned long>(event.third),
+          static_cast<unsigned long>(event.fourth));
+      break;
+    case SerialDiagnosticEventKind::AudioTiming:
+      if (!validAudioEvent(event)) return 0U;
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_AUDIO_TIMING:available=%u,max_gap_us=%lu,min_lead_us=%lu,"
+          "max_lead_us=%lu,current_queue_frames=%lu\n",
+          (event.flags & AudioDiagnosticsAvailable) != 0U,
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second),
+          static_cast<unsigned long>(event.third),
+          static_cast<unsigned long>(event.fourth));
+      break;
+    case SerialDiagnosticEventKind::AudioQueue:
+      if (!validAudioEvent(event)) return 0U;
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_AUDIO_QUEUE:available=%u,peak_frames=%lu,clamps=%lu,"
+          "capture_timeouts=%lu,playback_timeouts=%lu\n",
+          (event.flags & AudioDiagnosticsAvailable) != 0U,
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second),
+          static_cast<unsigned long>(event.third),
+          static_cast<unsigned long>(event.fourth));
+      break;
+    case SerialDiagnosticEventKind::ButtonLatency: {
+      const char* button = buttonName(event.code);
+      const char* outcome = buttonOutcomeName(event.flags);
+      if (!button || !outcome || event.correlation == 0U) return 0U;
+      const bool feedback =
+          event.flags == static_cast<uint8_t>(
+                             SerialDiagnosticButtonOutcome::Led) ||
+          event.flags == static_cast<uint8_t>(
+                             SerialDiagnosticButtonOutcome::Navigation);
+      if (feedback && event.second == 0U) return 0U;
+      const uint32_t control_delta =
+          event.second == 0U ? 0U : event.second - event.first;
+      const uint32_t terminal_delta = event.third - event.first;
+      written = std::snprintf(
+          output, capacity,
+          "INKLOOP_BUTTON_LATENCY:v=1,id=%llu,button=%s,capture_us=%lu,"
+          "control_us=%lu,feedback_us=%lu,control_delta_us=%lu,"
+          "feedback_delta_us=%lu,result=%s\n",
+          static_cast<unsigned long long>(event.correlation), button,
+          static_cast<unsigned long>(event.first),
+          static_cast<unsigned long>(event.second),
+          static_cast<unsigned long>(event.third),
+          static_cast<unsigned long>(control_delta),
+          static_cast<unsigned long>(terminal_delta), outcome);
       break;
     }
   }

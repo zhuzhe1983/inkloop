@@ -40,6 +40,18 @@ struct EspI2sAudioConfig {
 };
 
 struct EspI2sAudioDiagnostics {
+  bool prepared = false;
+  bool capture_channel_enabled = false;
+  bool playback_channel_enabled = false;
+  uint32_t prepare_attempts = 0;
+  uint32_t prepare_successes = 0;
+  uint32_t prepare_failures = 0;
+  uint32_t shutdowns = 0;
+  uint32_t shutdown_failures = 0;
+  uint32_t playback_clock_reconfigurations = 0;
+  uint32_t playback_clock_reconfiguration_failures = 0;
+  uint32_t shared_pin_selections = 0;
+  uint32_t shared_pin_selection_failures = 0;
   uint32_t capture_starts = 0;
   uint32_t playback_starts = 0;
   uint32_t capture_timeouts = 0;
@@ -58,13 +70,18 @@ struct EspI2sAudioDiagnostics {
   uint32_t playback_dma_callbacks = 0;
   uint32_t playback_dma_underruns = 0;
   uint32_t playback_dma_expected_drain_overflows = 0;
+  uint32_t prepared_playback_rate_hz = 0;
+  int32_t last_prepare_error = ESP_OK;
   PlaybackFeedDiagnostics playback_feed{};
 };
 
 // Native half-duplex I2S standard-mode owner. It creates no task and owns no
-// unbounded queue: only the high-priority voice task may call it. PaperColor's
-// microphone and speaker share MCLK/BCLK/WS, so capture and playback are
-// mutually exclusive even though they use separate I2S controllers.
+// unbounded queue: only the high-priority voice task may call it. prepare()
+// allocates and initializes both DMA rings once, before interactive work can
+// fragment internal SRAM. Runtime turns only select the shared pins, re-clock
+// a disabled TX channel when needed, and enable/disable the prepared rings.
+// PaperColor's microphone and speaker share MCLK/BCLK/WS, so capture and
+// playback are mutually exclusive even though they use separate controllers.
 class EspI2sAudioDevice final {
  public:
   enum class Mode : uint8_t { Idle, Capture, Playback };
@@ -76,6 +93,12 @@ class EspI2sAudioDevice final {
   EspI2sAudioDevice(const EspI2sAudioDevice&) = delete;
   EspI2sAudioDevice& operator=(const EspI2sAudioDevice&) = delete;
 
+  // Idempotent while idle. This is the only normal-runtime path that calls
+  // i2s_new_channel/i2s_channel_init_std_mode and therefore allocates DMA.
+  esp_err_t prepare();
+  // Abort preserves prepared DMA. Only shutdown/destruction releases it.
+  esp_err_t shutdown();
+
   esp_err_t beginCapture();
   esp_err_t readCapture(int16_t* samples, size_t sample_capacity,
                         size_t& samples_read, uint32_t timeout_ms = 20);
@@ -84,6 +107,11 @@ class EspI2sAudioDevice final {
   esp_err_t beginPlayback(uint32_t sample_rate_hz, uint8_t channels);
   esp_err_t writePlayback(const uint8_t* pcm16, size_t length,
                           uint32_t timeout_ms = 20);
+  // Close only the current logical TTS segment for feed diagnostics. The
+  // prepared TX channel and streaming resampler stay resumable during the
+  // bridge's bounded continuation grace window.
+  esp_err_t pausePlaybackIngress();
+  esp_err_t resumePlaybackIngress();
   // Starts already-converted preload without closing the source stream. This
   // lets adjacent same-format TTS segments resume during the grace window.
   // An empty prepared stream is a successful no-op.
@@ -103,6 +131,7 @@ class EspI2sAudioDevice final {
   void abort();
 
   Mode mode() const { return mode_; }
+  bool prepared() const { return prepared_; }
   uint32_t playbackSampleRateHz() const { return playback_sample_rate_hz_; }
   uint32_t playbackOutputRateHz() const {
     return playback_output_rate_hz_;
@@ -113,13 +142,23 @@ class EspI2sAudioDevice final {
 
  private:
   bool validConfig() const;
-  esp_err_t createCaptureChannel();
-  esp_err_t createPlaybackChannel(uint32_t sample_rate_hz);
-  esp_err_t releaseCaptureChannel(bool deactivate_codec);
-  esp_err_t releasePlaybackChannel(bool deactivate_codec);
+  esp_err_t allocateCaptureChannel();
+  esp_err_t allocatePlaybackChannel(uint32_t sample_rate_hz);
+  esp_err_t selectCapturePins();
+  esp_err_t selectPlaybackPins();
+  esp_err_t configurePlaybackClock(uint32_t sample_rate_hz);
+  esp_err_t stopCaptureSession(bool deactivate_codec);
+  esp_err_t stopPlaybackSession(bool deactivate_codec);
+  // IDF resets TX cursors/queues on disable but deliberately retains DMA
+  // buffer bytes. Overwrite the complete disabled ring with silence before
+  // reusing it so an aborted prompt cannot leak into the next turn.
+  esp_err_t scrubPlaybackDmaRing();
+  esp_err_t deletePreparedChannels();
+  void resetPlaybackSession();
   esp_err_t enablePlaybackChannel();
   esp_err_t writeOutput(const StereoPcm16Frame* frames, size_t frame_count,
-                        uint32_t timeout_ms);
+                        uint32_t timeout_ms,
+                        bool terminal_tail = false);
   esp_err_t writeAll(const void* bytes, size_t length, uint32_t timeout_ms);
   static bool onPlaybackSent(i2s_chan_handle_t handle,
                              i2s_event_data_t* event, void* user_context);
@@ -132,8 +171,16 @@ class EspI2sAudioDevice final {
   i2s_chan_handle_t capture_channel_ = nullptr;
   i2s_chan_handle_t playback_channel_ = nullptr;
   Mode mode_ = Mode::Idle;
+  bool prepared_ = false;
+  bool capture_channel_enabled_ = false;
+  bool capture_codec_active_ = false;
   uint32_t playback_sample_rate_hz_ = 0;
   uint32_t playback_output_rate_hz_ = 0;
+  uint32_t playback_configured_rate_hz_ = 0;
+  // Exact driver-owned TX ring size captured after std-mode initialization.
+  // Cleanup uses this rather than the requested descriptor geometry because
+  // ESP-IDF may clamp or round individual DMA descriptors.
+  size_t playback_dma_ring_bytes_ = 0;
   uint8_t playback_channels_ = 0;
   bool playback_channel_enabled_ = false;
   bool playback_codec_active_ = false;

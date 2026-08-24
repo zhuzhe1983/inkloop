@@ -15,28 +15,44 @@ bool validUtf8(std::string_view value) {
   while (at < value.size()) {
     const uint8_t first = static_cast<uint8_t>(value[at]);
     if (first < 0x80U) {
-      if (first < 0x20U && first != '\t' && first != '\n' && first != '\r')
+      if ((first < 0x20U && first != '\t' && first != '\n' &&
+           first != '\r') || first == 0x7FU)
         return false;
       ++at;
       continue;
     }
-    size_t length = 0;
-    if (first >= 0xC2U && first <= 0xDFU) length = 2;
-    else if (first >= 0xE0U && first <= 0xEFU) length = 3;
-    else if (first >= 0xF0U && first <= 0xF4U) length = 4;
-    else return false;
-    if (length > value.size() - at) return false;
-    for (size_t index = 1; index < length; ++index) {
-      if ((static_cast<uint8_t>(value[at + index]) & 0xC0U) != 0x80U)
-        return false;
-    }
-    const uint8_t second = static_cast<uint8_t>(value[at + 1]);
-    if ((first == 0xE0U && second < 0xA0U) ||
-        (first == 0xEDU && second >= 0xA0U) ||
-        (first == 0xF0U && second < 0x90U) ||
-        (first == 0xF4U && second >= 0x90U))
+    size_t trailing = 0;
+    uint32_t scalar = 0;
+    uint32_t minimum = 0;
+    if (first >= 0xC2U && first <= 0xDFU) {
+      trailing = 1U;
+      scalar = first & 0x1FU;
+      minimum = 0x80U;
+    } else if (first >= 0xE0U && first <= 0xEFU) {
+      trailing = 2U;
+      scalar = first & 0x0FU;
+      minimum = 0x800U;
+    } else if (first >= 0xF0U && first <= 0xF4U) {
+      trailing = 3U;
+      scalar = first & 0x07U;
+      minimum = 0x10000U;
+    } else {
       return false;
-    at += length;
+    }
+    if (trailing > value.size() - at - 1U) return false;
+    for (size_t index = 1U; index <= trailing; ++index) {
+      const uint8_t next = static_cast<uint8_t>(value[at + index]);
+      if ((next & 0xC0U) != 0x80U) return false;
+      scalar = (scalar << 6U) | (next & 0x3FU);
+    }
+    if (scalar < minimum || scalar > 0x10FFFFU ||
+        (scalar >= 0xD800U && scalar <= 0xDFFFU) ||
+        (scalar >= 0xFDD0U && scalar <= 0xFDEFU) ||
+        (scalar & 0xFFFFU) == 0xFFFEU ||
+        (scalar & 0xFFFFU) == 0xFFFFU) {
+      return false;
+    }
+    at += trailing + 1U;
   }
   return true;
 }
@@ -204,6 +220,61 @@ bool parsePercent(std::string value, uint32_t& output) {
   return parseUnsigned(value, 100U, output);
 }
 
+bool parseChineseImageOrdinal(std::string_view value, uint32_t& output) {
+  static constexpr std::array<std::string_view, 6> kPrefixes{
+      "第", "显示第", "选择第", "上屏第", "刷新第", "打开第"};
+  for (std::string_view prefix : kPrefixes) {
+    if (!startsWith(value, prefix)) continue;
+    value.remove_prefix(prefix.size());
+    if (endsWith(value, "张图片"))
+      value.remove_suffix(std::string_view("张图片").size());
+    else if (endsWith(value, "张"))
+      value.remove_suffix(std::string_view("张").size());
+    else
+      return false;
+    return parseUnsigned(value, kMaximumImageOrdinal, output) && output != 0U;
+  }
+  return false;
+}
+
+bool parseEnglishOrdinalToken(std::string value, uint32_t& output) {
+  value = trimAscii(value);
+  if (startsWith(value, "number ")) value.erase(0, 7U);
+  if (value.size() > 2U) {
+    const std::string suffix = value.substr(value.size() - 2U);
+    if (oneOf(suffix, {"st", "nd", "rd", "th"}))
+      value.erase(value.size() - 2U);
+  }
+  return parseUnsigned(value, kMaximumImageOrdinal, output) && output != 0U;
+}
+
+bool parseEnglishImageOrdinal(std::string_view value, uint32_t& output) {
+  static constexpr std::array<std::string_view, 5> kLeadingPrefixes{
+      "show image ", "select image ", "display image ", "open image ",
+      "image "};
+  for (std::string_view prefix : kLeadingPrefixes) {
+    if (!startsWith(value, prefix)) continue;
+    return parseEnglishOrdinalToken(std::string(value.substr(prefix.size())),
+                                    output);
+  }
+  if (startsWith(value, "show the ") || startsWith(value, "select the ") ||
+      startsWith(value, "display the ") || startsWith(value, "open the ")) {
+    const size_t prefix = value.find("the ") + 4U;
+    if (!endsWith(value, " image")) return false;
+    return parseEnglishOrdinalToken(
+        std::string(value.substr(prefix, value.size() - prefix - 6U)), output);
+  }
+  return false;
+}
+
+bool intentPresent(std::string_view text,
+                   std::initializer_list<std::string_view> keywords) {
+  for (std::string_view keyword : keywords) {
+    if (text.find(keyword) != std::string_view::npos) return true;
+  }
+  return false;
+}
+
 std::string promptAfter(const std::string& original,
                         const std::string& normalized,
                         std::initializer_list<std::string_view> prefixes,
@@ -231,23 +302,29 @@ ParseResult failed(ParseCode code) {
 }
 
 size_t intentFamilyCount(std::string_view text) {
-  const std::array<std::array<std::string_view, 3>, 7> families{{
-      {{"空间", "容量", "存储"}},
-      {{"删除", "清空", "相册"}},
-      {{"音量", "声音", "扬声器"}},
-      {{"格式化", "tf卡", "tf 卡"}},
-      {{"智能体提示词", "助手提示词", "系统提示词"}},
-      {{"aigc图片提示词", "aigc 图片提示词", "图片生成提示词"}},
-      {{"led", "灯光", "亮度"}},
-  }};
   size_t count = 0;
-  for (const auto& family : families) {
-    bool present = false;
-    for (std::string_view keyword : family) {
-      if (text.find(keyword) != std::string_view::npos) present = true;
-    }
-    if (present) ++count;
-  }
+  count += intentPresent(text, {"空间", "容量", "存储", "space", "storage"});
+  count += intentPresent(
+      text, {"删除", "清空", "相册", "上屏", "图片列表", "delete image",
+             "clear album", "clear all images", "list images", "list album",
+             "show image", "select image", "display image"});
+  count += intentPresent(
+      text, {"音量", "扬声器", "volume", "speaker volume"});
+  count += intentPresent(text, {"格式化", "format tf card"});
+  count += intentPresent(
+      text, {"智能体提示词", "助手提示词", "系统提示词",
+             "assistant prompt", "system prompt"});
+  count += intentPresent(
+      text, {"aigc图片提示词", "aigc 图片提示词", "图片生成提示词",
+             "aigc prompt", "image prompt template"});
+  count += intentPresent(
+      text, {"aigc图片步数", "aigc 图片步数", "图片生成步数",
+             "image generation steps", "image steps", "aigc steps"});
+  count += intentPresent(
+      text, {"负面提示词", "反向提示词", "negative prompt"});
+  count += intentPresent(
+      text, {"渲染方式", "渲染策略", "render strategy", "render policy"});
+  count += intentPresent(text, {"led", "灯光", "亮度", "brightness"});
   return count;
 }
 
@@ -267,22 +344,42 @@ ParseResult LocalCommandParser::parseFinalAsr(
   Command command;
   if (oneOf(text, {"查询剩余空间", "查看剩余空间", "还有多少剩余空间",
                    "还有多少可用空间", "tf卡还剩多少空间", "tf 卡还剩多少空间",
-                   "剩余空间是多少"})) {
+                   "剩余空间是多少", "query free space", "check free space",
+                   "free space", "available space", "how much free space",
+                   "how much storage is left"})) {
     command.kind = CommandKind::QueryStorage;
     command.storage_metric = StorageMetric::Remaining;
     return matched(std::move(command));
   }
   if (oneOf(text, {"查询总空间", "查看总空间", "总空间是多少",
                    "查询总容量", "总容量是多少", "tf卡总容量是多少",
-                   "tf 卡总容量是多少"})) {
+                   "tf 卡总容量是多少", "query total space",
+                   "check total space", "total space", "total storage"})) {
     command.kind = CommandKind::QueryStorage;
     command.storage_metric = StorageMetric::Total;
     return matched(std::move(command));
   }
   if (oneOf(text, {"查询总空间和剩余空间", "查询剩余空间和总空间",
-                   "查询存储空间", "查看存储空间"})) {
+                   "查询存储空间", "查看存储空间", "query storage",
+                   "check storage", "storage status", "query storage space"})) {
     command.kind = CommandKind::QueryStorage;
     command.storage_metric = StorageMetric::Both;
+    return matched(std::move(command));
+  }
+
+  if (oneOf(text, {"列出相册", "列出图片", "列出所有图片", "图片列表",
+                   "查看相册", "相册有多少张", "相册里有几张", "list album",
+                   "list images", "list all images", "show album summary",
+                   "how many images"})) {
+    command.kind = CommandKind::ListAlbum;
+    return matched(std::move(command));
+  }
+
+  uint32_t image_ordinal = 0U;
+  if (parseChineseImageOrdinal(text, image_ordinal) ||
+      parseEnglishImageOrdinal(text, image_ordinal)) {
+    command.kind = CommandKind::SelectImageOrdinal;
+    command.number = image_ordinal;
     return matched(std::move(command));
   }
 
@@ -302,6 +399,38 @@ ParseResult LocalCommandParser::parseFinalAsr(
     return matched(std::move(command));
   }
 
+  for (std::string_view prefix : {
+           std::string_view("delete image "),
+           std::string_view("delete image number ")}) {
+    if (!startsWith(text, prefix)) continue;
+    const std::string target = trimAscii(text.substr(prefix.size()));
+    uint32_t ordinal = 0U;
+    if (parseEnglishOrdinalToken(target, ordinal)) {
+      command.kind = CommandKind::DeleteImageOrdinal;
+      command.number = ordinal;
+      return matched(std::move(command));
+    }
+    const std::string id = trimAscii(
+        std::string_view(control_original).substr(prefix.size()));
+    if (!validImageId(id)) return failed(ParseCode::InvalidValue);
+    command.kind = CommandKind::DeleteImageId;
+    command.text = id;
+    return matched(std::move(command));
+  }
+
+  if (startsWith(text, "delete the ") && endsWith(text, " image")) {
+    const std::string ordinal_text = text.substr(
+        std::string_view("delete the ").size(),
+        text.size() - std::string_view("delete the ").size() -
+            std::string_view(" image").size());
+    uint32_t ordinal = 0U;
+    if (!parseEnglishOrdinalToken(ordinal_text, ordinal))
+      return failed(ParseCode::InvalidValue);
+    command.kind = CommandKind::DeleteImageOrdinal;
+    command.number = ordinal;
+    return matched(std::move(command));
+  }
+
   for (std::string_view prefix : {std::string_view("删除指定图片 "),
                                   std::string_view("删除图片 ")}) {
     if (!startsWith(text, prefix)) continue;
@@ -313,13 +442,15 @@ ParseResult LocalCommandParser::parseFinalAsr(
     return matched(std::move(command));
   }
 
-  if (oneOf(text, {"清空相册", "清空所有图片", "删除所有图片"})) {
+  if (oneOf(text, {"清空相册", "清空所有图片", "删除所有图片",
+                   "clear album", "clear all images", "delete all images"})) {
     command.kind = CommandKind::ClearAlbum;
     return matched(std::move(command));
   }
 
   if (oneOf(text, {"查询音量", "查看音量", "当前音量", "当前音量是多少",
-                   "音量是多少"})) {
+                   "音量是多少", "query volume", "check volume",
+                   "current volume", "what is the volume"})) {
     command.kind = CommandKind::QueryVolume;
     return matched(std::move(command));
   }
@@ -336,14 +467,30 @@ ParseResult LocalCommandParser::parseFinalAsr(
     command.number = percent;
     return matched(std::move(command));
   }
+  for (std::string_view prefix : {
+           std::string_view("set volume to "),
+           std::string_view("set volume "),
+           std::string_view("volume to "), std::string_view("volume ")}) {
+    if (!startsWith(text, prefix)) continue;
+    uint32_t percent = 0U;
+    if (!parsePercent(std::string(text.substr(prefix.size())), percent))
+      return failed(ParseCode::InvalidValue);
+    command.kind = CommandKind::SetVolume;
+    command.number = percent;
+    return matched(std::move(command));
+  }
 
-  if (oneOf(text, {"格式化tf卡", "格式化 tf卡", "格式化tf 卡", "格式化 tf 卡"})) {
+  if (oneOf(text, {"格式化tf卡", "格式化 tf卡", "格式化tf 卡", "格式化 tf 卡",
+                   "format tf card", "format the tf card"})) {
     command.kind = CommandKind::FormatTfCard;
     return matched(std::move(command));
   }
 
   if (oneOf(text, {"查询智能体提示词", "查看智能体提示词",
-                   "当前智能体提示词", "智能体提示词是什么"})) {
+                   "当前智能体提示词", "智能体提示词是什么",
+                   "query assistant prompt", "show assistant prompt",
+                   "current assistant prompt", "what is the assistant prompt",
+                   "query system prompt"})) {
     command.kind = CommandKind::QueryAssistantPrompt;
     return matched(std::move(command));
   }
@@ -351,7 +498,9 @@ ParseResult LocalCommandParser::parseFinalAsr(
   std::string prompt = promptAfter(
       original, text,
       {"设置智能体提示词为", "把智能体提示词设置为", "设置智能体提示词：",
-       "设置智能体提示词:"},
+       "设置智能体提示词:", "set assistant prompt to ",
+       "set assistant prompt ", "set system prompt to ",
+       "set system prompt "},
       recognized);
   if (recognized) {
     if (!validPrompt(prompt)) return failed(ParseCode::InvalidValue);
@@ -362,7 +511,10 @@ ParseResult LocalCommandParser::parseFinalAsr(
 
   if (oneOf(text, {"查询aigc图片提示词", "查看aigc图片提示词",
                    "当前aigc图片提示词", "aigc图片提示词是什么",
-                   "查询图片生成提示词"})) {
+                   "查询图片生成提示词", "query aigc prompt",
+                   "show aigc prompt", "current aigc prompt",
+                   "query image prompt template",
+                   "show image prompt template"})) {
     command.kind = CommandKind::QueryAigcPrompt;
     return matched(std::move(command));
   }
@@ -371,7 +523,9 @@ ParseResult LocalCommandParser::parseFinalAsr(
       {"设置aigc图片提示词为", "把aigc图片提示词设置为",
        "设置aigc图片提示词：", "设置aigc图片提示词:",
        "设置图片生成提示词为", "设置图片生成提示词：",
-       "设置图片生成提示词:"},
+       "设置图片生成提示词:", "set aigc prompt to ",
+       "set aigc prompt ", "set image prompt template to ",
+       "set image prompt template "},
       recognized);
   if (recognized) {
     if (!validPrompt(prompt)) return failed(ParseCode::InvalidValue);
@@ -380,10 +534,101 @@ ParseResult LocalCommandParser::parseFinalAsr(
     return matched(std::move(command));
   }
 
+  if (oneOf(text, {"查询aigc图片步数", "查看aigc图片步数",
+                   "当前aigc图片步数", "aigc图片步数是多少",
+                   "查询图片生成步数", "查看图片生成步数",
+                   "当前图片生成步数", "图片生成步数是多少",
+                   "query image generation steps", "show image steps",
+                   "current image steps", "what are the image steps",
+                   "query aigc steps"})) {
+    command.kind = CommandKind::QueryAigcSteps;
+    return matched(std::move(command));
+  }
+  for (std::string_view prefix : {
+           std::string_view("设置aigc图片步数为"),
+           std::string_view("把aigc图片步数设置为"),
+           std::string_view("设置图片生成步数为"),
+           std::string_view("把图片生成步数设置为"),
+           std::string_view("set image generation steps to "),
+           std::string_view("set image steps to "),
+           std::string_view("set image steps "),
+           std::string_view("set aigc steps to "),
+           std::string_view("image steps ")}) {
+    if (!startsWith(text, prefix)) continue;
+    uint32_t steps = 0U;
+    if (!parseUnsigned(text.substr(prefix.size()), kMaximumAigcSteps, steps) ||
+        steps < kMinimumAigcSteps) {
+      return failed(ParseCode::InvalidValue);
+    }
+    command.kind = CommandKind::SetAigcSteps;
+    command.number = steps;
+    return matched(std::move(command));
+  }
+
+  if (oneOf(text, {"查询aigc负面提示词", "查看aigc负面提示词",
+                   "当前aigc负面提示词", "aigc负面提示词是什么",
+                   "查询图片负面提示词", "查询反向提示词",
+                   "query aigc negative prompt", "show aigc negative prompt",
+                   "current aigc negative prompt", "query negative prompt",
+                   "show negative prompt"})) {
+    command.kind = CommandKind::QueryAigcNegativePrompt;
+    return matched(std::move(command));
+  }
+  if (oneOf(text, {"清空aigc负面提示词", "清除aigc负面提示词",
+                   "清空图片负面提示词", "clear aigc negative prompt",
+                   "clear negative prompt"})) {
+    command.kind = CommandKind::SetAigcNegativePrompt;
+    command.text.clear();
+    return matched(std::move(command));
+  }
+  prompt = promptAfter(
+      original, text,
+      {"设置aigc负面提示词为", "把aigc负面提示词设置为",
+       "设置aigc负面提示词：", "设置aigc负面提示词:",
+       "设置图片负面提示词为", "设置反向提示词为",
+       "set aigc negative prompt to ", "set aigc negative prompt ",
+       "set negative prompt to ", "set negative prompt "},
+      recognized);
+  if (recognized) {
+    if (!validNegativePrompt(prompt)) return failed(ParseCode::InvalidValue);
+    command.kind = CommandKind::SetAigcNegativePrompt;
+    command.text = std::move(prompt);
+    return matched(std::move(command));
+  }
+
+  if (oneOf(text, {"查询默认渲染方式", "查看默认渲染方式",
+                   "当前默认渲染方式", "默认渲染方式是什么",
+                   "查询默认渲染策略", "当前默认渲染策略",
+                   "query default render strategy",
+                   "show default render strategy",
+                   "current default render strategy",
+                   "what is the default render strategy",
+                   "query default render policy"})) {
+    command.kind = CommandKind::QueryDefaultRenderStrategy;
+    return matched(std::move(command));
+  }
+  std::string strategy = promptAfter(
+      original, text,
+      {"设置默认渲染方式为", "把默认渲染方式设置为",
+       "设置默认渲染策略为", "把默认渲染策略设置为",
+       "set default render strategy to ", "set default render strategy ",
+       "set default render policy to ", "set default render policy "},
+      recognized);
+  if (recognized) {
+    strategy = withoutSentenceTerminator(normalizeAscii(strategy));
+    if (!validRenderStrategyId(strategy))
+      return failed(ParseCode::InvalidValue);
+    command.kind = CommandKind::SetDefaultRenderStrategy;
+    command.text = std::move(strategy);
+    return matched(std::move(command));
+  }
+
   for (std::string_view prefix : {
            std::string_view("设置led最大亮度为"),
            std::string_view("把led最大亮度设置为"),
-           std::string_view("设置led最大亮度")}) {
+           std::string_view("设置led最大亮度"),
+           std::string_view("set led maximum brightness to "),
+           std::string_view("set led maximum brightness ")}) {
     if (!startsWith(text, prefix)) continue;
     uint32_t percent = 0;
     if (!parsePercent(text.substr(prefix.size()), percent))
@@ -410,7 +655,9 @@ bool LocalCommandParser::validImageId(std::string_view value) {
       value.back() == ':')
     return false;
   for (unsigned char ch : value) {
-    if (!(std::isalnum(ch) || ch == '-' || ch == '_' || ch == ':' || ch == '.'))
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+          (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == ':' ||
+          ch == '.'))
       return false;
   }
   return true;
@@ -431,6 +678,34 @@ bool LocalCommandParser::validStoredPrompt(std::string_view value) {
     return false;
   for (unsigned char ch : value) {
     if (ch < 0x20U && ch != '\t' && ch != '\n') return false;
+  }
+  return true;
+}
+
+bool LocalCommandParser::validNegativePrompt(std::string_view value,
+                                             bool empty_allowed) {
+  if (value.empty()) return empty_allowed;
+  if (value.size() > kMaximumNegativePromptBytes || !validUtf8(value))
+    return false;
+  for (unsigned char ch : value) {
+    if (ch < 0x20U && ch != '\t' && ch != '\n') return false;
+  }
+  return true;
+}
+
+bool LocalCommandParser::validRenderStrategyId(std::string_view value) {
+  if (value.empty() || value.size() > kMaximumRenderStrategyBytes ||
+      value.front() < 'a' || value.front() > 'z' || value.back() == '-') {
+    return false;
+  }
+  bool previous_hyphen = false;
+  for (const unsigned char ch : value) {
+    const bool hyphen = ch == '-';
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || hyphen) ||
+        (hyphen && previous_hyphen)) {
+      return false;
+    }
+    previous_hyphen = hyphen;
   }
   return true;
 }
@@ -530,6 +805,34 @@ ToolOutcome LocalToolsSession::execute(const Command& command,
         return outcome;
       }
       break;
+    case CommandKind::ListAlbum:
+      result = adapter.queryAlbumSummary(outcome.album_summary);
+      if (result.ok() &&
+          (outcome.album_summary.count > kMaximumImageOrdinal ||
+           outcome.album_summary.current_ordinal >
+               outcome.album_summary.count)) {
+        outcome.code = ExecutionCode::AdapterContractViolation;
+        return outcome;
+      }
+      break;
+    case CommandKind::SelectImageOrdinal:
+      result = adapter.resolveImageByOrdinal(
+          command.number, outcome.album_selection);
+      if (result.ok() &&
+          (outcome.album_selection.ordinal != command.number ||
+           outcome.album_selection.ordinal == 0U ||
+           outcome.album_selection.zero_based_index + 1U !=
+               outcome.album_selection.ordinal ||
+           outcome.album_selection.total == 0U ||
+           outcome.album_selection.total > kMaximumImageOrdinal ||
+           outcome.album_selection.ordinal > outcome.album_selection.total ||
+           !LocalCommandParser::validImageId(
+               outcome.album_selection.asset_id))) {
+        outcome.album_selection = AlbumSelection{};
+        outcome.code = ExecutionCode::AdapterContractViolation;
+        return outcome;
+      }
+      break;
     case CommandKind::DeleteImageOrdinal:
       result = adapter.deleteImageByOrdinal(command.number);
       break;
@@ -579,6 +882,46 @@ ToolOutcome LocalToolsSession::execute(const Command& command,
       result = adapter.setAigcPrompt(command.text);
       outcome.text = command.text;
       break;
+    case CommandKind::QueryAigcSteps:
+      result = adapter.queryAigcSteps(outcome.steps);
+      if (result.ok() &&
+          (outcome.steps < kMinimumAigcSteps ||
+           outcome.steps > kMaximumAigcSteps)) {
+        outcome.steps = 0U;
+        outcome.code = ExecutionCode::AdapterContractViolation;
+        return outcome;
+      }
+      break;
+    case CommandKind::SetAigcSteps:
+      result = adapter.setAigcSteps(static_cast<uint8_t>(command.number));
+      outcome.steps = static_cast<uint8_t>(command.number);
+      break;
+    case CommandKind::QueryAigcNegativePrompt:
+      result = adapter.queryAigcNegativePrompt(outcome.text);
+      if (result.ok() && !LocalCommandParser::validNegativePrompt(
+                             outcome.text, true)) {
+        outcome.code = ExecutionCode::AdapterContractViolation;
+        outcome.text.clear();
+        return outcome;
+      }
+      break;
+    case CommandKind::SetAigcNegativePrompt:
+      result = adapter.setAigcNegativePrompt(command.text);
+      outcome.text = command.text;
+      break;
+    case CommandKind::QueryDefaultRenderStrategy:
+      result = adapter.queryDefaultRenderStrategy(outcome.text);
+      if (result.ok() &&
+          !LocalCommandParser::validRenderStrategyId(outcome.text)) {
+        outcome.code = ExecutionCode::AdapterContractViolation;
+        outcome.text.clear();
+        return outcome;
+      }
+      break;
+    case CommandKind::SetDefaultRenderStrategy:
+      result = adapter.setDefaultRenderStrategy(command.text);
+      outcome.text = command.text;
+      break;
     case CommandKind::SetLedMaximumBrightness:
       result = adapter.setLedMaximumBrightness(
           static_cast<uint8_t>(command.number));
@@ -616,6 +959,8 @@ bool LocalToolsSession::tokensEqual(std::string_view left,
 const char* commandName(CommandKind kind) {
   switch (kind) {
     case CommandKind::QueryStorage: return "storage.query";
+    case CommandKind::ListAlbum: return "album.list";
+    case CommandKind::SelectImageOrdinal: return "album.select_ordinal";
     case CommandKind::DeleteImageOrdinal: return "album.delete_ordinal";
     case CommandKind::DeleteImageId: return "album.delete_id";
     case CommandKind::ClearAlbum: return "album.clear";
@@ -626,6 +971,16 @@ const char* commandName(CommandKind kind) {
     case CommandKind::SetAssistantPrompt: return "prompt.assistant.set";
     case CommandKind::QueryAigcPrompt: return "prompt.aigc.query";
     case CommandKind::SetAigcPrompt: return "prompt.aigc.set";
+    case CommandKind::QueryAigcSteps: return "image.steps.query";
+    case CommandKind::SetAigcSteps: return "image.steps.set";
+    case CommandKind::QueryAigcNegativePrompt:
+      return "prompt.aigc_negative.query";
+    case CommandKind::SetAigcNegativePrompt:
+      return "prompt.aigc_negative.set";
+    case CommandKind::QueryDefaultRenderStrategy:
+      return "render.default.query";
+    case CommandKind::SetDefaultRenderStrategy:
+      return "render.default.set";
     case CommandKind::SetLedMaximumBrightness: return "led.maximum.set";
     case CommandKind::None: return "none";
   }

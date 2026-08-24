@@ -35,8 +35,12 @@ than solve these ownership and scheduling failures.
 ## 2. Current device safety state
 
 Current update (2026-08-24): the candidate worktree is now
-`0.4.0-beta.30`. The complete repository suite passes 481/481 and lint has
-zero errors/19 warnings. The exact beta28 independent gate
+`0.4.0-beta.31`. The complete working-tree repository suite passes 508/508 and
+lint has zero errors/19 existing warnings. Independent focused MyAI acceptance
+is `ACCEPT` with P0=0/P1=0 (43/43 plus 30/30), and the fixed ESP-IDF v6.0.2
+`transport_ws` secret-log mitigation has an independent P0=0/P1=0 audit. These
+are dirty-worktree scoped results, not the pending exact-candidate fresh gate.
+The exact beta28 independent gate
 failed on five findings: no read-only TF asset export, unsafe generic dual-slot
 flash guidance, non-reproducible build identity, fail-open admission after
 wake rollback failure, and an undeclared
@@ -44,12 +48,14 @@ ignored ArduinoJson host dependency. Beta29 remediates all five, adds bounded
 low-priority MyAI lease heartbeats plus WSS Pong supervision, and adds remote
 Recovery logical export. That HTTP path uses the current writable SDSPI/FAT
 mount and cannot replace mandatory pre-flash offline whole-card custody.
-Exact-commit reproducible C151/mock receipts and a
-fresh independent beta30-or-newer gate remain pending; beta29 was never
-flashed, signed or promoted and is revoked, while beta30 has not been flashed,
-signed or promoted. The authorized C151 retains beta27 in app1 and beta25 in
-app0 because three valid divergent TF album indexes still require an explicit
-operator choice.
+Exact-commit reproducible C151/mock receipts and a fresh independent
+receipt-bound beta31 gate remain pending. Beta29 was never flashed, signed or
+promoted and is revoked. Beta30 was never flashed, published or promoted and
+is revoked after a real-device I2S DMA allocation failure. The attempted
+offline TF capture made two full read-only source passes but their SHA-256
+values differed, so it failed closed and performed no source write. The
+authorized C151 therefore remains beta27 in app1 and beta25 in app0; three
+valid divergent TF album indexes still require an explicit operator choice.
 
 Historical retained evidence: the authorized C151 previously ran the native
 ESP-IDF `0.4.0-beta.11` image from
@@ -286,7 +292,7 @@ the existing unit.
 | Portal/settings/local tools | **Digitally implemented.** native authenticated Portal, upload/preview, settings, volume preview, local tools and confirmed TF maintenance are Product-owned. | Run a real browser against IP/mDNS and all storage/confirmation flows. |
 | Render/display/stable-screen behavior | **Digitally implemented.** official/classic/reflectance/solid strategies, journaled display, one-second page settle and panel-preserving wake are composed. | Compare physical quality/timing and power-cut behavior. |
 | Recovery and OTA | **Digitally verified through WS46.** signed HTTPS/Ed25519 staging, boot health, truthful accepted/offline Portal UX plus bounded post-reboot outcome, two-phase quiesce, Recovery teardown fault handling and immutable per-SKU promotion exist. WS43 targeted 19/19 and C151 clean/full link PASS; WS44 promoter 6/6 and OTA regression 36/36 PASS; WS46 real clean release build and OTA/scaffold 50/50 PASS. | Configure/deploy the reviewed public-key channel and execute live signed update/rollback. |
-| Authorized attached C151 | **Physical tranche remains Recovery-only and staging is BLOCKED.** beta27 is selected in app1 and beta25 remains in app0. Two byte-identical current 16 MiB internal-flash reads plus NVS/LittleFS/slot custody are retained. No deliberate TF mutation was requested, but writable FAT mounting is not proof of unchanged TF bytes. | Capture/hash an offline whole-card TF image before any candidate write. Then pass the fresh beta30-or-newer gate, stage only the proven inactive slot with readback, use the HTTP logical export for additional selection evidence, make the explicit slot choice, and run Product acceptance. |
+| Authorized attached C151 | **Physical tranche remains Recovery-only and staging is BLOCKED.** beta27 is selected in app1 and beta25 remains in app0. Two byte-identical current 16 MiB internal-flash reads plus NVS/LittleFS/slot custody are retained. The first offline TF double-read failed closed because the source digests differed; no source write was performed. | Obtain a matching offline whole-card TF image before any candidate write. Then pass the fresh receipt-bound beta31 gate, stage only the proven inactive slot with readback, use the HTTP logical export for additional selection evidence, make the explicit slot choice, and run Product acceptance. |
 
 ## 12. Acceptance gates before the next candidate and release
 

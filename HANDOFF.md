@@ -132,7 +132,7 @@ npm run db:generate
 
 同一设备上，小于 5 分钟的高频任务只允许一个；新任务会询问是否替换。任务按设备分组显示成功次数、失败原因、剩余时间和最近一次 Canvas。
 
-M5 PaperColor 已接入 ESP32 Wi‑Fi adapter。该路径将计划持久化到设备 LittleFS，由设备每 15 秒同步服务器 revision 并在本机定时拉取 PNG；浏览器无需保持打开。服务器删除任务后会提升 `desired_revision`，设备在线时以完整任务集替换本地状态。SKU 元数据、adapter 边界与扩展流程见 `docs/esp32-device-architecture.md`。
+M5 PaperColor 已接入 ESP32 Wi‑Fi adapter。该路径将计划持久化到设备 LittleFS，由设备每 30 秒同步服务器 revision 并在本机定时拉取 PNG；浏览器无需保持打开。服务器删除任务后会提升 `desired_revision`，设备在线时以完整任务集替换本地状态。SKU 元数据、adapter 边界与扩展流程见 `docs/esp32-device-architecture.md`。
 
 ## 8. 画面与外部数据源
 

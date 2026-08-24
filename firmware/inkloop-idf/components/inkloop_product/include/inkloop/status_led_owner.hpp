@@ -6,10 +6,13 @@
 
 namespace inkloop {
 
+class ButtonLatencyTelemetry;
+
 class EspStatusLedOwner final {
  public:
-  EspStatusLedOwner(IBoardAdapter& board, RuntimeSupervisor& supervisor)
-      : board_(board), supervisor_(supervisor) {}
+  EspStatusLedOwner(IBoardAdapter& board, RuntimeSupervisor& supervisor,
+                    ButtonLatencyTelemetry* latency = nullptr)
+      : board_(board), supervisor_(supervisor), latency_(latency) {}
 
   esp_err_t configure();
   // Called only after the supervisor task has stopped. Leaves the physical
@@ -30,10 +33,11 @@ class EspStatusLedOwner final {
   static WorkDisposition handle(const WorkEnvelope& envelope, void* context);
   static void tick(void* context);
   WorkDisposition handleCommand(const WorkEnvelope& envelope);
-  void service();
+  bool service();
 
   IBoardAdapter& board_;
   RuntimeSupervisor& supervisor_;
+  ButtonLatencyTelemetry* latency_ = nullptr;
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   StatusLedCore core_{};
   uint8_t physical_pixels_ = 0;

@@ -222,6 +222,14 @@ test("native supervisor preserves ISR, queue and startup contracts", async () =>
   );
   assert.match(
     source,
+    /case AdmissionResult::StaleGeneration:[\s\S]{0,360}work_class == WorkClass::Button \? WorkDisposition::Failed[\s\S]{0,100}WorkDisposition::Cancelled/,
+  );
+  assert.match(
+    source,
+    /case AdmissionResult::Expired:[\s\S]{0,80}return WorkDisposition::TimedOut;/,
+  );
+  assert.match(
+    source,
     /slot\.tick_handler && !ticks_frozen[\s\S]{0,500}!sleep_admission_frozen_[\s\S]{0,160}callback_active_\[index\] = true/,
   );
   assert.match(source, /portENTER_CRITICAL\(&mux_\);[\s\S]+xQueueSend\([^;]+, 0\)[\s\S]+portEXIT_CRITICAL\(&mux_\);/);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -199,6 +199,7 @@ const pollHarness = String.raw`
 #include <string>
 #include <vector>
 
+#include "esp_log.h"
 #include "esp_transport.h"
 #include "esp_transport_ws.h"
 #include "inkloop/myai/EndpointPolicy.h"
@@ -237,6 +238,14 @@ bool fake_last_fin = true;
 int fake_last_payload = 0;
 size_t fake_poll_calls = 0;
 size_t fake_read_calls = 0;
+int fake_connect_result = 0;
+int fake_upgrade_status = 101;
+size_t fake_operation_sequence = 0;
+size_t fake_log_suppressed_sequence = 0;
+size_t fake_header_config_sequence = 0;
+size_t fake_connect_sequence = 0;
+esp_log_level_t fake_transport_ws_log_level = ESP_LOG_INFO;
+bool fake_log_set_effective = true;
 
 void resetFakeTransport() {
   fake_frames.clear();
@@ -246,7 +255,26 @@ void resetFakeTransport() {
   fake_last_payload = 0;
   fake_poll_calls = 0;
   fake_read_calls = 0;
+  fake_connect_result = 0;
+  fake_upgrade_status = 101;
+  fake_operation_sequence = 0;
+  fake_log_suppressed_sequence = 0;
+  fake_header_config_sequence = 0;
+  fake_connect_sequence = 0;
+  fake_transport_ws_log_level = ESP_LOG_INFO;
+  fake_log_set_effective = true;
   inkloop_test_time_us = 0;
+}
+
+void esp_log_level_set(const char* tag, esp_log_level_t level) {
+  assert(std::string(tag) == "transport_ws");
+  assert(level == ESP_LOG_NONE);
+  fake_log_suppressed_sequence = ++fake_operation_sequence;
+  if (fake_log_set_effective) fake_transport_ws_log_level = level;
+}
+esp_log_level_t esp_log_level_get(const char* tag) {
+  assert(std::string(tag) == "transport_ws");
+  return fake_transport_ws_log_level;
 }
 
 esp_transport_handle_t esp_transport_tcp_init() { return &fake_websocket; }
@@ -260,13 +288,18 @@ esp_transport_handle_t esp_transport_ws_init(esp_transport_handle_t) {
 }
 esp_err_t esp_transport_ws_set_config(
     esp_transport_handle_t, const esp_transport_ws_config_t*) {
+  assert(fake_transport_ws_log_level == ESP_LOG_NONE);
+  fake_header_config_sequence = ++fake_operation_sequence;
+  assert(fake_log_suppressed_sequence < fake_header_config_sequence);
   return ESP_OK;
 }
 int esp_transport_connect(esp_transport_handle_t, const char*, int, int) {
-  return 0;
+  fake_connect_sequence = ++fake_operation_sequence;
+  assert(fake_header_config_sequence < fake_connect_sequence);
+  return fake_connect_result;
 }
 int esp_transport_ws_get_upgrade_request_status(esp_transport_handle_t) {
-  return 101;
+  return fake_upgrade_status;
 }
 int esp_transport_get_socket(esp_transport_handle_t) { return 7; }
 int esp_transport_close(esp_transport_handle_t) { return 0; }
@@ -407,6 +440,50 @@ void testContinuousIngressServicesKeepAlive() {
   assert(listener.binaries == 1);
   assert(listener.closeCode == 1006);
   assert(listener.closeReason == "keepalive_pong_timeout");
+}
+
+void testHandshakePreservesAuthorizationStatus() {
+  for (const int http_status : {401, 402}) {
+    resetFakeTransport();
+    fake_connect_result = -1;
+    fake_upgrade_status = http_status;
+    EspEndpointSecurity security;
+    Listener listener;
+    EspWssTransport transport(security);
+    const Status connected = transport.connect(
+        "wss://gateway.example.com/gateway/v1/voice/ws",
+        {{"Authorization", "Bearer gateway-secret"},
+         {"X-Gateway-Session-Token", "gateway-secret"}},
+        listener);
+    assert(!connected.ok());
+    assert(connected.httpStatus == http_status);
+    assert(connected.code == (http_status == 401
+                                  ? ErrorCode::Unauthorized
+                                  : ErrorCode::PaymentRequired));
+    assert(listener.opens == 0 && !transport.connected());
+    assert(fake_log_suppressed_sequence != 0U &&
+           fake_header_config_sequence > fake_log_suppressed_sequence &&
+           fake_connect_sequence > fake_header_config_sequence);
+  }
+}
+
+void testHandshakeFailsClosedWhenLogSuppressionIsUnavailable() {
+  resetFakeTransport();
+  fake_log_set_effective = false;
+  EspEndpointSecurity security;
+  Listener listener;
+  EspWssTransport transport(security);
+  const Status connected = transport.connect(
+      "wss://gateway.example.com/gateway/v1/voice/ws",
+      {{"Authorization", "Bearer must-not-be-configured"},
+       {"X-Gateway-Session-Token", "must-not-be-configured"}},
+      listener);
+  assert(connected.code == ErrorCode::Security);
+  assert(connected.detail ==
+         "MyAI WSS credential log suppression unavailable");
+  assert(fake_log_suppressed_sequence != 0U);
+  assert(fake_header_config_sequence == 0U && fake_connect_sequence == 0U);
+  assert(listener.opens == 0 && !transport.connected());
 }
 
 void testDeferredBackpressurePreservesQueuedPong() {
@@ -638,6 +715,8 @@ void testListenerCloseRemainsSuccessful() {
 }
 
 int main() {
+  testHandshakeFailsClosedWhenLogSuppressionIsUnavailable();
+  testHandshakePreservesAuthorizationStatus();
   testContinuousIngressServicesKeepAlive();
   testDeferredBackpressurePreservesQueuedPong();
   testPartialBackpressurePreservesQueuedPong();
@@ -666,6 +745,19 @@ constexpr esp_err_t ESP_OK = 0;
 #pragma once
 #include "esp_err.h"
 inline esp_err_t esp_crt_bundle_attach(void*) { return ESP_OK; }
+`],
+      ["esp_log.h", String.raw`
+#pragma once
+enum esp_log_level_t {
+  ESP_LOG_NONE = 0,
+  ESP_LOG_ERROR = 1,
+  ESP_LOG_WARN = 2,
+  ESP_LOG_INFO = 3,
+  ESP_LOG_DEBUG = 4,
+  ESP_LOG_VERBOSE = 5,
+};
+void esp_log_level_set(const char*, esp_log_level_t);
+esp_log_level_t esp_log_level_get(const char*);
 `],
       ["esp_transport.h", String.raw`
 #pragma once
@@ -753,6 +845,8 @@ inline void vTaskDelay(uint32_t) {}
       "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
       "-DCONFIG_MBEDTLS_CERTIFICATE_BUNDLE=1",
       "-DCONFIG_LOG_MAXIMUM_LEVEL=3",
+      "-DCONFIG_LOG_DYNAMIC_LEVEL_CONTROL=1",
+      "-DCONFIG_LOG_TAG_LEVEL_IMPL_NONE=0",
       "-I", stubs,
       "-I", join(myai, "include"),
       "-I", join(myai, "include/inkloop/myai"),
@@ -780,6 +874,30 @@ test("WSS poll services keepalive under continuous ingress and backpressure", ()
   buildAndRunPollHarness();
 });
 
+test("pinned ESP-IDF transport_ws leak site remains covered by the adapter guard", (t) => {
+  const version = readFileSync(
+    join(repo, "firmware/inkloop-idf/.idf-version"), "utf8").trim();
+  assert.equal(version, "v6.0.2");
+  const idfRoot = process.env.IDF_PATH ||
+    join(homedir(), ".espressif/frameworks", `esp-idf-${version}`);
+  const upstreamPath = join(
+    idfRoot, "components/tcp_transport/transport_ws.c");
+  if (!existsSync(upstreamPath)) {
+    t.skip(`pinned ESP-IDF source unavailable at ${upstreamPath}`);
+    return;
+  }
+  const upstream = readFileSync(upstreamPath, "utf8");
+  assert.match(upstream, /static const char \*TAG = "transport_ws";/);
+  assert.match(
+    upstream,
+    /snprintf\(ws->buffer \+ len,[\s\S]{0,160}"%s", ws->headers\)/,
+  );
+  assert.match(
+    upstream,
+    /ESP_LOGE\(TAG, "Error write Upgrade header %s", ws->buffer\)/,
+  );
+});
+
 test("native WS/WSS adapter rejects redirects and checks the connected public peer", () => {
   const source = readFileSync(join(native, "esp_wss_transport.cpp"), "utf8");
   const cmake = readFileSync(join(native, "CMakeLists.txt"), "utf8");
@@ -789,7 +907,13 @@ test("native WS/WSS adapter rejects redirects and checks the connected public pe
   assert.match(source, /esp_transport_ssl_set_common_name\(network_, host_\.c_str\(\)\)/);
   assert.match(source, /"ws:\/\/"/);
   assert.match(source, /result != 0[\s\S]+redirect[\s\S]+Security/);
-  assert.match(source, /get_upgrade_request_status\(websocket_\) != 101/);
+  assert.match(
+    source,
+    /const int upgrade_status\s*=\s*[\s\S]{0,160}esp_transport_ws_get_upgrade_request_status\(websocket_\)/,
+  );
+  assert.match(source, /if \(result != 0 \|\| upgrade_status != 101\)/);
+  assert.match(source, /upgrade_status == 401[\s\S]+ErrorCode::Unauthorized/);
+  assert.match(source, /upgrade_status == 402[\s\S]+ErrorCode::PaymentRequired/);
   assert.match(source, /validateConnectedSocket[\s\S]+esp_transport_get_socket/);
   assert.match(source, /EspNetworkOperationLease network_lease\(kConnectTimeoutMs\)/);
   assert.match(source, /network_lease\.acquired\(\)/);
@@ -819,8 +943,22 @@ test("native WS/WSS adapter rejects redirects and checks the connected public pe
   assert.match(source, /ingress_backpressure_timeout/);
   assert.match(source, /keep_alive_\.rebase\(monotonicMs\(\)\)/);
   assert.match(source, /CONFIG_LOG_MAXIMUM_LEVEL > 3/);
+  assert.match(source, /!CONFIG_LOG_DYNAMIC_LEVEL_CONTROL \|\| CONFIG_LOG_TAG_LEVEL_IMPL_NONE/);
+  assert.match(source, /esp_log_level_set\("transport_ws", ESP_LOG_NONE\)/);
+  assert.match(source, /esp_log_level_get\("transport_ws"\) != ESP_LOG_NONE/);
+  const suppressLogs = source.indexOf(
+    'esp_log_level_set("transport_ws", ESP_LOG_NONE)');
+  const verifyLogs = source.indexOf(
+    'esp_log_level_get("transport_ws") != ESP_LOG_NONE', suppressLogs);
+  const configureHeaders = source.indexOf("configure(url, headers)", verifyLogs);
+  assert.ok(suppressLogs >= 0 && verifyLogs > suppressLogs &&
+            configureHeaders > verifyLogs);
+  assert.equal((source.match(/esp_log_level_set\(/g) || []).length, 1,
+               "transport_ws suppression is process-lifetime and never restored");
   assert.match(cmake, /tcp_transport/);
   assert.match(defaults, /CONFIG_WS_BUFFER_SIZE=4096/);
+  assert.match(defaults, /CONFIG_LOG_DYNAMIC_LEVEL_CONTROL=y/);
+  assert.match(defaults, /CONFIG_LOG_TAG_LEVEL_IMPL_CACHE_AND_LINKED_LIST=y/);
   assert.doesNotMatch(source, /esp_websocket_client|xTaskCreate|std::thread/);
-  assert.doesNotMatch(source, /ESP_LOG|printf\s*\(|puts\s*\(/);
+  assert.doesNotMatch(source, /ESP_LOG(?:E|W|I|D|V)\s*\(|printf\s*\(|puts\s*\(/);
 });

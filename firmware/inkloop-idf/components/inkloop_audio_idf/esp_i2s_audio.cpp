@@ -15,6 +15,12 @@ constexpr uint32_t kMaximumPlaybackRateHz = 48000;
 constexpr uint32_t kMaximumBlockingWriteMilliseconds = 20U;
 constexpr uint32_t kPlaybackPreloadMilliseconds = 60U;
 constexpr size_t kOutputBatchFrames = 256U;
+constexpr size_t kPlaybackScrubChunkBytes = 256U;
+// validConfig() caps the ring at 16 descriptors of 1024 stereo PCM16 frames.
+// ESP-IDF may round/cap an individual descriptor, but never beyond this
+// configured upper bound.
+constexpr size_t kMaximumPlaybackDmaRingBytes =
+    16U * 1024U * 2U * sizeof(int16_t);
 
 bool validGpio(gpio_num_t gpio) {
   return gpio >= GPIO_NUM_0 && gpio < GPIO_NUM_MAX;
@@ -36,13 +42,45 @@ i2s_std_slot_config_t playbackSlotConfig() {
   return slot;
 }
 
+i2s_std_clk_config_t standardClockConfig(uint32_t sample_rate_hz) {
+  i2s_std_clk_config_t clock =
+      I2S_STD_CLK_DEFAULT_CONFIG(sample_rate_hz);
+  clock.clk_src = I2S_CLK_SRC_PLL_160M;
+  clock.mclk_multiple = I2S_MCLK_MULTIPLE_128;
+  return clock;
+}
+
+i2s_std_gpio_config_t captureGpioConfig(
+    const EspI2sAudioConfig& config) {
+  i2s_std_gpio_config_t gpio{};
+  gpio.mclk = config.mclk;
+  gpio.bclk = config.bclk;
+  gpio.ws = config.word_select;
+  gpio.dout = GPIO_NUM_NC;
+  gpio.din = config.capture_data;
+  gpio.invert_flags = {};
+  return gpio;
+}
+
+i2s_std_gpio_config_t playbackGpioConfig(
+    const EspI2sAudioConfig& config) {
+  i2s_std_gpio_config_t gpio{};
+  gpio.mclk = config.mclk;
+  gpio.bclk = config.bclk;
+  gpio.ws = config.word_select;
+  gpio.dout = config.playback_data;
+  gpio.din = GPIO_NUM_NC;
+  gpio.invert_flags = {};
+  return gpio;
+}
+
 }  // namespace
 
 EspI2sAudioDevice::EspI2sAudioDevice(const EspI2sAudioConfig& config,
                                      IAudioCodecControl& codec)
     : config_(config), codec_(codec) {}
 
-EspI2sAudioDevice::~EspI2sAudioDevice() { abort(); }
+EspI2sAudioDevice::~EspI2sAudioDevice() { ESP_ERROR_CHECK(shutdown()); }
 
 bool IRAM_ATTR EspI2sAudioDevice::onPlaybackSent(
     i2s_chan_handle_t handle, i2s_event_data_t* event, void* user_context) {
@@ -97,7 +135,7 @@ bool EspI2sAudioDevice::validConfig() const {
          config_.playback_dma_descriptor_count <= 16;
 }
 
-esp_err_t EspI2sAudioDevice::createCaptureChannel() {
+esp_err_t EspI2sAudioDevice::allocateCaptureChannel() {
   i2s_chan_config_t channel =
       I2S_CHANNEL_DEFAULT_CONFIG(config_.capture_port, I2S_ROLE_MASTER);
   channel.dma_desc_num = config_.dma_descriptor_count;
@@ -107,26 +145,23 @@ esp_err_t EspI2sAudioDevice::createCaptureChannel() {
   if (status != ESP_OK) return status;
 
   i2s_std_config_t standard{};
-  standard.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(config_.capture_sample_rate_hz);
-  standard.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
-  standard.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_128;
+  standard.clk_cfg = standardClockConfig(config_.capture_sample_rate_hz);
   standard.slot_cfg = captureSlotConfig();
-  standard.gpio_cfg.mclk = config_.mclk;
-  standard.gpio_cfg.bclk = config_.bclk;
-  standard.gpio_cfg.ws = config_.word_select;
-  standard.gpio_cfg.dout = GPIO_NUM_NC;
-  standard.gpio_cfg.din = config_.capture_data;
-  standard.gpio_cfg.invert_flags = {};
+  standard.gpio_cfg = captureGpioConfig(config_);
   status = i2s_channel_init_std_mode(capture_channel_, &standard);
-  if (status == ESP_OK) status = i2s_channel_enable(capture_channel_);
   if (status != ESP_OK) {
-    i2s_del_channel(capture_channel_);
-    capture_channel_ = nullptr;
+    const esp_err_t deleted = i2s_del_channel(capture_channel_);
+    if (deleted == ESP_OK) {
+      capture_channel_ = nullptr;
+    } else {
+      status = deleted;
+    }
   }
   return status;
 }
 
-esp_err_t EspI2sAudioDevice::createPlaybackChannel(uint32_t sample_rate_hz) {
+esp_err_t EspI2sAudioDevice::allocatePlaybackChannel(
+    uint32_t sample_rate_hz) {
   i2s_chan_config_t channel =
       I2S_CHANNEL_DEFAULT_CONFIG(config_.playback_port, I2S_ROLE_MASTER);
   channel.dma_desc_num = config_.playback_dma_descriptor_count;
@@ -137,16 +172,9 @@ esp_err_t EspI2sAudioDevice::createPlaybackChannel(uint32_t sample_rate_hz) {
   if (status != ESP_OK) return status;
 
   i2s_std_config_t standard{};
-  standard.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate_hz);
-  standard.clk_cfg.clk_src = I2S_CLK_SRC_PLL_160M;
-  standard.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_128;
+  standard.clk_cfg = standardClockConfig(sample_rate_hz);
   standard.slot_cfg = playbackSlotConfig();
-  standard.gpio_cfg.mclk = config_.mclk;
-  standard.gpio_cfg.bclk = config_.bclk;
-  standard.gpio_cfg.ws = config_.word_select;
-  standard.gpio_cfg.dout = config_.playback_data;
-  standard.gpio_cfg.din = GPIO_NUM_NC;
-  standard.gpio_cfg.invert_flags = {};
+  standard.gpio_cfg = playbackGpioConfig(config_);
   status = i2s_channel_init_std_mode(playback_channel_, &standard);
   if (status == ESP_OK) {
     i2s_event_callbacks_t callbacks{};
@@ -156,22 +184,162 @@ esp_err_t EspI2sAudioDevice::createPlaybackChannel(uint32_t sample_rate_hz) {
     status = i2s_channel_register_event_callback(
         playback_channel_, &callbacks, this);
   }
+  if (status == ESP_OK) {
+    i2s_chan_info_t info{};
+    status = i2s_channel_get_info(playback_channel_, &info);
+    if (status == ESP_OK &&
+        (info.total_dma_buf_size == 0U ||
+         info.total_dma_buf_size > kMaximumPlaybackDmaRingBytes ||
+         (info.total_dma_buf_size % sizeof(StereoPcm16Frame)) != 0U)) {
+      status = ESP_ERR_INVALID_SIZE;
+    }
+    if (status == ESP_OK) {
+      playback_dma_ring_bytes_ = info.total_dma_buf_size;
+    }
+  }
   if (status != ESP_OK) {
-    i2s_del_channel(playback_channel_);
-    playback_channel_ = nullptr;
+    const esp_err_t deleted = i2s_del_channel(playback_channel_);
+    if (deleted == ESP_OK) {
+      playback_channel_ = nullptr;
+      playback_dma_ring_bytes_ = 0U;
+    } else {
+      status = deleted;
+    }
+  }
+  return status;
+}
+
+esp_err_t EspI2sAudioDevice::deletePreparedChannels() {
+  esp_err_t first = ESP_OK;
+  if (capture_channel_ && capture_channel_enabled_) {
+    const esp_err_t status = i2s_channel_disable(capture_channel_);
+    if (status == ESP_OK) capture_channel_enabled_ = false;
+    if (first == ESP_OK) first = status;
+  }
+  if (playback_channel_ && playback_channel_enabled_) {
+    const esp_err_t status = i2s_channel_disable(playback_channel_);
+    if (status == ESP_OK) playback_channel_enabled_ = false;
+    if (first == ESP_OK) first = status;
+  }
+  if (capture_channel_ && !capture_channel_enabled_) {
+    const esp_err_t status = i2s_del_channel(capture_channel_);
+    if (status == ESP_OK) capture_channel_ = nullptr;
+    if (first == ESP_OK) first = status;
+  }
+  if (playback_channel_ && !playback_channel_enabled_) {
+    const esp_err_t status = i2s_del_channel(playback_channel_);
+    if (status == ESP_OK) {
+      playback_channel_ = nullptr;
+      playback_dma_ring_bytes_ = 0U;
+    }
+    if (first == ESP_OK) first = status;
+  }
+  if (!capture_channel_ && !playback_channel_) {
+    prepared_ = false;
+    playback_configured_rate_hz_ = 0U;
+    diagnostics_.prepared_playback_rate_hz = 0U;
+  }
+  return first;
+}
+
+esp_err_t EspI2sAudioDevice::prepare() {
+  ++diagnostics_.prepare_attempts;
+  if (!validConfig()) {
+    ++diagnostics_.prepare_failures;
+    diagnostics_.last_prepare_error = ESP_ERR_INVALID_ARG;
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (prepared_) {
+    const esp_err_t status = mode_ == Mode::Idle
+                                 ? ESP_OK
+                                 : ESP_ERR_INVALID_STATE;
+    if (status != ESP_OK) ++diagnostics_.prepare_failures;
+    diagnostics_.last_prepare_error = status;
+    return status;
+  }
+  if (mode_ != Mode::Idle || capture_channel_ || playback_channel_) {
+    ++diagnostics_.prepare_failures;
+    diagnostics_.last_prepare_error = ESP_ERR_INVALID_STATE;
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  const uint32_t initial_playback_rate =
+      config_.playback_sample_rate_hz == 0U
+          ? config_.capture_sample_rate_hz
+          : config_.playback_sample_rate_hz;
+  esp_err_t status = allocateCaptureChannel();
+  if (status == ESP_OK) {
+    status = allocatePlaybackChannel(initial_playback_rate);
+  }
+  if (status != ESP_OK) {
+    (void)deletePreparedChannels();
+    ++diagnostics_.prepare_failures;
+    diagnostics_.last_prepare_error = status;
+    return status;
+  }
+  prepared_ = true;
+  playback_configured_rate_hz_ = initial_playback_rate;
+  diagnostics_.prepared_playback_rate_hz = initial_playback_rate;
+  diagnostics_.last_prepare_error = ESP_OK;
+  ++diagnostics_.prepare_successes;
+  return ESP_OK;
+}
+
+esp_err_t EspI2sAudioDevice::selectCapturePins() {
+  const i2s_std_gpio_config_t gpio = captureGpioConfig(config_);
+  const esp_err_t status =
+      i2s_channel_reconfig_std_gpio(capture_channel_, &gpio);
+  if (status == ESP_OK) {
+    ++diagnostics_.shared_pin_selections;
+  } else {
+    ++diagnostics_.shared_pin_selection_failures;
+  }
+  return status;
+}
+
+esp_err_t EspI2sAudioDevice::selectPlaybackPins() {
+  const i2s_std_gpio_config_t gpio = playbackGpioConfig(config_);
+  const esp_err_t status =
+      i2s_channel_reconfig_std_gpio(playback_channel_, &gpio);
+  if (status == ESP_OK) {
+    ++diagnostics_.shared_pin_selections;
+  } else {
+    ++diagnostics_.shared_pin_selection_failures;
+  }
+  return status;
+}
+
+esp_err_t EspI2sAudioDevice::configurePlaybackClock(
+    uint32_t sample_rate_hz) {
+  if (playback_configured_rate_hz_ == sample_rate_hz) return ESP_OK;
+  const i2s_std_clk_config_t clock = standardClockConfig(sample_rate_hz);
+  const esp_err_t status =
+      i2s_channel_reconfig_std_clock(playback_channel_, &clock);
+  if (status == ESP_OK) {
+    playback_configured_rate_hz_ = sample_rate_hz;
+    diagnostics_.prepared_playback_rate_hz = sample_rate_hz;
+    ++diagnostics_.playback_clock_reconfigurations;
+  } else {
+    ++diagnostics_.playback_clock_reconfiguration_failures;
   }
   return status;
 }
 
 esp_err_t EspI2sAudioDevice::beginCapture() {
-  if (!validConfig()) return ESP_ERR_INVALID_ARG;
-  if (mode_ != Mode::Idle || capture_channel_ || playback_channel_)
+  if (!prepared_ || !capture_channel_ || !playback_channel_)
     return ESP_ERR_INVALID_STATE;
-  esp_err_t status = createCaptureChannel();
+  if (mode_ != Mode::Idle || capture_channel_enabled_ ||
+      playback_channel_enabled_ || capture_codec_active_ ||
+      playback_codec_active_)
+    return ESP_ERR_INVALID_STATE;
+  esp_err_t status = selectCapturePins();
+  if (status == ESP_OK) status = i2s_channel_enable(capture_channel_);
+  if (status == ESP_OK) capture_channel_enabled_ = true;
   if (status == ESP_OK) status = codec_.activateCapture();
+  if (status == ESP_OK) capture_codec_active_ = true;
   if (status != ESP_OK) {
     ++diagnostics_.capture_failures;
-    releaseCaptureChannel(false);
+    (void)stopCaptureSession(true);
     return status;
   }
   mode_ = Mode::Capture;
@@ -206,46 +374,52 @@ esp_err_t EspI2sAudioDevice::readCapture(int16_t* samples,
   return ESP_OK;
 }
 
-esp_err_t EspI2sAudioDevice::releaseCaptureChannel(bool deactivate_codec) {
+esp_err_t EspI2sAudioDevice::stopCaptureSession(bool deactivate_codec) {
   esp_err_t first = ESP_OK;
-  if (deactivate_codec) {
+  if (deactivate_codec && capture_codec_active_) {
     const esp_err_t status = codec_.deactivateCapture();
     if (first == ESP_OK) first = status;
+    // Codec adapters guarantee an attempted deactivate leaves the path off,
+    // even when they report the GPIO/I2C failure which caused it.
+    capture_codec_active_ = false;
   }
-  if (capture_channel_) {
+  if (capture_channel_ && capture_channel_enabled_) {
     const esp_err_t disabled = i2s_channel_disable(capture_channel_);
     if (first == ESP_OK && disabled != ESP_OK) first = disabled;
-    const esp_err_t deleted = i2s_del_channel(capture_channel_);
-    if (first == ESP_OK && deleted != ESP_OK) first = deleted;
-    capture_channel_ = nullptr;
+    if (disabled == ESP_OK) capture_channel_enabled_ = false;
   }
   return first;
 }
 
 esp_err_t EspI2sAudioDevice::endCapture() {
   if (mode_ != Mode::Capture) return ESP_ERR_INVALID_STATE;
-  const esp_err_t status = releaseCaptureChannel(true);
-  mode_ = Mode::Idle;
+  const esp_err_t status = stopCaptureSession(true);
+  if (!capture_channel_enabled_) mode_ = Mode::Idle;
   return status;
 }
 
 esp_err_t EspI2sAudioDevice::beginPlayback(uint32_t sample_rate_hz,
                                            uint8_t channels) {
-  if (!validConfig() || sample_rate_hz < kMinimumPlaybackRateHz ||
+  if (!prepared_ || !capture_channel_ || !playback_channel_)
+    return ESP_ERR_INVALID_STATE;
+  if (sample_rate_hz < kMinimumPlaybackRateHz ||
       sample_rate_hz > kMaximumPlaybackRateHz ||
       (channels != 1 && channels != 2))
     return ESP_ERR_INVALID_ARG;
-  if (mode_ != Mode::Idle || capture_channel_ || playback_channel_)
+  if (mode_ != Mode::Idle || capture_channel_enabled_ ||
+      playback_channel_enabled_ || capture_codec_active_ ||
+      playback_codec_active_)
     return ESP_ERR_INVALID_STATE;
   const uint32_t output_rate = config_.playback_sample_rate_hz == 0U
       ? sample_rate_hz
       : config_.playback_sample_rate_hz;
   if (!playback_resampler_.begin(sample_rate_hz, output_rate, channels))
     return ESP_ERR_INVALID_ARG;
-  esp_err_t status = createPlaybackChannel(output_rate);
+  esp_err_t status = configurePlaybackClock(output_rate);
+  if (status == ESP_OK) status = selectPlaybackPins();
   if (status != ESP_OK) {
     ++diagnostics_.playback_failures;
-    releasePlaybackChannel(false);
+    playback_resampler_.reset();
     return status;
   }
   playback_sample_rate_hz_ = sample_rate_hz;
@@ -272,7 +446,7 @@ esp_err_t EspI2sAudioDevice::beginPlayback(uint32_t sample_rate_hz,
   if (!playback_feed_monitor_.begin(output_rate,
                                     static_cast<size_t>(dma_frames))) {
     ++diagnostics_.playback_failures;
-    releasePlaybackChannel(false);
+    resetPlaybackSession();
     return ESP_ERR_INVALID_ARG;
   }
   __atomic_store_n(&playback_source_open_for_isr_, 0U, __ATOMIC_RELAXED);
@@ -307,6 +481,8 @@ esp_err_t EspI2sAudioDevice::writeAll(const void* bytes, size_t length,
 
 esp_err_t EspI2sAudioDevice::enablePlaybackChannel() {
   if (mode_ != Mode::Playback || !playback_channel_)
+    return ESP_ERR_INVALID_STATE;
+  if (capture_channel_enabled_ || capture_codec_active_)
     return ESP_ERR_INVALID_STATE;
   if (playback_channel_enabled_) return ESP_OK;
   if (playback_preloaded_bytes_ == 0U) return ESP_ERR_INVALID_STATE;
@@ -348,10 +524,42 @@ esp_err_t EspI2sAudioDevice::startPreloadedPlayback() {
   return enablePlaybackChannel();
 }
 
+esp_err_t EspI2sAudioDevice::pausePlaybackIngress() {
+  if (mode_ != Mode::Playback || !playback_channel_)
+    return ESP_ERR_INVALID_STATE;
+  if (!playback_feed_monitor_.pauseSource(
+          static_cast<uint64_t>(esp_timer_get_time()))) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  __atomic_store_n(&playback_source_open_for_isr_, 0U,
+                   __ATOMIC_RELAXED);
+  return ESP_OK;
+}
+
+esp_err_t EspI2sAudioDevice::resumePlaybackIngress() {
+  if (mode_ != Mode::Playback || !playback_channel_ ||
+      playback_source_finished_) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (!playback_feed_monitor_.resumeSource(
+          static_cast<uint64_t>(esp_timer_get_time()))) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  __atomic_store_n(&playback_source_open_for_isr_,
+                   playback_channel_enabled_ ? 1U : 0U,
+                   __ATOMIC_RELAXED);
+  return ESP_OK;
+}
+
 esp_err_t EspI2sAudioDevice::finishPlaybackSource(uint32_t timeout_ms) {
   if (mode_ != Mode::Playback || !playback_channel_)
     return ESP_ERR_INVALID_STATE;
   if (!playback_source_finished_) {
+    // The segment already ended before the continuation grace. Keep its
+    // expected drain excluded from both ISR and cadence underrun accounting
+    // while the resampler emits its held terminal interval.
+    const esp_err_t paused = pausePlaybackIngress();
+    if (paused != ESP_OK) return paused;
     std::array<StereoPcm16Frame,
                StreamingStereoResampler::kMaximumOutputFramesPerInput>
         tail{};
@@ -362,7 +570,8 @@ esp_err_t EspI2sAudioDevice::finishPlaybackSource(uint32_t timeout_ms) {
     }
     playback_source_finished_ = true;
     if (count != 0U) {
-      const esp_err_t written = writeOutput(tail.data(), count, timeout_ms);
+      const esp_err_t written = writeOutput(
+          tail.data(), count, timeout_ms, true);
       if (written != ESP_OK) return written;
     }
     const int64_t finished_us = esp_timer_get_time();
@@ -376,7 +585,7 @@ esp_err_t EspI2sAudioDevice::finishPlaybackSource(uint32_t timeout_ms) {
 
 esp_err_t EspI2sAudioDevice::writeOutput(
     const StereoPcm16Frame* frames, size_t frame_count,
-    uint32_t timeout_ms) {
+    uint32_t timeout_ms, bool terminal_tail) {
   if (!frames || frame_count == 0U ||
       frame_count > SIZE_MAX / sizeof(StereoPcm16Frame)) {
     return ESP_ERR_INVALID_ARG;
@@ -413,9 +622,15 @@ esp_err_t EspI2sAudioDevice::writeOutput(
                                        timeout_ms);
     if (written != ESP_OK) return written;
     playback_last_write_us_ = esp_timer_get_time();
-    if (!playback_feed_monitor_.submit(
-            (length - offset) / sizeof(StereoPcm16Frame),
-            static_cast<uint64_t>(playback_last_write_us_))) {
+    const size_t submitted_frames =
+        (length - offset) / sizeof(StereoPcm16Frame);
+    const uint64_t submitted_at =
+        static_cast<uint64_t>(playback_last_write_us_);
+    const bool monitored = terminal_tail
+        ? playback_feed_monitor_.submitTerminal(submitted_frames,
+                                                submitted_at)
+        : playback_feed_monitor_.submit(submitted_frames, submitted_at);
+    if (!monitored) {
       ++diagnostics_.playback_failures;
       return ESP_ERR_INVALID_STATE;
     }
@@ -485,35 +700,107 @@ bool EspI2sAudioDevice::playbackDrained() const {
   return elapsed >= static_cast<int64_t>(playback_drain_wait_us_);
 }
 
-esp_err_t EspI2sAudioDevice::releasePlaybackChannel(bool deactivate_codec) {
-  esp_err_t first = ESP_OK;
-  __atomic_store_n(&playback_source_open_for_isr_, 0U, __ATOMIC_RELAXED);
-  playback_feed_monitor_.stop();
-  if (deactivate_codec && playback_codec_active_) {
-    const esp_err_t status = codec_.deactivatePlayback();
-    if (first == ESP_OK) first = status;
-    playback_codec_active_ = false;
-  }
-  if (playback_channel_) {
-    if (playback_channel_enabled_) {
-      const esp_err_t disabled = i2s_channel_disable(playback_channel_);
-      if (first == ESP_OK && disabled != ESP_OK) first = disabled;
-    }
-    const esp_err_t deleted = i2s_del_channel(playback_channel_);
-    if (first == ESP_OK && deleted != ESP_OK) first = deleted;
-    playback_channel_ = nullptr;
-  }
+void EspI2sAudioDevice::resetPlaybackSession() {
   playback_sample_rate_hz_ = 0;
   playback_output_rate_hz_ = 0;
   playback_channels_ = 0;
-  playback_channel_enabled_ = false;
-  playback_codec_active_ = false;
   playback_source_finished_ = false;
   playback_preloaded_bytes_ = 0;
   playback_preload_target_bytes_ = 0;
   playback_last_write_us_ = 0;
   playback_drain_wait_us_ = 0;
   playback_resampler_.reset();
+}
+
+esp_err_t EspI2sAudioDevice::scrubPlaybackDmaRing() {
+  if (!playback_channel_ || playback_channel_enabled_)
+    return ESP_ERR_INVALID_STATE;
+  if (playback_dma_ring_bytes_ == 0U ||
+      playback_dma_ring_bytes_ > kMaximumPlaybackDmaRingBytes) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  // i2s_channel_preload_data() advances through every READY TX descriptor.
+  // Overwrite the exact driver-reported ring size, then require a one-byte
+  // probe to report full. This performs no allocation and does not depend on
+  // TX EOF callbacks, which might never run during an abort.
+  const std::array<uint8_t, kPlaybackScrubChunkBytes> silence{};
+  size_t scrubbed = 0U;
+  while (scrubbed < playback_dma_ring_bytes_) {
+    const size_t requested = std::min(
+        silence.size(), playback_dma_ring_bytes_ - scrubbed);
+    size_t loaded = 0U;
+    const esp_err_t status = i2s_channel_preload_data(
+        playback_channel_, silence.data(), requested, &loaded);
+    if (status != ESP_OK) return status;
+    if (loaded > requested) {
+      return ESP_ERR_INVALID_RESPONSE;
+    }
+    // A short preload means the driver reached its actual ring end before the
+    // size reported by i2s_channel_get_info(); fail closed as still dirty.
+    if (loaded != requested) return ESP_ERR_INVALID_SIZE;
+    scrubbed += loaded;
+  }
+  size_t probe_loaded = 0U;
+  const esp_err_t probe = i2s_channel_preload_data(
+      playback_channel_, silence.data(), 1U, &probe_loaded);
+  if (probe != ESP_OK) return probe;
+  if (probe_loaded != 0U) return ESP_ERR_INVALID_SIZE;
+
+  // Preload leaves the cursor at the end of the now-silent ring. The codec is
+  // already off, so one bounded enable/disable cycle resets the IDF cursor
+  // without making any stale or scrub audio audible.
+  esp_err_t status = i2s_channel_enable(playback_channel_);
+  if (status != ESP_OK) return status;
+  playback_channel_enabled_ = true;
+  status = i2s_channel_disable(playback_channel_);
+  if (status == ESP_OK) playback_channel_enabled_ = false;
+  return status;
+}
+
+esp_err_t EspI2sAudioDevice::stopPlaybackSession(bool deactivate_codec) {
+  esp_err_t first = ESP_OK;
+  bool dma_clean = playback_preloaded_bytes_ == 0U;
+  bool dma_cursor_reset = dma_clean;
+  __atomic_store_n(&playback_source_open_for_isr_, 0U, __ATOMIC_RELAXED);
+  playback_feed_monitor_.stop();
+  if (deactivate_codec && playback_codec_active_) {
+    const esp_err_t status = codec_.deactivatePlayback();
+    if (first == ESP_OK) first = status;
+    // See stopCaptureSession(): an attempted deactivate is a terminal codec
+    // transition even when the adapter reports why power-down was imperfect.
+    playback_codec_active_ = false;
+  }
+  if (playback_channel_ && playback_channel_enabled_) {
+    const esp_err_t disabled = i2s_channel_disable(playback_channel_);
+    if (first == ESP_OK && disabled != ESP_OK) first = disabled;
+    if (disabled == ESP_OK) {
+      playback_channel_enabled_ = false;
+      dma_cursor_reset = true;
+    }
+  } else if (playback_channel_ && !dma_clean) {
+    // A never-started preload has not passed through disable(), so first reset
+    // its cursor. This does not clean DMA bytes; the explicit scrub below does.
+    const esp_err_t enabled = i2s_channel_enable(playback_channel_);
+    if (enabled == ESP_OK) {
+      playback_channel_enabled_ = true;
+      const esp_err_t disabled = i2s_channel_disable(playback_channel_);
+      if (first == ESP_OK && disabled != ESP_OK) first = disabled;
+      if (disabled == ESP_OK) {
+        playback_channel_enabled_ = false;
+        dma_cursor_reset = true;
+      }
+    } else if (first == ESP_OK) {
+      first = enabled;
+    }
+  }
+  if (playback_channel_ && !playback_channel_enabled_ && !dma_clean &&
+      dma_cursor_reset) {
+    const esp_err_t scrubbed = scrubPlaybackDmaRing();
+    if (first == ESP_OK && scrubbed != ESP_OK) first = scrubbed;
+    dma_clean = scrubbed == ESP_OK;
+  }
+  if (!playback_channel_enabled_ && dma_clean) resetPlaybackSession();
   return first;
 }
 
@@ -521,25 +808,49 @@ esp_err_t EspI2sAudioDevice::endPlayback() {
   if (mode_ != Mode::Playback) return ESP_ERR_INVALID_STATE;
   if (!playback_source_finished_) return ESP_ERR_INVALID_STATE;
   if (!playbackDrained()) return ESP_ERR_INVALID_STATE;
-  const esp_err_t status = releasePlaybackChannel(true);
-  mode_ = Mode::Idle;
+  const esp_err_t status = stopPlaybackSession(true);
+  if (!playback_channel_enabled_ && playback_preloaded_bytes_ == 0U) {
+    mode_ = Mode::Idle;
+  }
   return status;
 }
 
 void EspI2sAudioDevice::abort() {
-  if (mode_ == Mode::Capture || capture_channel_) {
-    releaseCaptureChannel(true);
-    ++diagnostics_.forced_aborts;
+  const bool had_active_session =
+      mode_ != Mode::Idle || capture_channel_enabled_ ||
+      playback_channel_enabled_ || capture_codec_active_ ||
+      playback_codec_active_;
+  if (mode_ == Mode::Capture || capture_channel_enabled_ ||
+      capture_codec_active_) {
+    (void)stopCaptureSession(true);
   }
-  if (mode_ == Mode::Playback || playback_channel_) {
-    releasePlaybackChannel(true);
-    ++diagnostics_.forced_aborts;
+  if (mode_ == Mode::Playback || playback_channel_enabled_ ||
+      playback_codec_active_) {
+    (void)stopPlaybackSession(true);
   }
-  mode_ = Mode::Idle;
+  if (!capture_channel_enabled_ && !playback_channel_enabled_ &&
+      playback_preloaded_bytes_ == 0U) {
+    mode_ = Mode::Idle;
+  }
+  if (had_active_session) ++diagnostics_.forced_aborts;
+}
+
+esp_err_t EspI2sAudioDevice::shutdown() {
+  const bool had_prepared_channels = capture_channel_ || playback_channel_;
+  abort();
+  const esp_err_t status = deletePreparedChannels();
+  if (had_prepared_channels && !capture_channel_ && !playback_channel_) {
+    ++diagnostics_.shutdowns;
+  }
+  if (status != ESP_OK) ++diagnostics_.shutdown_failures;
+  return status;
 }
 
 EspI2sAudioDiagnostics EspI2sAudioDevice::diagnostics() const {
   EspI2sAudioDiagnostics value = diagnostics_;
+  value.prepared = prepared_;
+  value.capture_channel_enabled = capture_channel_enabled_;
+  value.playback_channel_enabled = playback_channel_enabled_;
   value.playback_dma_callbacks = __atomic_load_n(
       &playback_dma_callbacks_isr_, __ATOMIC_RELAXED);
   value.playback_dma_underruns = __atomic_load_n(

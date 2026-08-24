@@ -12,6 +12,7 @@
 #include "inkloop/bounded_text_pool.hpp"
 #include "inkloop/diagnostics/serial_diagnostic_events.hpp"
 #include "inkloop/esp_cross_core_audio_bridge.hpp"
+#include "inkloop/local_tool_display_correlation.hpp"
 #include "inkloop/local_tools/local_tools.hpp"
 #include "inkloop/local_prompt_player.hpp"
 #include "inkloop/myai/CanonicalJsonCodec.h"
@@ -32,6 +33,8 @@
 
 namespace inkloop {
 
+class NativeDisplayService;
+
 // EspI2sAudioDevice is the I2S ISR callback's user_context. The object itself,
 // not only its callback code, must therefore live in internal SRAM while flash
 // cache is disabled. NativeVoiceService allocates it with MALLOC_CAP_INTERNAL
@@ -50,6 +53,11 @@ struct NativeVoiceDiagnostics {
   uint32_t chat_snapshot_drops = 0;
   uint32_t reconnects = 0;
   uint32_t heartbeat_background_submissions = 0;
+  // Published by the Voice owner from EspI2sAudioDevice's complete numeric
+  // snapshot. Portal/serial readers only copy this critical-section-protected
+  // mirror; they never race the feed monitor or the I2S owner across cores.
+  bool audio_available = false;
+  EspI2sAudioDiagnostics audio{};
 };
 
 inline constexpr size_t kNativeLocalChatPageItems = 24U;
@@ -159,6 +167,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   NativeVoiceService(IBoardAdapter& board, RuntimeSupervisor& supervisor,
                      const char* storage_root,
                      storage::IAlbumStagingStore* album_store,
+                     NativeDisplayService* interactive_display,
                      diagnostics::ISerialDiagnosticEventSink*
                          serial_diagnostics = nullptr);
 
@@ -173,10 +182,12 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   // attach it before initialize() and before RuntimeSupervisor starts.
   esp_err_t attachLocalTools(local_tools::ILocalToolsAdapter& adapter);
   esp_err_t configureHandlers();
-  AdmissionResult enqueueTopButton();
+  AdmissionResult enqueueTopButton(uint64_t button_event_id = 0U);
   AdmissionResult enqueueAlbumOrdinal(size_t one_based_ordinal,
-                                       bool refresh_start);
-  AdmissionResult enqueueLocalPrompt(LocalPrompt prompt);
+                                       bool refresh_start,
+                                       uint64_t request_id = 0U);
+  AdmissionResult enqueueLocalPrompt(LocalPrompt prompt,
+                                     uint64_t request_id = 0U);
   // Portal callbacks only enqueue bounded typed work. Audio, MyAI and file
   // operations remain owned by Voice, Network and Storage respectively.
   AdmissionResult enqueueVolumePreview(uint8_t temporary_percent);
@@ -255,23 +266,34 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   WorkDisposition readLocalChatSnapshot(const WorkEnvelope& envelope);
   void clearChatSnapshotMailbox();
   void serviceVoice();
+  // Voice-owner only after task startup (initialize/shutdown may call it while
+  // RuntimeSupervisor is stopped). Copies one coherent driver/feed snapshot.
+  void publishAudioDiagnostics(bool force = false);
   void serviceAigc(bool album_mutation_allowed);
   void handoffAigcIfReady();
   void finishAigc(bool success, const char* state);
   WorkDisposition handleLocalToolCommand(const WorkEnvelope& envelope);
   bool queueLocalTool(const std::string& transcript,
                       local_tools::CommandKind command);
-  void publishLocalToolOutcome(const local_tools::ToolOutcome& outcome);
+  void publishLocalToolOutcome(const local_tools::ToolOutcome& outcome,
+                               uint64_t request_id);
+  AdmissionResult postLocalToolDisplaySelection(
+      uint64_t request_id, uint8_t zero_based_ordinal);
+  void serviceLocalToolDisplayResult(uint32_t now_ms);
+  bool localToolDisplayOwns(uint64_t request_id) const;
+  bool localToolDisplayActive() const;
   static std::string describeLocalToolOutcome(
       const local_tools::ToolOutcome& outcome);
-  WorkDisposition handleTopButton();
+  WorkDisposition handleTopButton(const WorkEnvelope& envelope);
   WorkDisposition handleLocalPrompt(const WorkEnvelope& envelope);
   WorkDisposition handleVolumePreview(const WorkEnvelope& envelope);
   WorkDisposition startCapture();
   AdmissionResult post(WorkClass work_class, ProductOpcode opcode,
-                       uint8_t flags, uint32_t deadline_ms);
+                       uint8_t flags, uint32_t deadline_ms,
+                       uint64_t request_id = 0U);
   AdmissionResult postVoiceState(myai::VoiceState state);
-  AdmissionResult postVoiceLed(VoiceLedMode mode);
+  AdmissionResult postVoiceLed(VoiceLedMode mode,
+                               uint64_t request_id = 0U);
   AdmissionResult postImageLed(ImageLedMode mode);
   AdmissionResult postLedMaximumBrightness(uint8_t percent);
   bool queueChat(ProductTextKind kind, const std::string& text);
@@ -331,6 +353,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   RuntimeSupervisor& supervisor_;
   const char* storage_root_;
   storage::IAlbumStagingStore* album_store_;
+  NativeDisplayService* interactive_display_ = nullptr;
   diagnostics::ISerialDiagnosticEventSink* serial_diagnostics_ = nullptr;
   myai::EspEndpointSecurity endpoint_security_{};
   myai::EspHttpTransport http_{endpoint_security_};
@@ -358,6 +381,7 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   local_tools::LocalToolsSession local_tools_session_{};
   EspConfirmationTokens local_confirmation_tokens_{};
   local_tools::ILocalToolsAdapter* local_tools_adapter_ = nullptr;
+  LocalToolDisplayCorrelation local_tool_display_correlation_{};
   // Portal-owner only. Never copied into WorkEnvelope, diagnostics or chat.
   std::string local_confirmation_token_;
   std::string assistant_text_;
@@ -366,6 +390,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   mutable portMUX_TYPE aigc_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE onboarding_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE local_tools_mux_ = portMUX_INITIALIZER_UNLOCKED;
+  mutable portMUX_TYPE local_tool_display_mux_ =
+      portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE settings_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE chat_snapshot_state_mux_ = portMUX_INITIALIZER_UNLOCKED;
   mutable portMUX_TYPE maintenance_mux_ = portMUX_INITIALIZER_UNLOCKED;
@@ -467,6 +493,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   uint8_t network_diagnostic_operation_ =
       static_cast<uint8_t>(NativeNetworkDiagnosticOperation::Idle);
   uint32_t network_diagnostic_started_ms_ = 0U;
+  uint32_t audio_diagnostics_last_publish_ms_ = 0U;
+  bool audio_diagnostics_published_ = false;
   uint32_t next_error_chat_ms_ = 0U;
   uint16_t last_error_chat_http_status_ = 0U;
   uint8_t last_error_chat_source_ =

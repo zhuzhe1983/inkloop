@@ -27,6 +27,9 @@ inline constexpr size_t kMaximumImagePromptBytes = 512U;
 inline constexpr size_t kMaximumNegativePromptBytes = 384U;
 inline constexpr size_t kMaximumGeneratePromptBytes = 1024U;
 inline constexpr size_t kMaximumLocalManagementPasswordBytes = 63U;
+inline constexpr uint8_t kMinimumImageGenerationSteps = 1U;
+inline constexpr uint8_t kMaximumImageGenerationSteps = 50U;
+inline constexpr uint8_t kDefaultImageGenerationSteps = 20U;
 inline constexpr size_t kMaximumPortalRenderStrategies = 4U;
 // Portal exposes the same two logical roles as the product LED owner. Boards
 // with more physical pixels need a role adapter before this contract expands.
@@ -181,6 +184,7 @@ struct PortalSettingsSnapshot {
   bool voice_assistance_enabled = true;
   std::string assistant_prompt;
   std::string image_prompt_template;
+  uint8_t image_generation_steps = kDefaultImageGenerationSteps;
   std::string negative_prompt;
   std::string asset_storage_preference = "automatic";
   std::string default_render_strategy = "official-quality";
@@ -222,6 +226,57 @@ struct PortalRuntimeTelemetry {
   bool available = false;
   bool internal_heap_sampled = false;
   bool psram_available = false;
+};
+
+// Numeric-only mirror of the Voice owner's coherent I2S/feed snapshot. It is
+// present for every SKU; `available=false` with zero counters is the stable
+// contract for boards without both microphone and speaker.
+struct PortalAudioDiagnostics {
+  bool available = false;
+  bool prepared = false;
+  bool capture_channel_enabled = false;
+  bool playback_channel_enabled = false;
+  uint32_t prepare_attempts = 0U;
+  uint32_t prepare_successes = 0U;
+  uint32_t prepare_failures = 0U;
+  uint32_t shutdowns = 0U;
+  uint32_t shutdown_failures = 0U;
+  uint32_t playback_clock_reconfigurations = 0U;
+  uint32_t playback_clock_reconfiguration_failures = 0U;
+  uint32_t shared_pin_selections = 0U;
+  uint32_t shared_pin_selection_failures = 0U;
+  uint32_t prepared_playback_rate_hz = 0U;
+  int32_t last_prepare_error = 0;
+  uint32_t capture_starts = 0U;
+  uint32_t playback_starts = 0U;
+  uint32_t capture_timeouts = 0U;
+  uint32_t playback_timeouts = 0U;
+  uint32_t capture_failures = 0U;
+  uint32_t playback_failures = 0U;
+  uint32_t playback_preload_starts = 0U;
+  uint32_t forced_aborts = 0U;
+  uint64_t captured_bytes = 0U;
+  uint64_t played_source_bytes = 0U;
+  uint64_t played_output_frames = 0U;
+  uint64_t peak_preloaded_bytes = 0U;
+  uint32_t playback_dma_callbacks = 0U;
+  uint32_t playback_dma_underruns = 0U;
+  uint32_t playback_dma_expected_drain_overflows = 0U;
+  uint32_t feed_streams = 0U;
+  uint32_t feed_submit_calls = 0U;
+  uint32_t feed_late_submits = 0U;
+  uint32_t feed_estimated_underruns = 0U;
+  uint32_t feed_queue_clamps = 0U;
+  uint32_t feed_max_submit_gap_us = 0U;
+  uint32_t feed_minimum_queue_lead_us = 0U;
+  uint32_t feed_maximum_queue_lead_us = 0U;
+  uint64_t feed_preloaded_frames = 0U;
+  uint64_t feed_submitted_frames = 0U;
+  uint64_t feed_consumed_frames = 0U;
+  uint64_t feed_estimated_underrun_frames = 0U;
+  uint64_t feed_queue_overflow_frames = 0U;
+  uint64_t feed_current_queue_frames = 0U;
+  uint64_t feed_peak_queue_frames = 0U;
 };
 
 struct PortalRenderStrategyCapability {
@@ -270,6 +325,7 @@ struct PortalStateSnapshot {
   uint32_t display_conversion_ms = 0;
   uint32_t display_panel_refresh_ms = 0;
   uint32_t display_total_ms = 0;
+  PortalAudioDiagnostics audio_diagnostics;
   MyAiPortalState myai_state = MyAiPortalState::Unconfigured;
   MyAiPortalErrorSnapshot myai_error;
   TutorialPortalSnapshot tutorial;
@@ -334,6 +390,8 @@ struct PortalSettingsPatch {
   std::string assistant_prompt;
   bool has_image_prompt_template = false;
   std::string image_prompt_template;
+  bool has_image_generation_steps = false;
+  uint8_t image_generation_steps = kDefaultImageGenerationSteps;
   bool has_negative_prompt = false;
   std::string negative_prompt;
   bool has_asset_storage_preference = false;

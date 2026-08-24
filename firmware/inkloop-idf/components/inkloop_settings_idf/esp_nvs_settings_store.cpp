@@ -20,6 +20,12 @@ constexpr char kSettingsHeadKey[] = "head";
 constexpr char kSettingsSlot0Key[] = "slot0";
 constexpr char kSettingsSlot1Key[] = "slot1";
 
+// Retained beta27 opens this namespace but reads/writes only the five main keys
+// above. It neither enumerates nor erases these unknown extension keys.
+constexpr char kSettingsExtensionHeadKey[] = "ext-head";
+constexpr char kSettingsExtensionSlot0Key[] = "ext0";
+constexpr char kSettingsExtensionSlot1Key[] = "ext1";
+
 constexpr char kLegacyNamespace[] = "ink-portal";
 constexpr char kLegacyMarkerKey[] = "initialized";
 constexpr char kLegacyHeadKey[] = "head";
@@ -48,6 +54,27 @@ SettingsStatus readBlob(nvs_handle_t handle, const char* key, bool& present,
     std::fill(output.begin(), output.end(), 0U);
     output.clear();
     return storage("settings slot read failed");
+  }
+  present = true;
+  return SettingsStatus::success();
+}
+
+SettingsStatus readExtensionBlob(
+    nvs_handle_t handle, const char* key, bool& present,
+    std::vector<std::uint8_t>& output) {
+  present = false;
+  output.clear();
+  std::size_t length = 0U;
+  esp_err_t result = nvs_get_blob(handle, key, nullptr, &length);
+  if (result == ESP_ERR_NVS_NOT_FOUND) return SettingsStatus::success();
+  if (result != ESP_OK || length != kSettingsExtensionRecordBytes)
+    return storage("settings extension slot length invalid");
+  output.resize(length);
+  result = nvs_get_blob(handle, key, output.data(), &length);
+  if (result != ESP_OK || length != output.size()) {
+    std::fill(output.begin(), output.end(), 0U);
+    output.clear();
+    return storage("settings extension slot read failed");
   }
   present = true;
   return SettingsStatus::success();
@@ -158,6 +185,77 @@ SettingsStatus EspNvsSettingsJournalStore::writeHeadAndMarkerAndCommit(
   nvs_close(handle);
   return result == ESP_OK ? SettingsStatus::success()
                           : storage("settings head write failed");
+}
+
+SettingsStatus EspNvsSettingsExtensionJournalStore::inspect(
+    SettingsExtensionJournalState& state) {
+  state.clear();
+  nvs_handle_t handle = 0;
+  const esp_err_t opened =
+      nvs_open(kSettingsNamespace, NVS_READONLY, &handle);
+  if (opened == ESP_ERR_NVS_NOT_FOUND) {
+    state.namespace_available = true;
+    return SettingsStatus::success();
+  }
+  if (opened != ESP_OK)
+    return storage("settings extension NVS open failed");
+  state.namespace_available = true;
+
+  std::uint32_t head = 0U;
+  esp_err_t result = nvs_get_u32(handle, kSettingsExtensionHeadKey, &head);
+  state.head_present = result == ESP_OK;
+  state.head_sequence = state.head_present ? head : 0U;
+  if (result != ESP_OK && result != ESP_ERR_NVS_NOT_FOUND) {
+    nvs_close(handle);
+    state.clear();
+    return storage("settings extension head read failed");
+  }
+
+  SettingsStatus status = readExtensionBlob(
+      handle, kSettingsExtensionSlot0Key,
+      state.slot_present[0], state.slot[0]);
+  if (status.ok()) {
+    status = readExtensionBlob(
+        handle, kSettingsExtensionSlot1Key,
+        state.slot_present[1], state.slot[1]);
+  }
+  nvs_close(handle);
+  if (!status.ok()) state.clear();
+  return status;
+}
+
+SettingsStatus EspNvsSettingsExtensionJournalStore::writeSlot(
+    std::uint8_t slot, const std::vector<std::uint8_t>& encoded) {
+  if (slot > 1U || encoded.size() != kSettingsExtensionRecordBytes)
+    return {SettingsError::InvalidArgument,
+            "settings extension slot invalid"};
+  nvs_handle_t handle = 0;
+  if (nvs_open(kSettingsNamespace, NVS_READWRITE, &handle) != ESP_OK)
+    return storage("settings extension NVS open failed");
+  const char* key = slot == 0U ? kSettingsExtensionSlot0Key
+                               : kSettingsExtensionSlot1Key;
+  esp_err_t result =
+      nvs_set_blob(handle, key, encoded.data(), encoded.size());
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  return result == ESP_OK ? SettingsStatus::success()
+                          : storage("settings extension slot write failed");
+}
+
+SettingsStatus EspNvsSettingsExtensionJournalStore::writeHead(
+    std::uint32_t sequence) {
+  if (sequence == 0U)
+    return {SettingsError::InvalidArgument,
+            "settings extension head invalid"};
+  nvs_handle_t handle = 0;
+  if (nvs_open(kSettingsNamespace, NVS_READWRITE, &handle) != ESP_OK)
+    return storage("settings extension NVS open failed");
+  esp_err_t result = nvs_set_u32(
+      handle, kSettingsExtensionHeadKey, sequence);
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  return result == ESP_OK ? SettingsStatus::success()
+                          : storage("settings extension head write failed");
 }
 
 SettingsStatus EspNvsReadOnlyLegacyPortalSource::inspect(

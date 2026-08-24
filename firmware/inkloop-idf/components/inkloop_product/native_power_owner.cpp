@@ -281,11 +281,15 @@ bool NativePowerOwner::quiesceBoardHardware() {
 }
 
 bool NativePowerOwner::sleepAdmissionStillSafe() {
+  // Check the ISR-only raw-edge mailbox last. Input ticks are deliberately
+  // frozen with admission, so a quick press/release during hardware quiescence
+  // remains latched even when the physical GPIO is already released.
   const bool safe = work_admission_frozen_ &&
                     supervisor_.sleepAdmissionStillSafe() &&
                     deep_sleep_.wakeButtonsReleased() &&
                     settleTasksAndSync() && quiesceDisplay() &&
-                    quiesceVoiceAndAudio();
+                    quiesceVoiceAndAudio() &&
+                    !buttons_.hasPendingRawEdge();
   if (!safe) {
     portENTER_CRITICAL(&mux_);
     activity_.noteMeaningfulActivity(capture_now_ms_);

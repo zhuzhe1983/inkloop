@@ -1061,7 +1061,7 @@ const en: Record<string, string> = {
   "保留 BluetoothDevice，定时到点后连接 GATT、写入、断开。支持 getDevices() 时，下次访问也可找回已授权设备。": "Keeps the BluetoothDevice, then connects GATT, writes, and disconnects on schedule. With getDevices(), later visits can recover authorized devices.",
   "ESP32 模式": "ESP32 mode",
   "设备主动同步": "Device-initiated sync",
-  "计划保存在设备端；开机联网后每 15 秒同步变更，按本机时钟执行并拉取最新画面。": "The schedule lives on the device. After it boots and connects, it syncs changes every 15 seconds, runs on its own clock, and pulls the latest screen.",
+  "计划保存在设备端；开机联网后每 30 秒同步变更，按本机时钟执行并拉取最新画面。": "The schedule lives on the device. After it boots and connects, it syncs changes every 30 seconds, runs on its own clock, and pulls the latest screen.",
   "无法保证": "What it cannot guarantee",
   "蓝牙仍依赖浏览器": "Bluetooth still depends on the browser",
   "TodooCard 的定时任务仍受后台节流、系统休眠与设备唤醒影响；已有操作习惯保持不变。": "TodooCard schedules are still affected by background throttling, sleep, and device wake. Existing habits stay the same.",

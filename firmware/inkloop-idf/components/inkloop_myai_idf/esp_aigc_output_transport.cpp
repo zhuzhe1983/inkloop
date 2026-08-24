@@ -10,6 +10,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "inkloop/myai/AigcStreamDecoder.h"
+#include "inkloop/myai/CanonicalJsonCodec.h"
 #include "inkloop/myai/EndpointPolicy.h"
 #include "inkloop/myai/esp_network_operation_gate.hpp"
 
@@ -27,6 +28,7 @@ constexpr size_t kMaximumHeaderNameBytes = 64U;
 constexpr size_t kMaximumHeaderValueBytes = 2048U;
 constexpr size_t kMaximumAggregateHeaderBytes = 16U * 1024U;
 constexpr size_t kMaximumMetadataOverheadBytes = 8192U;
+constexpr size_t kMaximumErrorBodyBytes = 4096U;
 constexpr uint32_t kMaximumTimeoutMs = 120000U;
 constexpr size_t kReadBufferBytes = 2048U;
 
@@ -114,6 +116,64 @@ class ClientGuard {
 Status aborting(IImageSink& sink, const Status& status) {
   sink.abort();
   return status;
+}
+
+void scrubString(std::string& value) {
+  std::fill(value.begin(), value.end(), '\0');
+  value.clear();
+}
+
+bool readBoundedErrorBody(esp_http_client_handle_t client,
+                          int64_t content_length, std::string& body) {
+  body.clear();
+  if (!client || content_length < -1 ||
+      (content_length >= 0 &&
+       static_cast<uint64_t>(content_length) > kMaximumErrorBodyBytes)) {
+    return false;
+  }
+  std::array<char, 256> chunk{};
+  while (body.size() <= kMaximumErrorBodyBytes) {
+    const size_t remaining = kMaximumErrorBodyBytes - body.size();
+    if (remaining == 0U) {
+      // Exactly-full bodies are accepted only when the SDK confirms there is
+      // no unread tail.  This keeps a truncated secret-bearing response from
+      // being surfaced as a diagnostic.
+      break;
+    }
+    const int count = esp_http_client_read(
+        client, chunk.data(), static_cast<int>(std::min(remaining, chunk.size())));
+    if (count < 0 || static_cast<size_t>(count) > remaining) {
+      scrubString(body);
+      std::fill(chunk.begin(), chunk.end(), '\0');
+      return false;
+    }
+    if (count == 0) break;
+    body.append(chunk.data(), static_cast<size_t>(count));
+  }
+  if (!esp_http_client_is_complete_data_received(client)) {
+    scrubString(body);
+    std::fill(chunk.begin(), chunk.end(), '\0');
+    return false;
+  }
+  if (content_length >= 0 &&
+      body.size() != static_cast<size_t>(content_length)) {
+    scrubString(body);
+    std::fill(chunk.begin(), chunk.end(), '\0');
+    return false;
+  }
+  std::fill(chunk.begin(), chunk.end(), '\0');
+  return true;
+}
+
+Status aigcOutputHttpFailure(int http_status, const std::string& body) {
+  CanonicalJsonCodec codec;
+  const std::string error = codec.parseErrorCode(body);
+  const std::string diagnostic = codec.parseErrorDiagnostic(body);
+  std::string failure_detail = "MyAI AIGC output HTTP rejected";
+  if (!error.empty()) failure_detail += "; error=" + error;
+  if (!diagnostic.empty()) failure_detail += "; message=" + diagnostic;
+  return Status(detail::aigcOutputHttpErrorCode(http_status), http_status,
+                failure_detail);
 }
 
 }  // namespace
@@ -218,9 +278,17 @@ Status EspAigcOutputTransport::postAndDecodeBase64(
 
   const int64_t content_length = esp_http_client_fetch_headers(client.get());
   const int http_status = esp_http_client_get_status_code(client.get());
-  if (content_length < -1 || http_status < 200 || http_status >= 300) {
+  if (content_length < -1) {
     return aborting(sink, failure(ErrorCode::Protocol,
-                                  "AIGC output HTTP rejected", http_status));
+                                  "invalid AIGC output HTTP framing",
+                                  http_status));
+  }
+  if (http_status < 200 || http_status >= 300) {
+    std::string error_body;
+    (void)readBoundedErrorBody(client.get(), content_length, error_body);
+    const Status rejected = aigcOutputHttpFailure(http_status, error_body);
+    scrubString(error_body);
+    return aborting(sink, rejected);
   }
   if (maxEncodedBytes >
       std::numeric_limits<size_t>::max() - kMaximumMetadataOverheadBytes) {

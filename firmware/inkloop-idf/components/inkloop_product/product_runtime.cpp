@@ -68,12 +68,13 @@ EspProductRuntime::EspProductRuntime(IBoardAdapter& board,
           storage::AssetStoragePreference::SdCard)),
       selected_album_is_sd_(selected_album_store_ &&
                             selected_album_store_ == sd_album_store_),
-      buttons_(board, supervisor_), leds_(board, supervisor_),
+      buttons_(board, supervisor_, &button_latency_),
+      leds_(board, supervisor_, &button_latency_),
       display_(board, supervisor_, selected_album_store_,
                &serial_diagnostics_),
       voice_(board, supervisor_, storage.selectedAssetRoot(
                  asset_preference),
-             selected_album_store_, &serial_diagnostics_),
+             selected_album_store_, &display_, &serial_diagnostics_),
       inkloop_(supervisor_, board.descriptor(), storage.taskRoot(),
                selected_album_store_,
                display_),
@@ -235,6 +236,10 @@ uint32_t EspProductRuntime::nowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
 }
 
+uint32_t EspProductRuntime::nowUs() {
+  return static_cast<uint32_t>(esp_timer_get_time());
+}
+
 esp_err_t EspProductRuntime::begin() {
   if (started_ || shutdown_incomplete_ || ota_acquisition_quiesced_)
     return ESP_ERR_INVALID_STATE;
@@ -247,15 +252,23 @@ esp_err_t EspProductRuntime::begin() {
       status = begin_fault_injector_(stage, begin_fault_context_);
     }
   };
-  acquire(ProductRuntimeBeginStage::SupervisorInitialize,
-          [&] { return supervisor_.initialize(); });
+  acquire(ProductRuntimeBeginStage::SupervisorInitialize, [&] {
+    const esp_err_t initialized = supervisor_.initialize();
+    return initialized == ESP_OK
+        ? supervisor_.registerButtonControlAdmissionObserver(
+              &ButtonLatencyTelemetry::controlAdmissionCallback,
+              &button_latency_)
+        : initialized;
+  });
   acquire(ProductRuntimeBeginStage::ButtonsConfigure,
           [&] { return buttons_.configure(); });
   acquire(ProductRuntimeBeginStage::LedsConfigure,
           [&] { return leds_.configure(); });
   acquire(ProductRuntimeBeginStage::SerialDiagnosticsConfigure, [&] {
-    return serial_diagnostics_.configure(
+    const esp_err_t configured = serial_diagnostics_.configure(
         &EspProductRuntime::serialDiagnosticCommand, this);
+    if (configured == ESP_OK) button_latency_.attach(serial_diagnostics_);
+    return configured;
   });
   acquire(ProductRuntimeBeginStage::DisplayConfigure,
           [&] { return display_.configure(); });
@@ -334,6 +347,7 @@ esp_err_t EspProductRuntime::shutdownForOtaAcquisition() {
   };
   record(portal_.shutdown());
   voice_.shutdown();
+  button_latency_.detach();
   serial_diagnostics_.shutdown();
   power_.shutdown();
   inkloop_.shutdown();
@@ -379,6 +393,7 @@ esp_err_t EspProductRuntime::shutdownForRecovery() {
 
   record(portal_.shutdown());
   voice_.shutdown();
+  button_latency_.detach();
   serial_diagnostics_.shutdown();
   record(wifi_.shutdown());
   power_.shutdown();
@@ -499,6 +514,44 @@ void EspProductRuntime::handleSerialDiagnosticCommand(
       event.kind = diagnostics::SerialDiagnosticEventKind::SerialState;
       event.first = serial.event_queue_drops;
       event.second = serial.write_failures;
+      event.third = buttons_.rawEdgeOverflowCount();
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      const NativeVoiceDiagnostics voice_diagnostics = voice_.diagnostics();
+      const EspI2sAudioDiagnostics& audio = voice_diagnostics.audio;
+      const uint8_t audio_flags = voice_diagnostics.audio_available
+          ? static_cast<uint8_t>(diagnostics::AudioDiagnosticsAvailable) : 0U;
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::AudioDma;
+      event.flags = audio_flags;
+      event.first = audio.playback_dma_callbacks;
+      event.second = audio.playback_dma_underruns;
+      event.third = audio.playback_dma_expected_drain_overflows;
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::AudioFeed;
+      event.flags = audio_flags;
+      event.first = audio.playback_feed.streams;
+      event.second = audio.playback_feed.submit_calls;
+      event.third = audio.playback_feed.late_submit_count;
+      event.fourth = audio.playback_feed.estimated_underrun_count;
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::AudioTiming;
+      event.flags = audio_flags;
+      event.first = audio.playback_feed.max_submit_gap_us;
+      event.second = audio.playback_feed.minimum_queue_lead_us;
+      event.third = audio.playback_feed.maximum_queue_lead_us;
+      event.fourth =
+          static_cast<uint32_t>(audio.playback_feed.current_queue_frames);
+      (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
+      event = {};
+      event.kind = diagnostics::SerialDiagnosticEventKind::AudioQueue;
+      event.flags = audio_flags;
+      event.first =
+          static_cast<uint32_t>(audio.playback_feed.peak_queue_frames);
+      event.second = audio.playback_feed.queue_clamp_count;
+      event.third = audio.capture_timeouts;
+      event.fourth = audio.playback_timeouts;
       (void)serial_diagnostics_.postSerialDiagnosticEvent(event);
       return;
     }
@@ -559,6 +612,17 @@ WorkDisposition EspProductRuntime::handleControl(
       envelope.work_class == WorkClass::Display) {
     portal_.requestAlbumRefresh();
   }
+  // A physical top-button Voice command retains the marked GPIO event ID.
+  // Failed execution cannot reach LED hardware, so close it explicitly;
+  // successful execution remains active until EspStatusLedOwner performs the
+  // first physical RGB write with that same ID.
+  if (envelope.kind == EnvelopeKind::Result &&
+      envelope.work_class == WorkClass::Voice &&
+      isButtonLatencyEventId(envelope.request_id) &&
+      envelope.disposition != WorkDisposition::Complete) {
+    button_latency_.recordTerminal(
+        envelope.request_id, ButtonLatencyOutcome::NotReady, nowUs());
+  }
   if (voice_.handleControlResult(envelope))
     return WorkDisposition::Complete;
   if (inkloop_.handleControlResult(envelope))
@@ -572,17 +636,27 @@ WorkDisposition EspProductRuntime::handleControl(
   if (envelope.kind != EnvelopeKind::Result ||
       envelope.work_class != WorkClass::Button)
     return WorkDisposition::Failed;
-  if (envelope.disposition == WorkDisposition::Cancelled)
+  if (envelope.disposition == WorkDisposition::Cancelled) {
+    button_latency_.recordTerminal(
+        envelope.request_id, ButtonLatencyOutcome::Debounced, nowUs());
     return WorkDisposition::Complete;
-  if (envelope.disposition != WorkDisposition::Complete)
+  }
+  if (envelope.disposition != WorkDisposition::Complete) {
+    button_latency_.recordTerminal(
+        envelope.request_id, ButtonLatencyOutcome::NotReady, nowUs());
     return WorkDisposition::Failed;
+  }
 
   power_.noteButtonActivity(nowMs());
 
   if (envelope.opcode == productOpcode(ProductOpcode::RawButtonVoice)) {
-    return voice_.enqueueTopButton() == AdmissionResult::Admitted
-               ? WorkDisposition::Complete
-               : WorkDisposition::Busy;
+    const AdmissionResult admitted =
+        voice_.enqueueTopButton(envelope.request_id);
+    if (admitted == AdmissionResult::Admitted)
+      return WorkDisposition::Complete;
+    button_latency_.recordTerminal(
+        envelope.request_id, ButtonLatencyOutcome::NotReady, nowUs());
+    return WorkDisposition::Busy;
   }
   if (envelope.opcode == productOpcode(ProductOpcode::RawButtonPrevious) ||
       envelope.opcode == productOpcode(ProductOpcode::RawButtonNext)) {
@@ -592,6 +666,11 @@ WorkDisposition EspProductRuntime::handleControl(
                                                                        : -1,
         ordinal);
     if (selected == AlbumStepResult::Selected) {
+      // Prev/next feedback is the successful, in-memory current-album
+      // selection. Speech and the one-second display debounce intentionally
+      // happen later and are not included in the button p99 milestone.
+      button_latency_.recordFeedback(
+          envelope.request_id, ButtonLatencyOutcome::Navigation, nowUs());
       const AdmissionResult announced =
           voice_.enqueueAlbumOrdinal(ordinal + 1U, false);
       return announced == AdmissionResult::Admitted ||
@@ -601,9 +680,13 @@ WorkDisposition EspProductRuntime::handleControl(
     }
     if (selected == AlbumStepResult::Empty) {
       voice_.enqueueLocalPrompt(LocalPrompt::AlbumEmpty);
+      button_latency_.recordTerminal(
+          envelope.request_id, ButtonLatencyOutcome::NotReady, nowUs());
       return WorkDisposition::Complete;
     }
     voice_.enqueueLocalPrompt(LocalPrompt::PleaseWait);
+    button_latency_.recordTerminal(
+        envelope.request_id, ButtonLatencyOutcome::NotReady, nowUs());
     return selected == AlbumStepResult::Busy ? WorkDisposition::Busy
                                               : WorkDisposition::Failed;
   }
@@ -667,6 +750,7 @@ void EspProductRuntime::serviceStableDisplayPages(
 }
 
 void EspProductRuntime::servicePortal() {
+  button_latency_.service(nowUs());
   serial_diagnostics_.service();
   const uint32_t now = nowMs();
   serviceStorageMaintenanceFinalization(now);

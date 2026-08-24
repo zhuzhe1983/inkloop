@@ -65,7 +65,8 @@ int main() {
   DeviceSettings generic = makeGenericDeviceDefaults();
   assert(validDeviceSettings(generic));
   assert(!generic.assistant_prompt.empty() &&
-         !generic.aigc_prompt_template.empty());
+         !generic.aigc_prompt_template.empty() &&
+         generic.aigc_steps == kDefaultAigcSteps);
 
   DeviceSettings paper;
   assert(makePaperColorDefaults(
@@ -106,6 +107,15 @@ int main() {
   assert(validDeviceSettings(bounded));
   bounded.local_management_password_override.assign(64, 'p');
   assert(!validDeviceSettings(bounded));
+  bounded = generic;
+  bounded.aigc_steps = kMinimumAigcSteps;
+  assert(validDeviceSettings(bounded));
+  bounded.aigc_steps = kMaximumAigcSteps;
+  assert(validDeviceSettings(bounded));
+  bounded.aigc_steps = 0;
+  assert(!validDeviceSettings(bounded));
+  bounded.aigc_steps = kMaximumAigcSteps + 1U;
+  assert(!validDeviceSettings(bounded));
 
   assert(validUtf8Text("中文\ntext", 64, false));
   assert(!validUtf8Text(std::string("\xc0\x80", 2), 64, false));
@@ -137,8 +147,9 @@ int main() {
   encoded_input.values = paper;
   encoded_input.values.volume_percent = 0;
   encoded_input.values.led_maximum_brightness_percent = 100;
-  encoded_input.values.led_roles_swapped = true;
+  encoded_input.values.led_roles_swapped = false;
   encoded_input.values.voice_assistance_enabled = false;
+  encoded_input.values.aigc_steps = kDefaultAigcSteps;
   encoded_input.values.asset_storage_preference =
       AssetStoragePreference::Removable;
   encoded_input.values.default_render_strategy = "solid-clean";
@@ -152,12 +163,14 @@ int main() {
   assert(decoded.decoded_record_schema == kSettingsRecordSchema);
   assert(decoded.values == encoded_input.values);
 
-  // Schema 2 journals predate role swapping. They remain readable and get
-  // the old physical order without interpreting an unknown flag.
-  std::vector<std::uint8_t> schema_two = encoded;
-  schema_two[4] = 2;
-  schema_two[5] = 0;
-  schema_two[6] &= static_cast<std::uint8_t>(~2U);
+  // Schema 3 was created only by never-released development builds. It remains
+  // readable, but every new main write must return to beta27-compatible schema
+  // 2. The reserved byte remains zero in every readable schema.
+  std::vector<std::uint8_t> schema_three = encoded;
+  schema_three[4] = 3;
+  schema_three[5] = 0;
+  schema_three[6] |= 2U;
+  schema_three[15] = 0;
   auto test_crc32 = [](const std::uint8_t* bytes, std::size_t length) {
     std::uint32_t value = 0xFFFFFFFFU;
     for (std::size_t at = 0; at < length; ++at) {
@@ -170,15 +183,66 @@ int main() {
     }
     return value ^ 0xFFFFFFFFU;
   };
-  const std::uint32_t schema_two_crc =
-      test_crc32(schema_two.data(), schema_two.size() - 4U);
-  for (std::size_t byte = 0; byte < 4U; ++byte) {
-    schema_two[schema_two.size() - 4U + byte] =
-        static_cast<std::uint8_t>(schema_two_crc >> (byte * 8U));
-  }
+  const auto rewrite_crc = [&test_crc32](std::vector<std::uint8_t>& bytes) {
+    const std::uint32_t checksum =
+        test_crc32(bytes.data(), bytes.size() - 4U);
+    for (std::size_t byte = 0; byte < 4U; ++byte) {
+      bytes[bytes.size() - 4U + byte] =
+          static_cast<std::uint8_t>(checksum >> (byte * 8U));
+    }
+  };
+  rewrite_crc(schema_three);
+  assert(decodeSettingsRecord(schema_three, decoded).ok());
+  assert(decoded.decoded_record_schema == 3);
+  assert(decoded.values.led_roles_swapped);
+  assert(decoded.values.aigc_steps == kDefaultAigcSteps);
+
+  Journal schema_upgrade;
+  schema_upgrade.state.marker_present = true;
+  schema_upgrade.state.marker_valid = true;
+  schema_upgrade.state.head_present = true;
+  schema_upgrade.state.head_generation = 77U;
+  schema_upgrade.state.slot_present[1] = true;
+  schema_upgrade.state.slot[1] = schema_three;
+  SettingsStoreCore schema_upgrade_store(schema_upgrade, generic);
+  SettingsSnapshot upgraded;
+  assert(schema_upgrade_store.load(upgraded).ok() &&
+         upgraded.decoded_record_schema == 3U &&
+         upgraded.values.led_roles_swapped &&
+         upgraded.values.aigc_steps == kDefaultAigcSteps);
+  DeviceSettings upgraded_values = upgraded.values;
+  upgraded_values.led_roles_swapped = false;
+  assert(schema_upgrade_store.save(upgraded_values, 77U, upgraded).ok());
+  assert(upgraded.generation == 78U &&
+         upgraded.decoded_record_schema == kSettingsRecordSchema &&
+         !upgraded.values.led_roles_swapped &&
+         upgraded.values.aigc_steps == kDefaultAigcSteps &&
+         schema_upgrade.state.slot_present[0]);
+
+  // Schema 2 journals also predate role swapping. They remain readable and
+  // get both old defaults without interpreting unknown fields.
+  std::vector<std::uint8_t> schema_two = schema_three;
+  schema_two[4] = 2;
+  schema_two[5] = 0;
+  schema_two[6] &= static_cast<std::uint8_t>(~2U);
+  rewrite_crc(schema_two);
   assert(decodeSettingsRecord(schema_two, decoded).ok());
   assert(decoded.decoded_record_schema == 2);
   assert(!decoded.values.led_roles_swapped);
+  assert(decoded.values.aigc_steps == kDefaultAigcSteps);
+
+  std::vector<std::uint8_t> invalid_reserved = encoded;
+  invalid_reserved[15] = 1U;
+  rewrite_crc(invalid_reserved);
+  assert(!decodeSettingsRecord(invalid_reserved, decoded).ok());
+  invalid_reserved[15] = kMaximumAigcSteps + 1U;
+  rewrite_crc(invalid_reserved);
+  assert(!decodeSettingsRecord(invalid_reserved, decoded).ok());
+
+  std::vector<std::uint8_t> schema_four = encoded;
+  schema_four[4] = 4U;
+  rewrite_crc(schema_four);
+  assert(!decodeSettingsRecord(schema_four, decoded).ok());
 
   // Schema 1 had four strings and no local-password length/payload. Preserve
   // the observed wire schema so the installed-upgrade matcher can safely
@@ -202,6 +266,7 @@ int main() {
   assert(decoded.decoded_record_schema == 1);
   assert(decoded.values.local_management_password_override.empty());
   assert(!decoded.values.led_roles_swapped);
+  assert(decoded.values.aigc_steps == kDefaultAigcSteps);
 
   // Every single-bit mutation is caught by header/value validation or CRC32.
   for (std::size_t at = 0; at < encoded.size(); ++at) {
@@ -230,41 +295,58 @@ int main() {
          snapshot.values == first);
   assert(journal.state.head_generation == 1 &&
          journal.state.slot_present[1]);
-  assert(store.load(snapshot).ok() && snapshot.values == first);
+  assert(store.load(snapshot).ok() && snapshot.values == first &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
   assert(store.save(first, 0, snapshot).code == SettingsError::Conflict);
 
   DeviceSettings second = first;
   second.volume_percent = 100;
   second.voice_assistance_enabled = false;
   assert(store.save(second, 1, snapshot).ok());
-  assert(snapshot.generation == 2 && journal.state.slot_present[0]);
+  assert(snapshot.generation == 2 && journal.state.slot_present[0] &&
+         snapshot.values == second &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
+
+  DeviceSettings extension_must_use_sidecar = second;
+  extension_must_use_sidecar.led_roles_swapped = true;
+  assert(store.save(extension_must_use_sidecar, 2, snapshot).code ==
+         SettingsError::InvalidArgument);
+  extension_must_use_sidecar = second;
+  extension_must_use_sidecar.aigc_steps = 21U;
+  assert(store.save(extension_must_use_sidecar, 2, snapshot).code ==
+         SettingsError::InvalidArgument);
 
   // Slot failure before write does not alter the committed generation.
   journal.fail_slot_before_write = true;
   assert(store.save(first, 2, snapshot).code == SettingsError::Storage);
   journal.fail_slot_before_write = false;
   assert(store.load(snapshot).ok() && snapshot.generation == 2 &&
-         snapshot.values == second);
+         snapshot.values == second &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
 
   // A slot written with an error is an orphan and is never promoted.
   journal.fail_slot_after_write = true;
   assert(store.save(first, 2, snapshot).code == SettingsError::Storage);
   journal.fail_slot_after_write = false;
   assert(store.load(snapshot).ok() && snapshot.generation == 2 &&
-         snapshot.values == second);
+         snapshot.values == second &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
 
   // Head failure preserves generation 2; retry can replace the orphan slot.
   journal.fail_head_before_write = true;
   assert(store.save(first, 2, snapshot).code == SettingsError::Storage);
   journal.fail_head_before_write = false;
-  assert(store.load(snapshot).ok() && snapshot.generation == 2);
+  assert(store.load(snapshot).ok() && snapshot.generation == 2 &&
+         snapshot.values == second &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
 
   // An adapter can report an uncertain commit even if NVS made it durable.
   // Post-write authoritative inspection converts that into success.
   journal.fail_head_after_write = true;
   assert(store.save(first, 2, snapshot).ok());
   journal.fail_head_after_write = false;
-  assert(snapshot.generation == 3 && snapshot.values == first);
+  assert(snapshot.generation == 3 && snapshot.values == first &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
 
   // A first-save orphan has no committed head and loads defaults, never the
   // orphan. A retry overwrites it and publishes only after head commit.
@@ -274,9 +356,12 @@ int main() {
   assert(first_boot_store.save(first, 0, snapshot).code ==
          SettingsError::Storage);
   assert(first_boot_store.load(snapshot).ok() && snapshot.generation == 0 &&
-         snapshot.values == generic);
+         snapshot.values == generic &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
   first_boot.fail_slot_after_write = false;
   assert(first_boot_store.save(first, 0, snapshot).ok());
+  assert(snapshot.generation == 1 && snapshot.values == first &&
+         snapshot.values.aigc_steps == kDefaultAigcSteps);
 
   // Corrupt committed state fails closed. An unselected orphan may be corrupt
   // without taking down a valid committed head.

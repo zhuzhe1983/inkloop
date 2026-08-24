@@ -50,6 +50,34 @@ int main() {
   assert(!short_prompt.submit(441, 1010000));
   assert(short_prompt.diagnostics().estimated_underrun_count == 0);
 
+  PlaybackFeedMonitor grace_without_continuation;
+  assert(grace_without_continuation.begin(44100, 4096));
+  assert(grace_without_continuation.preload(2205)); // 50 ms segment
+  assert(grace_without_continuation.start(1000000));
+  assert(grace_without_continuation.pauseSource(1050000));
+  assert(!grace_without_continuation.sourceOpen());
+  // The 150 ms resampler continuation window is an intentional drain. A
+  // final held interval can still enter DMA without reopening starvation.
+  assert(grace_without_continuation.submitTerminal(1, 1200000));
+  grace_without_continuation.finishSource(1200000);
+  assert(grace_without_continuation.diagnostics().estimated_underrun_count ==
+         0);
+  assert(grace_without_continuation.diagnostics().late_submit_count == 0);
+
+  PlaybackFeedMonitor grace_with_continuation;
+  assert(grace_with_continuation.begin(44100, 4096));
+  assert(grace_with_continuation.preload(2205));
+  assert(grace_with_continuation.start(1000000));
+  assert(grace_with_continuation.pauseSource(1050000));
+  assert(!grace_with_continuation.submit(441, 1100000));
+  assert(grace_with_continuation.resumeSource(1150000));
+  assert(grace_with_continuation.submit(441, 1150000));
+  assert(grace_with_continuation.pauseSource(1160000));
+  assert(grace_with_continuation.submitTerminal(1, 1310000));
+  const auto continued = grace_with_continuation.diagnostics();
+  assert(continued.estimated_underrun_count == 0);
+  assert(continued.late_submit_count == 0);
+
   PlaybackFeedMonitor delayed;
   assert(delayed.begin(44100, 4096));
   assert(delayed.preload(2646));

@@ -17,6 +17,9 @@ inline constexpr std::size_t kMaximumNegativePromptBytes = 384U;
 inline constexpr std::size_t kMaximumRenderStrategyBytes = 64U;
 inline constexpr std::size_t kMaximumLocalManagementPasswordBytes = 63U;
 inline constexpr std::size_t kMaximumSettingsRecordBytes = 3072U;
+inline constexpr std::uint8_t kMinimumAigcSteps = 1U;
+inline constexpr std::uint8_t kMaximumAigcSteps = 50U;
+inline constexpr std::uint8_t kDefaultAigcSteps = 20U;
 
 enum class SettingsError : std::uint8_t {
   None = 0,
@@ -56,6 +59,10 @@ struct DeviceSettings {
   bool voice_assistance_enabled = true;
   std::string assistant_prompt;
   std::string aigc_prompt_template;
+  // Number of diffusion/inference steps sent to MyAI image generation. Image
+  // dimensions stay SKU-owned and therefore are deliberately not persisted
+  // here.
+  std::uint8_t aigc_steps = kDefaultAigcSteps;
   std::string negative_prompt;
   AssetStoragePreference asset_storage_preference =
       AssetStoragePreference::Automatic;

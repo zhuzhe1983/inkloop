@@ -151,6 +151,7 @@ int main() {
   assert(!imported.values.voice_assistance_enabled);
   assert(imported.values.assistant_prompt == "你好 Inkloop");
   assert(imported.values.aigc_prompt_template == "鲜艳 {prompt}");
+  assert(imported.values.aigc_steps == 20);
   assert(imported.values.negative_prompt == "水印");
   assert(imported.values.asset_storage_preference ==
          AssetStoragePreference::Removable);
@@ -159,6 +160,53 @@ int main() {
   assert(imported.values.local_management_password_override ==
          "not-imported");
   assert(imported.source_fingerprint == testChecksum(valid_payload));
+
+  // Arduino persisted image inference steps independently of its SKU-owned
+  // image dimensions. Preserve a valid explicit value, reject corrupt bounds
+  // and duplicates, and use the historical default 20 when the optional key
+  // is absent (rather than inheriting a caller-specific default).
+  std::string thirty_seven_steps = valid_payload;
+  thirty_seven_steps.replace(thirty_seven_steps.find("\"steps\":20"),
+                             std::string("\"steps\":20").size(),
+                             "\"steps\":37");
+  Source explicit_steps = populated(envelope(thirty_seven_steps));
+  assert(inspectLegacyPortalSettings(
+      explicit_steps, verifier, defaults, imported).ok());
+  assert(imported.values.aigc_steps == 37);
+  for (const unsigned int boundary_steps : {1U, 50U}) {
+    std::string boundary_payload = valid_payload;
+    boundary_payload.replace(boundary_payload.find("\"steps\":20"),
+                             std::string("\"steps\":20").size(),
+                             std::string("\"steps\":") +
+                                 std::to_string(boundary_steps));
+    Source boundary = populated(envelope(boundary_payload));
+    assert(inspectLegacyPortalSettings(
+        boundary, verifier, defaults, imported).ok());
+    assert(imported.values.aigc_steps == boundary_steps);
+  }
+  DeviceSettings nonstandard_defaults = defaults;
+  nonstandard_defaults.aigc_steps = 41;
+  Source missing_steps = populated(envelope(
+      withoutMember(valid_payload, ",\"steps\":20")));
+  assert(inspectLegacyPortalSettings(
+      missing_steps, verifier, nonstandard_defaults, imported).ok());
+  assert(imported.values.aigc_steps == kDefaultAigcSteps);
+  for (const char* invalid : {"0", "51"}) {
+    std::string bad_steps = valid_payload;
+    bad_steps.replace(bad_steps.find("\"steps\":20"),
+                      std::string("\"steps\":20").size(),
+                      std::string("\"steps\":") + invalid);
+    Source bad = populated(envelope(bad_steps));
+    assert(inspectLegacyPortalSettings(
+        bad, verifier, defaults, imported).code == SettingsError::Corrupt);
+  }
+  std::string duplicate_steps = valid_payload;
+  duplicate_steps.insert(duplicate_steps.find(",\"negative\":"),
+                         ",\"steps\":20");
+  Source duplicated_steps = populated(envelope(duplicate_steps));
+  assert(inspectLegacyPortalSettings(
+      duplicated_steps, verifier, defaults, imported).code ==
+         SettingsError::Corrupt);
 
   // Arduino's enum value 1 was ExperimentalSixColor. Native C151 publishes
   // the stable adapter ID "classic-six-color"; migration must not produce the
@@ -233,6 +281,7 @@ int main() {
   assert(imported.source_schema == 1);
   assert(imported.values.aigc_prompt_template ==
          defaults.aigc_prompt_template);
+  assert(imported.values.aigc_steps == kDefaultAigcSteps);
   assert(imported.values.negative_prompt.empty());
   assert(imported.values.volume_percent == 0);
   assert(imported.values.led_maximum_brightness_percent == 100);

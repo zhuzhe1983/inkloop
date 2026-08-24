@@ -28,7 +28,7 @@ The secret never enters the browser account flow. It remains in ESP32 Preference
 
 ## Task synchronization
 
-The server maintains `desired_revision`; the device reports `applied_revision` every 15 seconds. When revisions differ, the response is a full replacement manifest rather than a patch. The firmware atomically replaces `/tasks.json` in LittleFS and only then persists the new applied revision.
+The server maintains `desired_revision`; the device reports `applied_revision` every 30 seconds. When revisions differ, the response is a full replacement manifest rather than a patch. The firmware atomically replaces `/tasks.json` in LittleFS and only then persists the new applied revision.
 
 Full replacement is deliberate: a server-side deletion cannot be resurrected by a stale device. If the device is off, no pull occurs. On the next boot it receives the latest complete manifest, including removal of deleted tasks.
 
@@ -41,4 +41,3 @@ Task metadata and last-run state live on the device. Authenticated PNG frames re
 3. Add a firmware target and signed/checksummed web-flash manifest.
 4. Allow the SKU in device registration and validate its exact frame dimensions.
 5. Keep the sync envelope stable; put SKU-specific execution behind firmware and render adapters.
-

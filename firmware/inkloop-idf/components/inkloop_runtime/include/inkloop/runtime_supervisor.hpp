@@ -18,6 +18,9 @@ namespace inkloop {
 using WorkHandler = WorkDisposition (*)(const WorkEnvelope& envelope,
                                         void* context);
 using TickHandler = void (*)(void* context);
+using ButtonControlAdmissionObserver = void (*)(uint64_t event_id,
+                                                uint32_t admitted_us,
+                                                void* context);
 
 struct SupervisorDiagnostics {
   std::array<uint32_t, kTaskLaneCount> queue_full{};
@@ -48,6 +51,11 @@ class RuntimeSupervisor final {
   // even while command traffic is present. Zero disables ticking.
   esp_err_t registerTickHandler(TaskLane lane, TickHandler handler,
                                 void* context, uint32_t interval_ms);
+  // Registered before start by the product composition root. The callback is
+  // invoked on Input only after the exact button result was admitted to the
+  // Control queue. It must remain bounded and must not perform I/O.
+  esp_err_t registerButtonControlAdmissionObserver(
+      ButtonControlAdmissionObserver observer, void* context);
   esp_err_t start();
   esp_err_t stop();
   // Idempotent final teardown for composition rollback. Running tasks are
@@ -120,6 +128,7 @@ class RuntimeSupervisor final {
                         TickType_t elapsed_ticks, TickType_t interval_ticks);
   void markTaskQuiescent(TaskLane lane);
   void sampleManagedResources(TaskLane lane);
+  void notifyButtonControlAdmission(const WorkEnvelope& result);
   bool allHandlersRegisteredLocked() const;
   bool calledFromManagedTaskLocked() const;
   bool currentTaskIsLaneLocked(TaskLane lane) const;
@@ -134,6 +143,8 @@ class RuntimeSupervisor final {
   EventGroupHandle_t stop_events_ = nullptr;
   SupervisorDiagnostics diagnostics_{};
   std::array<bool, kTaskLaneCount> callback_active_{};
+  ButtonControlAdmissionObserver button_control_observer_ = nullptr;
+  void* button_control_observer_context_ = nullptr;
   bool sleep_admission_frozen_ = false;
   bool sleep_button_event_pending_ = false;
   Lifecycle lifecycle_ = Lifecycle::Uninitialized;

@@ -26,6 +26,11 @@ enum class SerialDiagnosticEventKind : uint8_t {
   AigcError,
   AigcDiagnostic,
   AigcPhase,
+  AudioDma,
+  AudioFeed,
+  AudioTiming,
+  AudioQueue,
+  ButtonLatency,
 };
 
 // These values are a stable serial protocol and intentionally do not expose
@@ -76,6 +81,26 @@ enum SerialDiagnosticAigcStateFlag : uint8_t {
   AigcSerialDiagnostic = 1U << 2U,
 };
 
+enum SerialDiagnosticAudioFlag : uint8_t {
+  AudioDiagnosticsAvailable = 1U << 0U,
+};
+
+// Mirrors ButtonLatencyButton/ButtonLatencyOutcome without introducing a
+// Diagnostics -> Product dependency. These numeric values are part of the
+// stable serial bench protocol.
+enum class SerialDiagnosticButton : uint8_t {
+  Previous = 0U,
+  Next = 1U,
+  Top = 2U,
+};
+
+enum class SerialDiagnosticButtonOutcome : uint8_t {
+  Led = 0U,
+  Navigation = 1U,
+  Debounced = 2U,
+  NotReady = 3U,
+};
+
 // Stable numeric mirrors used only by the credential-free serial protocol.
 // Product composition maps its private MyAI/network enums into these fields.
 enum class SerialDiagnosticMyAiErrorSource : uint8_t {
@@ -120,8 +145,11 @@ inline constexpr size_t kMaximumSerialDiagnosticDetailBytes = 96U;
 struct SerialDiagnosticEvent {
   SerialDiagnosticEventKind kind = SerialDiagnosticEventKind::CommandRejected;
   SerialCommand command = SerialCommand::None;
+  uint64_t correlation = 0U;
   uint32_t first = 0U;
   uint32_t second = 0U;
+  uint32_t third = 0U;
+  uint32_t fourth = 0U;
   uint8_t code = 0U;
   uint8_t flags = 0U;
   std::array<char, kMaximumSerialDiagnosticDetailBytes + 1U> detail{};

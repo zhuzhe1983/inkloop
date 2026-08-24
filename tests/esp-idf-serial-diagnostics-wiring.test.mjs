@@ -48,6 +48,8 @@ test("serial error detail is fixed-size, canonical, and credential-free", () => 
   );
   assert.match(eventBody, /uint32_t first/);
   assert.match(eventBody, /uint32_t second/);
+  assert.match(eventBody, /uint32_t third/);
+  assert.match(eventBody, /uint32_t fourth/);
   assert.match(eventBody, /uint8_t code/);
   assert.match(eventBody, /uint8_t flags/);
 
@@ -113,8 +115,18 @@ test("commands route through the real product owners without a MyAI bypass", () 
   );
   assert.match(
     runtime,
-    /void EspProductRuntime::servicePortal\(\) \{\s*serial_diagnostics_\.service\(\);/,
+    /void EspProductRuntime::servicePortal\(\) \{\s*button_latency_\.service\(nowUs\(\)\);\s*serial_diagnostics_\.service\(\);/,
   );
+  for (const kind of ["AudioDma", "AudioFeed", "AudioTiming", "AudioQueue"]) {
+    assert.match(handler, new RegExp(`SerialDiagnosticEventKind::${kind}`));
+  }
+  assert.match(handler, /voice_\.diagnostics\(\)/);
+  assert.match(handler, /playback_dma_underruns/);
+  assert.match(handler, /estimated_underrun_count/);
+  assert.match(handler, /late_submit_count/);
+  assert.match(handler, /max_submit_gap_us/);
+  assert.match(handler, /minimum_queue_lead_us/);
+  assert.match(handler, /maximum_queue_lead_us/);
 
   const inspect = voice.match(
     /NativeVoiceService::inspect\([\s\S]*?\n\}/,
@@ -130,6 +142,6 @@ test("commands route through the real product owners without a MyAI bypass", () 
   assert.ok(displayHandler);
   assert.match(
     displayHandler,
-    /const bool rendered = renderOrdinal\(envelope\.flags, user_initiated\);[\s\S]*if \(rendered\)[\s\S]*DisplayComplete/,
+    /const bool rendered = renderOrdinal\(\s*ordinal,\s*user_initiated,\s*constrained_asset\);[\s\S]*if \(serial_diagnostic\)[\s\S]*if \(rendered\)[\s\S]*DisplayComplete/,
   );
 });

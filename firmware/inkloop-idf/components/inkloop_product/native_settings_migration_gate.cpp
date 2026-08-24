@@ -53,21 +53,29 @@ settings::DeviceSettings defaultsFor(const BoardDescriptor& board) {
 bool sameSettingsAtGeneration(const settings::SettingsSnapshot& target,
                               const settings::DeviceSettings& candidate,
                               std::uint32_t generation) {
-  if (generation == 0U || target.generation != generation ||
-      target.decoded_record_schema != settings::kSettingsRecordSchema)
+  if (generation == 0U || target.generation != generation)
     return false;
-  settings::SettingsSnapshot expected;
-  expected.generation = generation;
-  expected.decoded_record_schema = settings::kSettingsRecordSchema;
-  expected.values = candidate;
-  std::vector<std::uint8_t> target_encoded;
-  std::vector<std::uint8_t> expected_encoded;
-  const bool same = settings::encodeSettingsRecord(target, target_encoded).ok() &&
-      settings::encodeSettingsRecord(expected, expected_encoded).ok() &&
-      target_encoded == expected_encoded;
-  std::fill(target_encoded.begin(), target_encoded.end(), 0U);
-  std::fill(expected_encoded.begin(), expected_encoded.end(), 0U);
-  return same;
+  // Every migration target written by beta31 must be a beta27-readable schema
+  // 2 main record. collect() has already overlaid the exact-generation
+  // extension, so full semantic equality also proves LED/steps persistence.
+  return target.decoded_record_schema == settings::kSettingsRecordSchema &&
+      target.values == candidate;
+}
+
+bool supportedNativeAuthoritySchema(std::uint16_t schema) {
+  return schema >= 1U &&
+      schema <= settings::kMaximumReadableSettingsRecordSchema;
+}
+
+bool completedWireAuthority(
+    const settings::SettingsSnapshot& target,
+    const settings::SettingsExtensionSnapshot& target_extension,
+    const storage::MigrationMarker& marker) {
+  if (target.decoded_record_schema >= 3U)
+    return true;
+  return target.decoded_record_schema == settings::kSettingsRecordSchema &&
+      target_extension.sequence != 0U &&
+      target_extension.settings_generation == marker.generation;
 }
 
 bool sameMarker(const storage::MigrationMarker& left,
@@ -179,6 +187,7 @@ bool historicalMigrationIdentity(const storage::MigrationMarker& marker) {
 
 bool targetIsCompletedMigrationBase(
     const settings::SettingsSnapshot& target,
+    const settings::SettingsExtensionSnapshot& target_extension,
     const settings::LegacySettingsImport& legacy,
     const storage::MigrationMarker& complete) {
   return complete.phase == storage::MigrationPhase::Complete &&
@@ -193,11 +202,13 @@ bool targetIsCompletedMigrationBase(
       legacy.state == settings::LegacyImportState::Candidate &&
       !legacy.used_fallback_slot &&
       target.generation == complete.generation &&
-      target.decoded_record_schema == settings::kSettingsRecordSchema;
+      supportedNativeAuthoritySchema(target.decoded_record_schema) &&
+      completedWireAuthority(target, target_extension, complete);
 }
 
 bool targetCanResumePostCompleteRollover(
     const settings::SettingsSnapshot& target,
+    const settings::SettingsExtensionSnapshot& target_extension,
     const settings::LegacySettingsImport& legacy,
     const storage::MigrationMarker& prepared,
     const storage::MigrationMarkerJournalInspection& journal,
@@ -213,7 +224,8 @@ bool targetCanResumePostCompleteRollover(
       previous.generation + 1U == prepared.generation &&
       previous.source_fingerprint != prepared.source_fingerprint &&
       prepared.rollback_source == nativeRollbackFor(previous.generation) &&
-      targetIsCompletedMigrationBase(target, legacy, previous);
+      targetIsCompletedMigrationBase(
+          target, target_extension, legacy, previous);
 }
 
 bool targetIsHistoricalBase(
@@ -227,24 +239,60 @@ bool targetIsHistoricalBase(
 
 bool targetIsMigrationResult(
     const settings::SettingsSnapshot& target,
+    const settings::SettingsExtensionSnapshot& target_extension,
     const settings::LegacySettingsImport& legacy,
     const storage::MigrationMarker& marker) {
   return generationFitsSettings(marker.generation) &&
       sameSettingsAtGeneration(
           target, legacy.values,
-          static_cast<std::uint32_t>(marker.generation));
+          static_cast<std::uint32_t>(marker.generation)) &&
+      completedWireAuthority(target, target_extension, marker);
+}
+
+bool targetIsCompatibleCompletedMigrationResult(
+    const settings::SettingsSnapshot& target,
+    const settings::SettingsExtensionSnapshot& target_extension,
+    const settings::LegacySettingsImport& legacy,
+    const storage::MigrationMarker& marker) {
+  return generationFitsSettings(marker.generation) &&
+      target.generation == static_cast<std::uint32_t>(marker.generation) &&
+      supportedNativeAuthoritySchema(target.decoded_record_schema) &&
+      target.values == legacy.values &&
+      completedWireAuthority(target, target_extension, marker);
+}
+
+settings::DeviceSettings mainSettingsProjection(
+    const settings::DeviceSettings& values) {
+  settings::DeviceSettings output = values;
+  output.led_roles_swapped = false;
+  output.aigc_steps = settings::kDefaultAigcSteps;
+  return output;
+}
+
+bool targetHasMigrationMainProjection(
+    const settings::SettingsSnapshot& target,
+    const settings::LegacySettingsImport& legacy,
+    const storage::MigrationMarker& marker) {
+  return generationFitsSettings(marker.generation) &&
+      target.generation == static_cast<std::uint32_t>(marker.generation) &&
+      target.decoded_record_schema == settings::kSettingsRecordSchema &&
+      mainSettingsProjection(target.values) ==
+          mainSettingsProjection(legacy.values);
 }
 
 bool targetCanResumePrepared(
     const settings::SettingsSnapshot& target,
+    const settings::SettingsExtensionSnapshot& target_extension,
     const settings::LegacySettingsImport& legacy,
     const storage::MigrationMarker& marker) {
   if (freshMigrationIdentity(marker)) {
     return target.generation == 0U ||
-        targetIsMigrationResult(target, legacy, marker);
+        targetIsMigrationResult(
+            target, target_extension, legacy, marker);
   }
   return targetIsHistoricalBase(target, legacy, marker) ||
-      targetIsMigrationResult(target, legacy, marker);
+      targetIsMigrationResult(
+          target, target_extension, legacy, marker);
 }
 
 storage::MigrationMarker markerFor(
@@ -297,6 +345,7 @@ NativeSettingsMigrationGateCode markerFailure(
 
 struct NativeSettingsMigrationGate::Evidence {
   settings::SettingsSnapshot target;
+  settings::SettingsExtensionSnapshot target_extension;
   settings::LegacySettingsImport legacy;
   storage::MigrationMarkerJournalCode marker_code =
       storage::MigrationMarkerJournalCode::IoError;
@@ -318,7 +367,8 @@ NativeSettingsMigrationGate::NativeSettingsMigrationGate(
     const BoardDescriptor& board,
     const storage::EspNvsBootMountOwner& nvs_boot_mount)
     : nvs_boot_mount_(nvs_boot_mount), defaults_(defaultsFor(board)),
-      settings_store_(settings_journal_, defaults_) {}
+      settings_store_(settings_journal_, defaults_),
+      settings_extension_store_(settings_extension_journal_) {}
 
 NativeSettingsMigrationGateCode NativeSettingsMigrationGate::collect(
     Evidence& output) {
@@ -336,7 +386,9 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::collect(
     return NativeSettingsMigrationGateCode::Ok;
   }
 
-  if (!settings_store_.load(output.target).ok())
+  if (!settings::loadRollbackCompatibleSettings(
+           settings_store_, settings_extension_store_, output.target,
+           &output.target_extension).ok())
     return NativeSettingsMigrationGateCode::TargetCorrupt;
   const settings::SettingsStatus legacy_status =
       settings::inspectLegacyPortalSettings(
@@ -387,7 +439,9 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
         marker.target_slot != slotFor(marker.generation) ||
         (!freshMigrationIdentity(marker) &&
          !historicalMigrationIdentity(marker)) ||
-        !targetCanResumePrepared(evidence.target, evidence.legacy, marker))
+        !targetCanResumePrepared(
+            evidence.target, evidence.target_extension,
+            evidence.legacy, marker))
       return NativeSettingsMigrationGateCode::MarkerMismatch;
     output.kind = NativeSettingsMigrationPlanKind::RecoverPreparedHead;
     output.source_fingerprint = fingerprint;
@@ -460,8 +514,8 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
     if (marker.phase != storage::MigrationPhase::Complete)
       return NativeSettingsMigrationGateCode::MarkerCorrupt;
     if (evidence.target.generation < marker.generation ||
-        evidence.target.decoded_record_schema !=
-            settings::kSettingsRecordSchema)
+        !supportedNativeAuthoritySchema(
+            evidence.target.decoded_record_schema))
       return NativeSettingsMigrationGateCode::TargetCorrupt;
     output.kind = NativeSettingsMigrationPlanKind::NativeNoMigration;
     output.observed_generation = evidence.target.generation;
@@ -476,8 +530,8 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
     if (evidence.target.generation > marker.generation) {
       // A schema-3 native save after completion is newer authority. Preserve
       // it and ignore rollback-era legacy edits; never rewrite native gen2+.
-      if (evidence.target.decoded_record_schema !=
-          settings::kSettingsRecordSchema)
+      if (!supportedNativeAuthoritySchema(
+              evidence.target.decoded_record_schema))
         return NativeSettingsMigrationGateCode::TargetCorrupt;
       output.kind = NativeSettingsMigrationPlanKind::NativeNoMigration;
       output.observed_generation = evidence.target.generation;
@@ -488,15 +542,16 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
       // Native is a valid completed authority but there is no representable
       // next settings generation. Preserve it without entering Recovery or
       // attempting a partial migration.
-      if (evidence.target.decoded_record_schema !=
-          settings::kSettingsRecordSchema)
+      if (!supportedNativeAuthoritySchema(
+              evidence.target.decoded_record_schema))
         return NativeSettingsMigrationGateCode::TargetCorrupt;
       output.kind = NativeSettingsMigrationPlanKind::NativeNoMigration;
       output.observed_generation = evidence.target.generation;
       return NativeSettingsMigrationGateCode::Ok;
     }
     if (!targetIsCompletedMigrationBase(
-            evidence.target, evidence.legacy, marker))
+            evidence.target, evidence.target_extension,
+            evidence.legacy, marker))
       return NativeSettingsMigrationGateCode::TargetCorrupt;
     if (!markerSequenceHasRoom(evidence.marker.sequence, 5U))
       return NativeSettingsMigrationGateCode::MarkerWriteFailed;
@@ -531,11 +586,12 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
     if (evidence.target.generation < marker.generation)
       return NativeSettingsMigrationGateCode::TargetCorrupt;
     if (evidence.target.generation == marker.generation) {
-      if (!targetIsMigrationResult(
-              evidence.target, evidence.legacy, marker))
+      if (!targetIsCompatibleCompletedMigrationResult(
+              evidence.target, evidence.target_extension,
+              evidence.legacy, marker))
         return NativeSettingsMigrationGateCode::TargetCorrupt;
-    } else if (evidence.target.decoded_record_schema !=
-               settings::kSettingsRecordSchema) {
+    } else if (!supportedNativeAuthoritySchema(
+                   evidence.target.decoded_record_schema)) {
       return NativeSettingsMigrationGateCode::TargetCorrupt;
     }
     output.kind = NativeSettingsMigrationPlanKind::Complete;
@@ -549,17 +605,26 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
     return NativeSettingsMigrationGateCode::MarkerWriteFailed;
   if (marker.phase == storage::MigrationPhase::Prepared) {
     const bool target_already_written = targetIsMigrationResult(
-        evidence.target, evidence.legacy, marker);
+        evidence.target, evidence.target_extension,
+        evidence.legacy, marker);
+    const bool target_main_projection_written =
+        targetHasMigrationMainProjection(
+            evidence.target, evidence.legacy, marker);
     const bool bootstrap_base = evidence.marker.sequence == 1U &&
-        targetCanResumePrepared(evidence.target, evidence.legacy, marker);
+        targetCanResumePrepared(
+            evidence.target, evidence.target_extension,
+            evidence.legacy, marker);
     const bool rollover_base = evidence.marker.sequence > 1U &&
         targetCanResumePostCompleteRollover(
-            evidence.target, evidence.legacy, marker, evidence.marker,
+            evidence.target, evidence.target_extension,
+            evidence.legacy, marker, evidence.marker,
             evidence.raw_marker);
-    if (!target_already_written && !bootstrap_base && !rollover_base)
+    if (!target_already_written && !target_main_projection_written &&
+        !bootstrap_base && !rollover_base)
       return NativeSettingsMigrationGateCode::TargetCorrupt;
   } else if (!targetIsMigrationResult(
-                 evidence.target, evidence.legacy, marker)) {
+                 evidence.target, evidence.target_extension,
+                 evidence.legacy, marker)) {
     return NativeSettingsMigrationGateCode::TargetCorrupt;
   }
   output.kind = NativeSettingsMigrationPlanKind::Resume;
@@ -629,9 +694,18 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::advance(
     switch (current.phase) {
       case storage::MigrationPhase::Prepared: {
         if (!targetIsMigrationResult(
-                evidence.target, evidence.legacy, current)) {
+                evidence.target, evidence.target_extension,
+                evidence.legacy, current)) {
           std::uint32_t expected_generation = 0U;
-          if (evidence.marker.sequence == 1U &&
+          const bool main_projection_written =
+              targetHasMigrationMainProjection(
+                  evidence.target, evidence.legacy, current);
+          if (main_projection_written) {
+            // Power failed after schema-2 main publication but before the
+            // single ext-head selector write. Retry only the extension at the
+            // already-authoritative main generation.
+            expected_generation = evidence.target.generation;
+          } else if (evidence.marker.sequence == 1U &&
               freshMigrationIdentity(current) &&
               evidence.target.generation == 0U) {
             expected_generation = 0U;
@@ -641,18 +715,27 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::advance(
             expected_generation = evidence.target.generation;
           } else if (evidence.marker.sequence > 1U &&
                      targetCanResumePostCompleteRollover(
-                         evidence.target, evidence.legacy, current,
+                         evidence.target, evidence.target_extension,
+                         evidence.legacy, current,
                          evidence.marker, evidence.raw_marker)) {
             expected_generation = evidence.target.generation;
           } else {
             return NativeSettingsMigrationGateCode::TargetCorrupt;
           }
           settings::SettingsSnapshot committed;
-          if (!settings_store_.save(
-                  evidence.legacy.values, expected_generation, committed).ok() ||
+          if (!settings::saveRollbackCompatibleSettings(
+                  settings_store_, settings_extension_store_,
+                  evidence.legacy.values, expected_generation, committed,
+                  !main_projection_written, true).ok())
+            return NativeSettingsMigrationGateCode::TargetWriteFailed;
+          settings::SettingsExtensionSnapshot committed_extension;
+          if (!settings::loadRollbackCompatibleSettings(
+                  settings_store_, settings_extension_store_, committed,
+                  &committed_extension).ok() ||
               committed.generation != current.generation ||
               !targetIsMigrationResult(
-                  committed, evidence.legacy, current))
+                  committed, committed_extension,
+                  evidence.legacy, current))
             return NativeSettingsMigrationGateCode::TargetWriteFailed;
         }
         next = storage::MigrationPhase::TargetWritten;
@@ -660,19 +743,22 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::advance(
       }
       case storage::MigrationPhase::TargetWritten:
         if (!targetIsMigrationResult(
-                evidence.target, evidence.legacy, current))
+                evidence.target, evidence.target_extension,
+                evidence.legacy, current))
           return NativeSettingsMigrationGateCode::TargetCorrupt;
         next = storage::MigrationPhase::TargetVerified;
         break;
       case storage::MigrationPhase::TargetVerified:
         if (!targetIsMigrationResult(
-                evidence.target, evidence.legacy, current))
+                evidence.target, evidence.target_extension,
+                evidence.legacy, current))
           return NativeSettingsMigrationGateCode::TargetCorrupt;
         next = storage::MigrationPhase::CommitRecorded;
         break;
       case storage::MigrationPhase::CommitRecorded:
         if (!targetIsMigrationResult(
-                evidence.target, evidence.legacy, current))
+                evidence.target, evidence.target_extension,
+                evidence.legacy, current))
           return NativeSettingsMigrationGateCode::TargetCorrupt;
         next = storage::MigrationPhase::Complete;
         break;

@@ -117,7 +117,10 @@ test("settings marker runner binds source, target generation and every durable p
     "Prepared", "TargetWritten", "TargetVerified", "CommitRecorded",
     "Complete", "RollbackRequired",
   ]) assert.match(advance, new RegExp(`MigrationPhase::${phase}`));
-  assert.match(advance, /settings_store_\.save/);
+  assert.match(
+    advance,
+    /saveRollbackCompatibleSettings\([\s\S]*settings_store_, settings_extension_store_[\s\S]*!main_projection_written/,
+  );
   assert.match(advance, /MigrationMarkerJournalCore\(marker_store_\)\.commit/);
 });
 

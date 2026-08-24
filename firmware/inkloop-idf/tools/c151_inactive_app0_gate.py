@@ -77,10 +77,11 @@ class GatePolicy:
     ota_valid_state: int
     minimum_tf_image_bytes: int
     minimum_candidate_beta: int
+    maximum_candidate_beta: int
 
 
 PRODUCTION_POLICY = GatePolicy(
-    policy_id="m5-papercolor-c151-fresh-candidate-inactive-app0-v2",
+    policy_id="m5-papercolor-c151-fresh-candidate-inactive-app0-v3",
     commit="",
     version="",
     candidate_sha256="",
@@ -123,7 +124,8 @@ PRODUCTION_POLICY = GatePolicy(
     next_app0_state=0,
     ota_valid_state=2,
     minimum_tf_image_bytes=64 * 1024 * 1024,
-    minimum_candidate_beta=30,
+    minimum_candidate_beta=31,
+    maximum_candidate_beta=31,
 )
 
 
@@ -168,10 +170,15 @@ def bind_release(
     if version_match is None:
         raise GateError("expected version must have the form 0.4.0-beta.N")
     beta_number = int(version_match.group(1))
-    if beta_number < base_policy.minimum_candidate_beta:
+    if (
+        base_policy.maximum_candidate_beta < base_policy.minimum_candidate_beta
+        or beta_number < base_policy.minimum_candidate_beta
+        or beta_number > base_policy.maximum_candidate_beta
+    ):
         raise GateError(
-            "candidate beta is revoked or below the minimum authorized beta: "
-            f"expected beta.{base_policy.minimum_candidate_beta} or newer"
+            "candidate beta is outside the exact authorized range: "
+            f"expected beta.{base_policy.minimum_candidate_beta} through "
+            f"beta.{base_policy.maximum_candidate_beta}"
         )
     if not isinstance(
         expected_candidate_sha256, str
@@ -582,6 +589,18 @@ def _tf_safe_integer(value: Any) -> int | None:
     return None
 
 
+def _tf_positively_unmounted(info: dict[str, Any]) -> bool:
+    if _tf_safe_string(info.get("MountPoint")) is not None:
+        return False
+    if info.get("Mounted") is False:
+        return True
+    return (
+        "Mounted" not in info
+        and info.get("MountPoint") == ""
+        and info.get("WritableVolume") is False
+    )
+
+
 def _normalized_tf_member(info: dict[str, Any]) -> dict[str, Any]:
     roles = info.get("APFSVolumeRole")
     if isinstance(roles, list):
@@ -590,6 +609,10 @@ def _normalized_tf_member(info: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         normalized_roles = _tf_safe_string(roles)
+    mount_point = _tf_safe_string(info.get("MountPoint"))
+    mounted = _tf_safe_boolean(info.get("Mounted"))
+    if mounted is None and _tf_positively_unmounted(info):
+        mounted = False
     return {
         "deviceIdentifier": _tf_safe_string(info.get("DeviceIdentifier")),
         "parentWholeDisk": _tf_safe_string(info.get("ParentWholeDisk")),
@@ -600,8 +623,8 @@ def _normalized_tf_member(info: dict[str, Any]) -> dict[str, Any]:
         "volumeUUID": _tf_safe_string(info.get("VolumeUUID")),
         "diskUUID": _tf_safe_string(info.get("DiskUUID")),
         "mediaUUID": _tf_safe_string(info.get("MediaUUID")),
-        "mounted": _tf_safe_boolean(info.get("Mounted")),
-        "mountPoint": _tf_safe_string(info.get("MountPoint")),
+        "mounted": mounted,
+        "mountPoint": mount_point,
         "volumeRoles": normalized_roles,
     }
 
@@ -818,7 +841,12 @@ def _validate_tf_custody(path_value: str | Path, policy: GatePolicy) -> dict[str
             source_device,
             f"TF {snapshot} whole-disk node",
         )
-        _expect(target_info.get("Whole"), True, f"TF {snapshot} whole-disk flag")
+        whole = (
+            (target_info.get("Whole") is True or target_info.get("WholeDisk") is True)
+            and target_info.get("Whole") is not False
+            and target_info.get("WholeDisk") is not False
+        )
+        _expect(whole, True, f"TF {snapshot} whole-disk flag")
         normalized = _normalized_tf_identity(
             target_info,
             member_infos,
@@ -836,9 +864,7 @@ def _validate_tf_custody(path_value: str | Path, policy: GatePolicy) -> dict[str
                 identifier
             ):
                 raise GateError(f"TF {snapshot} member escaped the whole disk")
-            if member.get("Mounted") is not False or _tf_safe_string(
-                member.get("MountPoint")
-            ):
+            if not _tf_positively_unmounted(member):
                 raise GateError(f"TF {snapshot} member is mounted or indeterminate")
 
     listed_identifiers: set[str] = set()

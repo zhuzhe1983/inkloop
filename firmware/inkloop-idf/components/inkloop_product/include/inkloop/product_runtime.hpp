@@ -5,6 +5,7 @@
 
 #include "inkloop/board.hpp"
 #include "inkloop/button_input.hpp"
+#include "inkloop/button_latency_telemetry.hpp"
 #include "inkloop/diagnostics/esp_serial_diagnostics.hpp"
 #include "inkloop/esp_wifi_station.hpp"
 #include "inkloop/native_display_service.hpp"
@@ -123,12 +124,14 @@ class EspProductRuntime final : public IStorageMaintenanceCoordinator {
   void serviceStorageMaintenanceFinalization(uint32_t now_ms);
   void releaseStorageMaintenanceOwners();
   static uint32_t nowMs();
+  static uint32_t nowUs();
 
   storage::EspStorageMountOwner& storage_;
   storage::PosixAtomicAlbumStore* selected_album_store_ = nullptr;
   storage::PosixAtomicAlbumStore* sd_album_store_ = nullptr;
   bool selected_album_is_sd_ = false;
   RuntimeSupervisor supervisor_{};
+  ButtonLatencyTelemetry button_latency_{};
   EspButtonInputOwner buttons_;
   EspStatusLedOwner leds_;
   diagnostics::EspSerialDiagnosticsOwner serial_diagnostics_{};

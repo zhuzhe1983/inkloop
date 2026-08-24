@@ -378,8 +378,14 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
   transfer = core_->popPlayback(bytes.data(), pump_bytes);
   portEXIT_CRITICAL(&mux_);
   if (transfer.bytes != 0) {
-    const esp_err_t written =
-        device.writePlayback(bytes.data(), transfer.bytes, 20);
+    // A same-format continuation reuses the I2S run and resampler, but starts
+    // a new logical producer interval. Reopen starvation classification only
+    // once real PCM is ready to submit, never merely because Network admitted
+    // a tts.start event.
+    esp_err_t written = device.resumePlaybackIngress();
+    if (written == ESP_OK) {
+      written = device.writePlayback(bytes.data(), transfer.bytes, 20);
+    }
     if (written != ESP_OK) {
       portENTER_CRITICAL(&mux_);
       // In the write's unlocked window, Network may already have installed a
@@ -404,7 +410,16 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
       playback_hardware_ == PlaybackHardwareState::Active &&
       core_->playbackComplete();
   portEXIT_CRITICAL(&mux_);
-  if (playback_complete && device.startPreloadedPlayback() != ESP_OK) {
+  // All PCM for this logical segment has crossed into the device. Suspend
+  // underrun/starvation classification before a short preload starts draining
+  // and keep only the resampler/hardware continuation capability alive.
+  esp_err_t segment_finished = ESP_OK;
+  if (playback_complete) {
+    segment_finished = device.pausePlaybackIngress();
+    if (segment_finished == ESP_OK)
+      segment_finished = device.startPreloadedPlayback();
+  }
+  if (segment_finished != ESP_OK) {
     portENTER_CRITICAL(&mux_);
     if (playback_hardware_generation_ != 0)
       core_->cancelPlayback(playback_hardware_generation_);
@@ -412,7 +427,7 @@ esp_err_t EspCrossCoreAudioBridge::servicePlayback(
     playback_restart_after_stop_ = false;
     ++diagnostics_.playback_hardware_failures;
     portEXIT_CRITICAL(&mux_);
-    return ESP_ERR_INVALID_STATE;
+    return segment_finished;
   }
   const bool hardware_drained = device.playbackDrained();
   const int64_t now_us = hardware_drained ? esp_timer_get_time() : 0;
