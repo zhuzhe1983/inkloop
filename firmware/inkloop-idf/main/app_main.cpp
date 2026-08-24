@@ -4,8 +4,6 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "nvs_flash.h"
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -433,12 +431,14 @@ class PortalOtaUpdateBridge final
 }
 
 // OTA running-image health is evaluated before any upgrade-audit owner exists.
-// This is the sole Recovery entry allowed to perform ordinary NVS init.
+// No Product NVS writer has been admitted at this point, and Recovery must not
+// initialize, repair, or otherwise mutate NVS merely to become reachable.
+// Volatile STA/AP credentials keep this path fail-closed and RAM-only.
 [[noreturn]] void runEarlyOtaRecoveryNetwork(
     const inkloop::recovery::RecoveryDiagnosticSnapshot& diagnostic) {
   runRecoveryNetworkWithNvsStatus(
-      diagnostic, nvs_flash_init(), nullptr, {},
-      inkloop::recovery::RecoveryWifiStoragePolicy::PersistentFlash);
+      diagnostic, ESP_OK, nullptr, {},
+      inkloop::recovery::RecoveryWifiStoragePolicy::VolatileRam);
 }
 
 [[noreturn]] void runRecoveryAfterProductFailure(

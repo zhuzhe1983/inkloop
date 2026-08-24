@@ -141,8 +141,10 @@ test("post-audit Recovery is reachable without NVS and never repairs or promotes
     /RecoveryWifiStoragePolicy::VolatileRam/);
 
   const early = body(main, "void runEarlyOtaRecoveryNetwork(");
-  assert.match(early, /nvs_flash_init\(\)/);
-  assert.match(early, /RecoveryWifiStoragePolicy::PersistentFlash/);
+  assert.doesNotMatch(early,
+    /nvs_flash_init|nvs_flash_erase|nvs_set_|nvs_commit|PersistentFlash/);
+  assert.match(early, /diagnostic, ESP_OK, nullptr/);
+  assert.match(early, /RecoveryWifiStoragePolicy::VolatileRam/);
   const boot = main.slice(main.indexOf('extern "C" void app_main'));
   assert.match(boot,
     /OtaHealthRefused[\s\S]*runEarlyOtaRecoveryNetwork|runEarlyOtaRecoveryNetwork[\s\S]*OtaHealthRefused/);

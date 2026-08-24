@@ -110,11 +110,10 @@ RecoveryNetworkModeOwner::~RecoveryNetworkModeOwner() {
 esp_err_t RecoveryNetworkModeOwner::ensureWifiOwner() {
   if (stop_requested_) return ESP_ERR_INVALID_STATE;
   if (wifi_) return ESP_OK;
+  if (wifi_storage_ != RecoveryWifiStoragePolicy::VolatileRam)
+    return ESP_ERR_INVALID_ARG;
   EspWifiStationConfig wifi_config;
-  wifi_config.credential_storage =
-      wifi_storage_ == RecoveryWifiStoragePolicy::PersistentFlash
-      ? WifiCredentialStorage::PersistentFlash
-      : WifiCredentialStorage::VolatileRam;
+  wifi_config.credential_storage = WifiCredentialStorage::VolatileRam;
   wifi_.reset(new (std::nothrow) EspWifiStationOwner(wifi_config));
   return wifi_ ? ESP_OK : ESP_ERR_NO_MEM;
 }

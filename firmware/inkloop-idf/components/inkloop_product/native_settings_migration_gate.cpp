@@ -70,6 +70,60 @@ bool sameSettingsAtGeneration(const settings::SettingsSnapshot& target,
   return same;
 }
 
+bool sameMarker(const storage::MigrationMarker& left,
+                const storage::MigrationMarker& right) {
+  return left.schema_version == right.schema_version &&
+      left.source_layout_schema_version ==
+          right.source_layout_schema_version &&
+      left.generation == right.generation &&
+      left.source_fingerprint == right.source_fingerprint &&
+      left.phase == right.phase && left.target_slot == right.target_slot &&
+      left.rollback_source == right.rollback_source &&
+      left.checksum == right.checksum;
+}
+
+bool rawMatchesInspection(
+    const storage::RawMigrationMarkerJournal& raw,
+    const storage::MigrationMarkerJournalInspection& inspection) {
+  if (!raw.namespace_available) return false;
+  if (inspection.probe == storage::MigrationMarkerJournalProbe::Missing) {
+    return !raw.initialized_present && !raw.head_present &&
+        !raw.slots[0].present && !raw.slots[1].present;
+  }
+  if (inspection.probe != storage::MigrationMarkerJournalProbe::Valid ||
+      !raw.initialized_present ||
+      raw.initialized != storage::kMigrationJournalInitializedMarker ||
+      !raw.head_present || raw.head_sequence != inspection.sequence ||
+      inspection.sequence == 0U)
+    return false;
+  const std::size_t selected =
+      static_cast<std::size_t>(inspection.sequence & 1U);
+  std::uint64_t decoded_sequence = 0U;
+  storage::MigrationMarker decoded;
+  return storage::decodeMigrationJournalSlotV1(
+             raw.slots[selected], decoded_sequence, decoded) ==
+          storage::MigrationMarkerCodecCode::Ok &&
+      decoded_sequence == inspection.sequence &&
+      sameMarker(decoded, inspection.marker);
+}
+
+bool decodePreviousCommittedMarker(
+    const storage::RawMigrationMarkerJournal& raw,
+    const storage::MigrationMarkerJournalInspection& current,
+    storage::MigrationMarker& previous) {
+  previous = storage::MigrationMarker{};
+  if (current.probe != storage::MigrationMarkerJournalProbe::Valid ||
+      current.sequence <= 1U || !rawMatchesInspection(raw, current))
+    return false;
+  const std::size_t previous_slot =
+      static_cast<std::size_t>((current.sequence & 1U) ^ 1U);
+  std::uint64_t previous_sequence = 0U;
+  return storage::decodeMigrationJournalSlotV1(
+             raw.slots[previous_slot], previous_sequence, previous) ==
+          storage::MigrationMarkerCodecCode::Ok &&
+      previous_sequence == current.sequence - 1U;
+}
+
 storage::MigrationSlot slotFor(std::uint64_t generation) {
   return (generation & 1U) == 0U ? storage::MigrationSlot::SlotA
                                  : storage::MigrationSlot::SlotB;
@@ -87,6 +141,26 @@ bool generationFitsSettings(std::uint64_t generation) {
       generation <= std::numeric_limits<std::uint32_t>::max();
 }
 
+bool markerSequenceHasRoom(std::uint64_t sequence,
+                           std::uint8_t commits_remaining) {
+  return commits_remaining <=
+      std::numeric_limits<std::uint64_t>::max() - sequence;
+}
+
+std::uint8_t markerCommitsRemaining(storage::MigrationPhase phase) {
+  switch (phase) {
+    case storage::MigrationPhase::Prepared: return 4U;
+    case storage::MigrationPhase::TargetWritten: return 3U;
+    case storage::MigrationPhase::TargetVerified: return 2U;
+    case storage::MigrationPhase::CommitRecorded: return 1U;
+    case storage::MigrationPhase::Complete:
+    case storage::MigrationPhase::RollbackRequired:
+    case storage::MigrationPhase::None:
+      return 0U;
+  }
+  return 0U;
+}
+
 std::uint16_t normalizedSourceSchema(
     const settings::LegacySettingsImport& legacy) {
   return legacy.source_schema == 0U ? 1U : legacy.source_schema;
@@ -101,6 +175,45 @@ bool freshMigrationIdentity(const storage::MigrationMarker& marker) {
 bool historicalMigrationIdentity(const storage::MigrationMarker& marker) {
   return marker.generation > 1U && generationFitsSettings(marker.generation) &&
       marker.rollback_source == nativeRollbackFor(marker.generation - 1U);
+}
+
+bool targetIsCompletedMigrationBase(
+    const settings::SettingsSnapshot& target,
+    const settings::LegacySettingsImport& legacy,
+    const storage::MigrationMarker& complete) {
+  return complete.phase == storage::MigrationPhase::Complete &&
+      generationFitsSettings(complete.generation) &&
+      complete.generation < std::numeric_limits<std::uint32_t>::max() &&
+      complete.source_layout_schema_version >= 1U &&
+      complete.source_layout_schema_version <= 2U &&
+      fingerprintValid(complete.source_fingerprint) &&
+      complete.target_slot == slotFor(complete.generation) &&
+      (freshMigrationIdentity(complete) ||
+       historicalMigrationIdentity(complete)) &&
+      legacy.state == settings::LegacyImportState::Candidate &&
+      !legacy.used_fallback_slot &&
+      target.generation == complete.generation &&
+      target.decoded_record_schema == settings::kSettingsRecordSchema;
+}
+
+bool targetCanResumePostCompleteRollover(
+    const settings::SettingsSnapshot& target,
+    const settings::LegacySettingsImport& legacy,
+    const storage::MigrationMarker& prepared,
+    const storage::MigrationMarkerJournalInspection& journal,
+    const storage::RawMigrationMarkerJournal& raw) {
+  if (prepared.phase != storage::MigrationPhase::Prepared ||
+      !generationFitsSettings(prepared.generation) ||
+      prepared.generation <= 1U)
+    return false;
+  storage::MigrationMarker previous;
+  return decodePreviousCommittedMarker(raw, journal, previous) &&
+      generationFitsSettings(previous.generation) &&
+      previous.generation < std::numeric_limits<std::uint32_t>::max() &&
+      previous.generation + 1U == prepared.generation &&
+      previous.source_fingerprint != prepared.source_fingerprint &&
+      prepared.rollback_source == nativeRollbackFor(previous.generation) &&
+      targetIsCompletedMigrationBase(target, legacy, previous);
 }
 
 bool targetIsHistoricalBase(
@@ -233,11 +346,12 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::collect(
 
   storage::MigrationMarkerJournalCore marker_core(marker_store_);
   output.marker_code = marker_core.inspect(output.marker);
-  if (output.marker_code != storage::MigrationMarkerJournalCode::Ok) {
-    if (marker_store_.inspectRaw(output.raw_marker) !=
-        storage::MigrationJournalStoreCode::Ok)
-      return NativeSettingsMigrationGateCode::MarkerCorrupt;
-  }
+  if (marker_store_.inspectRaw(output.raw_marker) !=
+      storage::MigrationJournalStoreCode::Ok)
+    return NativeSettingsMigrationGateCode::MarkerCorrupt;
+  if (output.marker_code == storage::MigrationMarkerJournalCode::Ok &&
+      !rawMatchesInspection(output.raw_marker, output.marker))
+    return NativeSettingsMigrationGateCode::MarkerCorrupt;
   return NativeSettingsMigrationGateCode::Ok;
 }
 
@@ -325,18 +439,85 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
     output.rollback_source = nativeRollbackFor(evidence.target.generation);
     return NativeSettingsMigrationGateCode::Ok;
   }
-  if (evidence.marker.probe != storage::MigrationMarkerJournalProbe::Valid ||
-      !candidate)
+  if (evidence.marker.probe != storage::MigrationMarkerJournalProbe::Valid)
     return NativeSettingsMigrationGateCode::MarkerCorrupt;
 
   const storage::MigrationMarker& marker = evidence.marker.marker;
-  if (marker.source_fingerprint != fingerprint ||
-      !generationFitsSettings(marker.generation) ||
-      marker.source_layout_schema_version !=
-          normalizedSourceSchema(evidence.legacy) ||
+  if (!generationFitsSettings(marker.generation) ||
+      marker.source_layout_schema_version < 1U ||
+      marker.source_layout_schema_version > 2U ||
       marker.target_slot != slotFor(marker.generation) ||
       (!freshMigrationIdentity(marker) &&
        !historicalMigrationIdentity(marker)))
+    return NativeSettingsMigrationGateCode::MarkerMismatch;
+
+  if (!candidate) {
+    // A rollback-era factory reset can legitimately remove ink-portal after a
+    // completed migration. The current native journal remains authoritative;
+    // absence is distinct from corrupt legacy evidence, which collect()
+    // rejects before composition. An in-flight migration still requires its
+    // source and therefore cannot take this no-op path.
+    if (marker.phase != storage::MigrationPhase::Complete)
+      return NativeSettingsMigrationGateCode::MarkerCorrupt;
+    if (evidence.target.generation < marker.generation ||
+        evidence.target.decoded_record_schema !=
+            settings::kSettingsRecordSchema)
+      return NativeSettingsMigrationGateCode::TargetCorrupt;
+    output.kind = NativeSettingsMigrationPlanKind::NativeNoMigration;
+    output.observed_generation = evidence.target.generation;
+    return NativeSettingsMigrationGateCode::Ok;
+  }
+
+  if (marker.source_fingerprint != fingerprint) {
+    if (marker.phase != storage::MigrationPhase::Complete)
+      return NativeSettingsMigrationGateCode::MarkerMismatch;
+    if (evidence.target.generation < marker.generation)
+      return NativeSettingsMigrationGateCode::TargetCorrupt;
+    if (evidence.target.generation > marker.generation) {
+      // A schema-3 native save after completion is newer authority. Preserve
+      // it and ignore rollback-era legacy edits; never rewrite native gen2+.
+      if (evidence.target.decoded_record_schema !=
+          settings::kSettingsRecordSchema)
+        return NativeSettingsMigrationGateCode::TargetCorrupt;
+      output.kind = NativeSettingsMigrationPlanKind::NativeNoMigration;
+      output.observed_generation = evidence.target.generation;
+      return NativeSettingsMigrationGateCode::Ok;
+    }
+    if (marker.generation ==
+        std::numeric_limits<std::uint32_t>::max()) {
+      // Native is a valid completed authority but there is no representable
+      // next settings generation. Preserve it without entering Recovery or
+      // attempting a partial migration.
+      if (evidence.target.decoded_record_schema !=
+          settings::kSettingsRecordSchema)
+        return NativeSettingsMigrationGateCode::TargetCorrupt;
+      output.kind = NativeSettingsMigrationPlanKind::NativeNoMigration;
+      output.observed_generation = evidence.target.generation;
+      return NativeSettingsMigrationGateCode::Ok;
+    }
+    if (!targetIsCompletedMigrationBase(
+            evidence.target, evidence.legacy, marker))
+      return NativeSettingsMigrationGateCode::TargetCorrupt;
+    if (!markerSequenceHasRoom(evidence.marker.sequence, 5U))
+      return NativeSettingsMigrationGateCode::MarkerWriteFailed;
+
+    // A rollback-era Arduino commit may roll a completed migration forward
+    // when the valid preferred legacy source changed, the prior Complete
+    // marker is coherent, and native has not advanced beyond that completed
+    // generation. Native generation is the user-edit guard: a newer native
+    // save wins above. Missing-marker historical inference remains gen1-only.
+    output.kind = NativeSettingsMigrationPlanKind::Start;
+    output.source_fingerprint = fingerprint;
+    output.source_schema = normalizedSourceSchema(evidence.legacy);
+    output.observed_generation = evidence.target.generation;
+    output.target_generation = marker.generation + 1U;
+    output.marker_sequence = evidence.marker.sequence;
+    output.marker_phase = marker.phase;
+    output.rollback_source = nativeRollbackFor(evidence.target.generation);
+    return NativeSettingsMigrationGateCode::Ok;
+  }
+  if (marker.source_layout_schema_version !=
+      normalizedSourceSchema(evidence.legacy))
     return NativeSettingsMigrationGateCode::MarkerMismatch;
   output.source_fingerprint = fingerprint;
   output.source_schema = marker.source_layout_schema_version;
@@ -349,14 +530,33 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::compose(
   if (marker.phase == storage::MigrationPhase::Complete) {
     if (evidence.target.generation < marker.generation)
       return NativeSettingsMigrationGateCode::TargetCorrupt;
+    if (evidence.target.generation == marker.generation) {
+      if (!targetIsMigrationResult(
+              evidence.target, evidence.legacy, marker))
+        return NativeSettingsMigrationGateCode::TargetCorrupt;
+    } else if (evidence.target.decoded_record_schema !=
+               settings::kSettingsRecordSchema) {
+      return NativeSettingsMigrationGateCode::TargetCorrupt;
+    }
     output.kind = NativeSettingsMigrationPlanKind::Complete;
     return NativeSettingsMigrationGateCode::Ok;
   }
   if (marker.phase == storage::MigrationPhase::RollbackRequired ||
       marker.phase == storage::MigrationPhase::None)
     return NativeSettingsMigrationGateCode::TargetCorrupt;
+  if (!markerSequenceHasRoom(
+          evidence.marker.sequence, markerCommitsRemaining(marker.phase)))
+    return NativeSettingsMigrationGateCode::MarkerWriteFailed;
   if (marker.phase == storage::MigrationPhase::Prepared) {
-    if (!targetCanResumePrepared(evidence.target, evidence.legacy, marker))
+    const bool target_already_written = targetIsMigrationResult(
+        evidence.target, evidence.legacy, marker);
+    const bool bootstrap_base = evidence.marker.sequence == 1U &&
+        targetCanResumePrepared(evidence.target, evidence.legacy, marker);
+    const bool rollover_base = evidence.marker.sequence > 1U &&
+        targetCanResumePostCompleteRollover(
+            evidence.target, evidence.legacy, marker, evidence.marker,
+            evidence.raw_marker);
+    if (!target_already_written && !bootstrap_base && !rollover_base)
       return NativeSettingsMigrationGateCode::TargetCorrupt;
   } else if (!targetIsMigrationResult(
                  evidence.target, evidence.legacy, marker)) {
@@ -431,11 +631,18 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::advance(
         if (!targetIsMigrationResult(
                 evidence.target, evidence.legacy, current)) {
           std::uint32_t expected_generation = 0U;
-          if (freshMigrationIdentity(current) &&
+          if (evidence.marker.sequence == 1U &&
+              freshMigrationIdentity(current) &&
               evidence.target.generation == 0U) {
             expected_generation = 0U;
-          } else if (targetIsHistoricalBase(
+          } else if (evidence.marker.sequence == 1U &&
+                     targetIsHistoricalBase(
                          evidence.target, evidence.legacy, current)) {
+            expected_generation = evidence.target.generation;
+          } else if (evidence.marker.sequence > 1U &&
+                     targetCanResumePostCompleteRollover(
+                         evidence.target, evidence.legacy, current,
+                         evidence.marker, evidence.raw_marker)) {
             expected_generation = evidence.target.generation;
           } else {
             return NativeSettingsMigrationGateCode::TargetCorrupt;
@@ -532,7 +739,8 @@ NativeSettingsMigrationGateCode NativeSettingsMigrationGate::execute(
         fresh.rollback_source);
     storage::MigrationMarkerJournalInspection committed;
     code = markerFailure(storage::MigrationMarkerJournalCore(marker_store_)
-                             .commit(prepared, 0U, committed));
+                             .commit(prepared, fresh.marker_sequence,
+                                     committed));
     if (code != NativeSettingsMigrationGateCode::Ok) return code;
     return advance(authorization);
   }

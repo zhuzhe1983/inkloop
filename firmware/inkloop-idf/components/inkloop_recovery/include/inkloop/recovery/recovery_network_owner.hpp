@@ -15,12 +15,10 @@ namespace inkloop {
 namespace recovery {
 
 enum class RecoveryWifiStoragePolicy : uint8_t {
-  // Required after a boot audit has established read-only NVS ownership.
+  // Required for every Recovery entry, including pre-audit OTA refusal.
   // Existing Wi-Fi credentials are intentionally not loaded or replaced;
   // provisioning, if needed, applies only for this Recovery boot.
   VolatileRam,
-  // Allowed only in the pre-audit OTA-health refusal path.
-  PersistentFlash,
 };
 
 struct RecoveryNetworkModeSnapshot {

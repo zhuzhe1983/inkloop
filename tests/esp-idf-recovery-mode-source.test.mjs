@@ -126,11 +126,15 @@ test("owner is bounded caller-driven and does no mutation or outbound work", () 
   assert.doesNotMatch(cmake, /inkloop_product|inkloop_storage|inkloop_ota|inkloop_portal|inkloop_voice|inkloop_display/);
 });
 
-test("post-audit Recovery Wi-Fi is RAM-only and cannot mutate read-only NVS", () => {
+test("all Recovery Wi-Fi is RAM-only and cannot mutate NVS", () => {
   assert.match(ownerHeader,
     /RecoveryWifiStoragePolicy::VolatileRam/);
+  assert.doesNotMatch(ownerHeader,
+    /RecoveryWifiStoragePolicy[\s\S]*PersistentFlash/);
   assert.match(owner,
     /WifiCredentialStorage::VolatileRam/);
+  assert.doesNotMatch(owner,
+    /WifiCredentialStorage::PersistentFlash/);
   assert.match(wifiHeader,
     /enum class WifiCredentialStorage[\s\S]*PersistentFlash[\s\S]*VolatileRam/);
   assert.match(wifi,
@@ -141,4 +145,18 @@ test("post-audit Recovery Wi-Fi is RAM-only and cannot mutate read-only NVS", ()
     /kept in RAM for Recovery/);
   assert.match(main, /prepareRecoveryReadOnlyOrDeinit\(\)/);
   assert.match(main, /recoveryReadOnlyReady\(\)/);
+  const earlyStart = main.indexOf(
+    "[[noreturn]] void runEarlyOtaRecoveryNetwork(",
+  );
+  const earlyEnd = main.indexOf(
+    "[[noreturn]] void runRecoveryAfterProductFailure(",
+    earlyStart,
+  );
+  assert.notEqual(earlyStart, -1);
+  assert.notEqual(earlyEnd, -1);
+  const early = main.slice(earlyStart, earlyEnd);
+  assert.doesNotMatch(early,
+    /nvs_flash_init|nvs_flash_erase|nvs_set_|nvs_commit|PersistentFlash/);
+  assert.match(early, /diagnostic, ESP_OK, nullptr/);
+  assert.match(early, /RecoveryWifiStoragePolicy::VolatileRam/);
 });
