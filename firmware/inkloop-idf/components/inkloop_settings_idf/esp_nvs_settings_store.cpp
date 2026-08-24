@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "nvs.h"
@@ -24,6 +25,8 @@ constexpr char kLegacyMarkerKey[] = "initialized";
 constexpr char kLegacyHeadKey[] = "head";
 constexpr char kLegacySlotAKey[] = "snap-a";
 constexpr char kLegacySlotBKey[] = "snap-b";
+constexpr char kEarlySettingsNamespace[] = "inkloop-v2";
+constexpr char kEarlyLedMapKey[] = "led-map";
 
 SettingsStatus storage(const char* detail) {
   return {SettingsError::Storage, detail};
@@ -162,48 +165,79 @@ SettingsStatus EspNvsReadOnlyLegacyPortalSource::inspect(
   state.clear();
   nvs_handle_t handle = 0;
   const esp_err_t opened = nvs_open(kLegacyNamespace, NVS_READONLY, &handle);
-  if (opened == ESP_ERR_NVS_NOT_FOUND) {
-    state.namespace_available = true;
-    return SettingsStatus::success();
-  }
-  if (opened != ESP_OK) return storage("legacy portal NVS open failed");
+  if (opened != ESP_OK && opened != ESP_ERR_NVS_NOT_FOUND)
+    return storage("legacy portal NVS open failed");
   state.namespace_available = true;
 
-  std::uint8_t marker = 0U;
-  esp_err_t result = nvs_get_u8(handle, kLegacyMarkerKey, &marker);
-  state.marker_present = result == ESP_OK;
-  state.marker_valid = state.marker_present &&
-      marker == kLegacyPortalInitializedMarker;
-  if (result != ESP_OK && result != ESP_ERR_NVS_NOT_FOUND) {
+  if (opened == ESP_OK) {
+    std::uint8_t marker = 0U;
+    esp_err_t result = nvs_get_u8(handle, kLegacyMarkerKey, &marker);
+    state.marker_present = result == ESP_OK;
+    state.marker_valid = state.marker_present &&
+        marker == kLegacyPortalInitializedMarker;
+    if (result != ESP_OK && result != ESP_ERR_NVS_NOT_FOUND) {
+      nvs_close(handle);
+      state.clear();
+      return storage("legacy portal marker read failed");
+    }
+
+    std::uint8_t head = 0U;
+    result = nvs_get_u8(handle, kLegacyHeadKey, &head);
+    state.head_present = result == ESP_OK;
+    state.head = state.head_present ? head : 0U;
+    if (result != ESP_OK && result != ESP_ERR_NVS_NOT_FOUND) {
+      nvs_close(handle);
+      state.clear();
+      return storage("legacy portal head read failed");
+    }
+
+    SettingsStatus status = readLegacyString(
+        handle, kLegacySlotAKey, state.slot_present[0], state.slot[0]);
+    if (status.ok())
+      status = readLegacyString(
+          handle, kLegacySlotBKey, state.slot_present[1], state.slot[1]);
     nvs_close(handle);
-    state.clear();
-    return storage("legacy portal marker read failed");
+    if (!status.ok()) {
+      state.clear();
+      return status;
+    }
   }
 
-  std::uint8_t head = 0U;
-  result = nvs_get_u8(handle, kLegacyHeadKey, &head);
-  state.head_present = result == ESP_OK;
-  state.head = state.head_present ? head : 0U;
-  if (result != ESP_OK && result != ESP_ERR_NVS_NOT_FOUND) {
-    nvs_close(handle);
+  // This compatibility source is deliberately narrower than the retired
+  // SettingsStore. It never reads `myai`, `album`, `render-exp`, or `sleep`,
+  // so obsolete feature flags cannot disable required native behavior.
+  handle = 0;
+  const esp_err_t early_opened =
+      nvs_open(kEarlySettingsNamespace, NVS_READONLY, &handle);
+  if (early_opened == ESP_ERR_NVS_NOT_FOUND)
+    return SettingsStatus::success();
+  if (early_opened != ESP_OK) {
     state.clear();
-    return storage("legacy portal head read failed");
+    return storage("early LED map NVS open failed");
   }
-
-  SettingsStatus status = readLegacyString(
-      handle, kLegacySlotAKey, state.slot_present[0], state.slot[0]);
-  if (status.ok())
-    status = readLegacyString(
-        handle, kLegacySlotBKey, state.slot_present[1], state.slot[1]);
+  std::uint8_t encoded = 0U;
+  const esp_err_t map_result = nvs_get_u8(handle, kEarlyLedMapKey, &encoded);
   nvs_close(handle);
-  if (!status.ok()) state.clear();
-  return status;
+  if (map_result != ESP_OK && map_result != ESP_ERR_NVS_NOT_FOUND) {
+    state.clear();
+    return storage("early LED map read failed");
+  }
+  state.early_led_map_present = map_result == ESP_OK;
+  state.early_led_map = state.early_led_map_present ? encoded : 0U;
+  return SettingsStatus::success();
 }
 
 bool EspPsaLegacySha256Verifier::matches(
     const std::string& payload,
     const std::string& expected_lower_hex) const {
   if (!validLowerSha256(expected_lower_hex)) return false;
+  std::string actual;
+  return digest(payload, actual) && actual == expected_lower_hex;
+}
+
+bool EspPsaLegacySha256Verifier::digest(
+    const std::string& payload, std::string& output_lower_hex) const {
+  output_lower_hex.clear();
   std::array<std::uint8_t, 32> digest{};
   std::size_t digest_length = 0U;
   if (psa_crypto_init() != PSA_SUCCESS ||
@@ -219,9 +253,9 @@ bool EspPsaLegacySha256Verifier::matches(
     actual[index * 2U] = kHex[digest[index] >> 4U];
     actual[index * 2U + 1U] = kHex[digest[index] & 0x0FU];
   }
-  return actual == expected_lower_hex;
+  output_lower_hex = std::move(actual);
+  return true;
 }
 
 }  // namespace settings
 }  // namespace inkloop
-

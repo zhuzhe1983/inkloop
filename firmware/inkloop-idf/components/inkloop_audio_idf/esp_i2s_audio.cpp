@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 
+#include "esp_attr.h"
 #include "esp_timer.h"
 
 namespace inkloop {
@@ -42,6 +43,32 @@ EspI2sAudioDevice::EspI2sAudioDevice(const EspI2sAudioConfig& config,
     : config_(config), codec_(codec) {}
 
 EspI2sAudioDevice::~EspI2sAudioDevice() { abort(); }
+
+bool IRAM_ATTR EspI2sAudioDevice::onPlaybackSent(
+    i2s_chan_handle_t handle, i2s_event_data_t* event, void* user_context) {
+  (void)handle;
+  (void)event;
+  auto* device = static_cast<EspI2sAudioDevice*>(user_context);
+  if (!device) return false;
+  __atomic_fetch_add(&device->playback_dma_callbacks_isr_, 1U,
+                     __ATOMIC_RELAXED);
+  return false;
+}
+
+bool IRAM_ATTR EspI2sAudioDevice::onPlaybackQueueOverflow(
+    i2s_chan_handle_t handle, i2s_event_data_t* event, void* user_context) {
+  (void)handle;
+  (void)event;
+  auto* device = static_cast<EspI2sAudioDevice*>(user_context);
+  if (!device) return false;
+  uint32_t* counter =
+      __atomic_load_n(&device->playback_source_open_for_isr_,
+                      __ATOMIC_RELAXED) != 0U
+          ? &device->playback_dma_underruns_isr_
+          : &device->playback_dma_drain_overflows_isr_;
+  __atomic_fetch_add(counter, 1U, __ATOMIC_RELAXED);
+  return false;
+}
 
 bool EspI2sAudioDevice::validConfig() const {
   const uint32_t minimum_output_rate_hz =
@@ -121,6 +148,14 @@ esp_err_t EspI2sAudioDevice::createPlaybackChannel(uint32_t sample_rate_hz) {
   standard.gpio_cfg.din = GPIO_NUM_NC;
   standard.gpio_cfg.invert_flags = {};
   status = i2s_channel_init_std_mode(playback_channel_, &standard);
+  if (status == ESP_OK) {
+    i2s_event_callbacks_t callbacks{};
+    callbacks.on_sent = &EspI2sAudioDevice::onPlaybackSent;
+    callbacks.on_send_q_ovf =
+        &EspI2sAudioDevice::onPlaybackQueueOverflow;
+    status = i2s_channel_register_event_callback(
+        playback_channel_, &callbacks, this);
+  }
   if (status != ESP_OK) {
     i2s_del_channel(playback_channel_);
     playback_channel_ = nullptr;
@@ -234,6 +269,13 @@ esp_err_t EspI2sAudioDevice::beginPlayback(uint32_t sample_rate_hz,
       preload_frames * 2U * sizeof(int16_t));
   playback_drain_wait_us_ = static_cast<uint32_t>(
       (dma_frames * 1000000ULL + output_rate - 1U) / output_rate);
+  if (!playback_feed_monitor_.begin(output_rate,
+                                    static_cast<size_t>(dma_frames))) {
+    ++diagnostics_.playback_failures;
+    releasePlaybackChannel(false);
+    return ESP_ERR_INVALID_ARG;
+  }
+  __atomic_store_n(&playback_source_open_for_isr_, 0U, __ATOMIC_RELAXED);
   mode_ = Mode::Playback;
   ++diagnostics_.playback_starts;
   return ESP_OK;
@@ -270,8 +312,21 @@ esp_err_t EspI2sAudioDevice::enablePlaybackChannel() {
   if (playback_preloaded_bytes_ == 0U) return ESP_ERR_INVALID_STATE;
   esp_err_t status = codec_.activatePlayback();
   if (status == ESP_OK) playback_codec_active_ = true;
+  const int64_t started_us = esp_timer_get_time();
+  if (status == ESP_OK &&
+      !playback_feed_monitor_.start(static_cast<uint64_t>(started_us))) {
+    status = ESP_ERR_INVALID_STATE;
+  }
+  if (status == ESP_OK) {
+    __atomic_store_n(&playback_source_open_for_isr_,
+                     playback_feed_monitor_.sourceOpen() ? 1U : 0U,
+                     __ATOMIC_RELAXED);
+  }
   if (status == ESP_OK) status = i2s_channel_enable(playback_channel_);
   if (status != ESP_OK) {
+    __atomic_store_n(&playback_source_open_for_isr_, 0U,
+                     __ATOMIC_RELAXED);
+    playback_feed_monitor_.stop();
     if (playback_codec_active_) {
       codec_.deactivatePlayback();
       playback_codec_active_ = false;
@@ -280,7 +335,7 @@ esp_err_t EspI2sAudioDevice::enablePlaybackChannel() {
     return status;
   }
   playback_channel_enabled_ = true;
-  playback_last_write_us_ = esp_timer_get_time();
+  playback_last_write_us_ = started_us;
   ++diagnostics_.playback_preload_starts;
   return ESP_OK;
 }
@@ -310,6 +365,11 @@ esp_err_t EspI2sAudioDevice::finishPlaybackSource(uint32_t timeout_ms) {
       const esp_err_t written = writeOutput(tail.data(), count, timeout_ms);
       if (written != ESP_OK) return written;
     }
+    const int64_t finished_us = esp_timer_get_time();
+    playback_feed_monitor_.finishSource(
+        static_cast<uint64_t>(finished_us));
+    __atomic_store_n(&playback_source_open_for_isr_, 0U,
+                     __ATOMIC_RELAXED);
   }
   return startPreloadedPlayback();
 }
@@ -335,6 +395,12 @@ esp_err_t EspI2sAudioDevice::writeOutput(
     playback_preloaded_bytes_ += loaded;
     diagnostics_.peak_preloaded_bytes = std::max(
         diagnostics_.peak_preloaded_bytes, playback_preloaded_bytes_);
+    if ((loaded % sizeof(StereoPcm16Frame)) != 0U ||
+        (loaded != 0U && !playback_feed_monitor_.preload(
+                            loaded / sizeof(StereoPcm16Frame)))) {
+      ++diagnostics_.playback_failures;
+      return ESP_ERR_INVALID_SIZE;
+    }
     offset = loaded;
     if (playback_preloaded_bytes_ >= playback_preload_target_bytes_ ||
         loaded < length) {
@@ -347,6 +413,12 @@ esp_err_t EspI2sAudioDevice::writeOutput(
                                        timeout_ms);
     if (written != ESP_OK) return written;
     playback_last_write_us_ = esp_timer_get_time();
+    if (!playback_feed_monitor_.submit(
+            (length - offset) / sizeof(StereoPcm16Frame),
+            static_cast<uint64_t>(playback_last_write_us_))) {
+      ++diagnostics_.playback_failures;
+      return ESP_ERR_INVALID_STATE;
+    }
   }
   diagnostics_.played_output_frames += frame_count;
   return ESP_OK;
@@ -415,6 +487,8 @@ bool EspI2sAudioDevice::playbackDrained() const {
 
 esp_err_t EspI2sAudioDevice::releasePlaybackChannel(bool deactivate_codec) {
   esp_err_t first = ESP_OK;
+  __atomic_store_n(&playback_source_open_for_isr_, 0U, __ATOMIC_RELAXED);
+  playback_feed_monitor_.stop();
   if (deactivate_codec && playback_codec_active_) {
     const esp_err_t status = codec_.deactivatePlayback();
     if (first == ESP_OK) first = status;
@@ -462,6 +536,18 @@ void EspI2sAudioDevice::abort() {
     ++diagnostics_.forced_aborts;
   }
   mode_ = Mode::Idle;
+}
+
+EspI2sAudioDiagnostics EspI2sAudioDevice::diagnostics() const {
+  EspI2sAudioDiagnostics value = diagnostics_;
+  value.playback_dma_callbacks = __atomic_load_n(
+      &playback_dma_callbacks_isr_, __ATOMIC_RELAXED);
+  value.playback_dma_underruns = __atomic_load_n(
+      &playback_dma_underruns_isr_, __ATOMIC_RELAXED);
+  value.playback_dma_expected_drain_overflows = __atomic_load_n(
+      &playback_dma_drain_overflows_isr_, __ATOMIC_RELAXED);
+  value.playback_feed = playback_feed_monitor_.diagnostics();
+  return value;
 }
 
 }  // namespace inkloop

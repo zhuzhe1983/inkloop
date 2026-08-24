@@ -3,22 +3,24 @@
 Status: **PARTIAL PHYSICAL EVIDENCE — RELEASE STILL PENDING.** beta27 has a
 retained inactive-app1 readback/boot and Recovery-path pass with app0 beta25
 preserved. It does not have a Product pass: three valid divergent TF album
-indexes remain behind an explicit operator choice. `0.4.0-beta.29` is the
-current remediation worktree (424/424 tests, lint zero errors/19 warnings).
-The exact beta28 independent gate failed; beta29 repairs its five findings, but
-still requires exact-commit reproducible C151/mock artifacts and a fresh
-independent gate before staging. It has not been flashed. No older physical
-observation transfers to beta29.
+indexes remain behind an explicit operator choice. The previously reviewed
+beta29 artifact is **revoked for physical staging after the complete audit**;
+it must not be flashed. The next eligible candidate is beta30 or newer and must
+have a fresh exact-commit acceptance result plus two byte-identical C151 builds.
+Its commit, version, application SHA-256 and byte count remain deliberately
+unbound until those new artifacts exist. No older physical observation
+transfers to that candidate.
 
-Current internal-flash custody before beta29: two 16 MiB reads are byte-identical
+Current pre-candidate internal-flash custody: two 16 MiB reads are byte-identical
 with SHA-256
 `25d169e66cc334fe219de0220cca2920d0aae8c8747d33dde3af87bd9196f76d`.
 They preserve beta25 app0, selected beta27 app1, otadata, NVS and LittleFS. The
 device was left in ROM bootloader after the reads; no deliberate device or TF
 mutation command was issued. This does not establish TF byte custody: the
 existing firmware mounts TF writable through `esp_vfs_fat_sdspi_mount`, and no
-offline whole-card image has yet been captured. Physical beta29 staging is
-therefore **BLOCKED** until that image and its hash are verified.
+offline whole-card image has yet been captured. Physical candidate staging is
+therefore **BLOCKED** until that image and its hash are verified and a fresh
+beta30-or-newer release acceptance is bound.
 
 This is the release-blocking procedure for the currently attached,
 user-authorized C151. The unit is currently in Download mode, but future runs
@@ -75,12 +77,13 @@ For each section retain:
 
 ## 2. Preconditions and safe candidate flash
 
-Current digital evidence: the beta29 worktree passes the complete repository
-suite 452/452 and lint with zero errors/19 warnings. Exact-commit reproducible
-official ESP-IDF v6.0.2 C151/mock artifacts and the fresh independent beta29
-gate remain pending. The operator must bind every result to the exact committed
-source, binary, gate and physical run selected for staging. A beta27 Recovery
-pass is not beta29 Product evidence.
+Historical beta29 digital evidence is not an eligible physical target after the
+complete audit. The next candidate must be beta30 or newer, pass the complete
+repository suite and lint on its exact commit, and produce two byte-identical
+official ESP-IDF v6.0.2 C151 builds. A fresh independent result must prove the
+same commit and artifacts. The operator must bind every physical result to that
+exact committed source, version, binary SHA/size, acceptance file and physical
+run. A beta27 Recovery pass is not Product evidence for the new candidate.
 
 - [ ] the candidate's exact source commit, version, C151 binary hash, signed
   manifest hash and fresh-acceptance report all match; no unversioned branch
@@ -124,10 +127,14 @@ shasum -a 256 "$INKLOOP_EVIDENCE_DIR"/*-before.bin \
 The mandatory pre-flash TF backup must be an offline whole-card byte image from
 an explicitly validated card device, captured after powering down and removing
 the card. Never infer a TF device from an unresolved variable or broad disk
-path. A beta29 HTTP export cannot satisfy this gate because current
+path. Use the inspect-then-confirm macOS whole-card tool documented in
+[TF_ALBUM_RECOVERY_EXPORT.md](TF_ALBUM_RECOVERY_EXPORT.md), and require its
+final `custody.json` to contain `complete: true` with two matching source-pass
+hashes and the matching image hash. A firmware HTTP export cannot satisfy this
+gate because current
 `esp_vfs_fat_sdspi_mount` usage mounts FAT writable. For divergent album slots,
-follow [TF_ALBUM_RECOVERY_EXPORT.md](TF_ALBUM_RECOVERY_EXPORT.md): after the
-whole-card custody exists, its logical exporter may additionally retain all
+after the whole-card custody exists, the logical exporter in the same document
+may additionally retain all
 three candidate indexes and the referenced-asset union for selection. A
 `manifest.json` with `complete: true` is logical export evidence only.
 
@@ -157,6 +164,121 @@ whole-card hash or target image hash differs from the gate, stop before the
 first write. Factory flashing of a
 verified blank board is a separate procedure and is not evidence for this
 installed unit.
+
+### 2.1 Installed-unit beta30+ inactive-app0 gate
+
+For this one installed unit, use
+`tools/c151_inactive_app0_gate.py`. The tool is pinned to the authorized MAC,
+port, 16 MiB pre-candidate baseline, beta25 app0, selected beta27 app1 rollback,
+partition table and current seq1/seq2 `VALID` otadata. It is deliberately not
+pinned to a release: every release-sensitive phase requires the same explicit
+beta30-or-newer commit, version, C151 SHA-256 and byte count, and `gate-app`
+also requires a fresh acceptance file proving that exact tuple. The revoked
+beta29 tuple is rejected before any authorization is emitted. Its `capture`
+subcommand has a fixed read-only esptool allow-list. Writes are possible only
+through the generated `execute-app`, `execute-selector` and `execute-rollback`
+commands; never copy or improvise a raw esptool write. Do not run `capture`
+until the device is powered down, the TF card is removed and its offline
+whole-card image/custody JSON exists.
+
+The `--tf-custody` input must be the unmodified `custody.json` emitted by
+`capture_tf_whole_card_macos.mjs` next to its `tf-whole-card.img` and
+`SHA256SUMS`. The app0 gate re-hashes the image and requires `complete: true`,
+two matching full source passes, matching byte counts, unchanged diskutil
+fingerprints, an explicit external physical whole disk, unmounted members and
+the tool's no-source-write/no-automatic-unmount/no-implicit-elevation claims.
+It reconstructs the normalized identity independently from every
+before/pre-read/between/after diskutil info/member receipt, checks the initial
+disk list/member inventory, recomputes each fingerprint from recursively
+key-sorted canonical JSON, and binds every receipt by path, size and SHA-256; a
+merely well-formed or self-consistent 64-hex fingerprint is not sufficient.
+Device shutdown and physical card removal remain witnessed operator
+preconditions; a logical album export or mounted FAT copy cannot satisfy them.
+
+Run the read-only capture, then the offline first-stage gate:
+
+```sh
+export BETA30_COMMIT=REPLACE_WITH_40_LOWERCASE_HEX
+export BETA30_VERSION=0.4.0-beta.30
+export BETA30_SHA256=REPLACE_WITH_64_LOWERCASE_HEX
+export BETA30_BYTES=REPLACE_WITH_DECIMAL_BYTE_COUNT
+
+python3 firmware/inkloop-idf/tools/c151_inactive_app0_gate.py capture \
+  --port /dev/cu.usbmodem21442201 \
+  --output-dir /ABSOLUTE/NEW/c151-candidate-readonly-capture
+
+python3 firmware/inkloop-idf/tools/c151_inactive_app0_gate.py gate-app \
+  --capture-dir /ABSOLUTE/NEW/c151-candidate-readonly-capture \
+  --candidate /ABSOLUTE/BETA30-C151/inkloop_idf.bin \
+  --acceptance-result /ABSOLUTE/BETA30-FRESH-ACCEPTANCE/result.json \
+  --baseline-custody /Users/zhuzhe/.local/share/inkloop/device-evidence/c151-20260824-pre-beta29-current/custody.json \
+  --tf-custody /ABSOLUTE/TF-CUSTODY.json \
+  --expected-commit "$BETA30_COMMIT" \
+  --expected-version "$BETA30_VERSION" \
+  --expected-candidate-sha256 "$BETA30_SHA256" \
+  --expected-candidate-bytes "$BETA30_BYTES" \
+  --output-dir /ABSOLUTE/NEW/c151-candidate-app0-gate
+```
+
+`gate-app` is fail-closed if any current byte or identity differs. Its first
+plan authorizes exactly one mutation: the explicitly bound candidate bytes at
+inactive `app0 @ 0x10000`. Its recorded affected length is the minimum 4 KiB
+erase-aligned range containing the candidate; every byte after the exact image
+within that range must read back as `0xff`. It emits no selector bytes and no raw
+esptool write argv. Run only `execute_app_argv` from `app-stage-plan.json`. At
+that execution boundary the tool reloads the complete authorization chain,
+rejects a replaced, extended or symlinked staged candidate, snapshots the exact
+bytes into an unlinked inherited `/dev/fd/N`, rechecks MAC/chip/security/flash
+identity, and compares a fresh current 16 MiB read with the expected baseline.
+Only then can it write app0. It automatically reads all 16 MiB back and compares
+every byte with the unique after-image: only the exact candidate bytes and their
+required 4 KiB erase-padding may differ. That continuous check covers the
+bootloader/partition prefix, NVS, unchanged otadata, the app0 suffix, app1
+rollback, LittleFS and the flash tail including coredump.
+
+Only after those files exist may the second gate run:
+
+```sh
+python3 firmware/inkloop-idf/tools/c151_inactive_app0_gate.py authorize-selector \
+  --app-authorization /ABSOLUTE/NEW/c151-candidate-app0-gate/app-stage-authorization.json \
+  --full-flash-readback /ABSOLUTE/NEW/c151-candidate-app0-gate/app-execution/full-flash-after-app.bin \
+  --expected-commit "$BETA30_COMMIT" \
+  --expected-version "$BETA30_VERSION" \
+  --expected-candidate-sha256 "$BETA30_SHA256" \
+  --expected-candidate-bytes "$BETA30_BYTES" \
+  --output-dir /ABSOLUTE/NEW/c151-candidate-selector-gate
+```
+
+That gate emits one 32-byte seq3/`NEW`/CRC-correct entry for `0xe000`. The new
+image is a Product candidate and rollback is enabled, so `NEW` is mandatory: the
+bootloader must advance it to `PENDING_VERIFY`, after which the committed
+boot-health gate either confirms it or rolls back to beta27 app1. Reusing the
+beta27 Recovery-only `VALID` selector would bypass that automatic rollback and
+is forbidden. The selector must be exactly
+`03000000ffffffffffffffffffffffffffffffffffffffff0000000011504aed`
+(SHA-256
+`9e10bbc4ceebe605fde303fe22ce077af5f7471fcc607e6ee43b63207bd63e58`). The
+flash device necessarily erases the containing 4 KiB entry0 sector, whose
+remaining bytes are required to be `0xff`; it does not touch entry1 at
+`0xf000`. Entry1 remains seq2/`VALID` and therefore remains a rollback selector
+if entry0 is lost during a power cut. The gate also emits the exact original
+32-byte seq1 entry as the only reviewed rollback mutation. Run only the plan's
+`execute_selector_argv`; it repeats the live identity and exact pre-write 16 MiB
+checks, seals the exact 32-byte selector into an inherited FD, writes it, and
+automatically verifies the final full image. Then run the recorded
+`final_verification_argv`. The verifier byte-compares the whole flash against
+the app-stage after-image plus only the reviewed seq3/`NEW` selector delta. The
+controlled `execute_rollback_argv` applies the same protections to the exact
+seq1 entry, and its verification compares the whole flash against the exact
+post-app image. Thus both paths also prove the app0 suffix, flash tail/coredump,
+prefix, NVS, app1 and LittleFS. All execute and verify commands repeat the four
+release-binding arguments. If rollback is required, use only those two recorded
+rollback commands; never improvise an otadata erase/write.
+
+No phase authorizes bootloader, partition-table, NVS, app1, LittleFS, coredump
+or TF writes. No phase authorizes generic `idf.py flash`, `erase-flash`, a raw
+esptool write, a different port/MAC, a rebuilt candidate, or a selector write
+before the app after-image passes.
 
 Save the full monitor output from reset through stable normal or Recovery mode.
 If the boot loops, reports an ambiguous audit without the expected Recovery
@@ -431,7 +553,7 @@ key into firmware, repository or evidence.
 
 | Gate | Result | Evidence path / defect |
 |---|---|---|
-| Digital final gate and clean builds | PENDING (beta29 worktree 452/452; lint 0 errors/19 warnings) | Produce exact-commit reproducible C151/mock artifacts and pass a fresh independent beta29 gate before any write. |
+| Digital final gate and clean builds | PENDING (beta29 target revoked) | Produce beta30-or-newer exact-commit reproducible C151/mock artifacts and pass a fresh independent gate before any write. |
 | First flash, boot and identity | PENDING | |
 | Input latency and LEDs | PENDING | |
 | Wi-Fi and Portal | PENDING | |

@@ -51,6 +51,10 @@ enum class ProductOpcode : uint16_t {
   // Identical display path with a credential-free completion event for the
   // physical serial acceptance harness.
   DisplayDiagnosticAigcOrdinal = 502,
+  // A physical-button, Portal, or interactive AIGC choice. A successful real
+  // refresh starts the 30-second user-viewing hold; scheduled Inkloop work
+  // continues to use DisplayAlbumOrdinal and never extends that hold.
+  DisplayInteractiveAlbumOrdinal = 503,
 };
 
 inline constexpr uint16_t productOpcode(ProductOpcode value) {

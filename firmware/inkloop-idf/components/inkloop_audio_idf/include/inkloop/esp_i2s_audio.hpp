@@ -5,6 +5,7 @@
 
 #include "driver/i2s_std.h"
 #include "esp_err.h"
+#include "inkloop/playback_feed_monitor.hpp"
 #include "inkloop/streaming_stereo_resampler.hpp"
 
 namespace inkloop {
@@ -51,6 +52,13 @@ struct EspI2sAudioDiagnostics {
   size_t played_source_bytes = 0;
   size_t played_output_frames = 0;
   size_t peak_preloaded_bytes = 0;
+  // `on_send_q_ovf` means the producer left the IDF free-buffer queue full
+  // for an entire DMA-ring turn. With auto-clear enabled, the recycled
+  // descriptor carries silence, so a source-open event is a real underrun.
+  uint32_t playback_dma_callbacks = 0;
+  uint32_t playback_dma_underruns = 0;
+  uint32_t playback_dma_expected_drain_overflows = 0;
+  PlaybackFeedDiagnostics playback_feed{};
 };
 
 // Native half-duplex I2S standard-mode owner. It creates no task and owns no
@@ -101,7 +109,7 @@ class EspI2sAudioDevice final {
   }
   uint8_t playbackChannels() const { return playback_channels_; }
   bool playbackRunning() const { return playback_channel_enabled_; }
-  const EspI2sAudioDiagnostics& diagnostics() const { return diagnostics_; }
+  EspI2sAudioDiagnostics diagnostics() const;
 
  private:
   bool validConfig() const;
@@ -113,6 +121,11 @@ class EspI2sAudioDevice final {
   esp_err_t writeOutput(const StereoPcm16Frame* frames, size_t frame_count,
                         uint32_t timeout_ms);
   esp_err_t writeAll(const void* bytes, size_t length, uint32_t timeout_ms);
+  static bool onPlaybackSent(i2s_chan_handle_t handle,
+                             i2s_event_data_t* event, void* user_context);
+  static bool onPlaybackQueueOverflow(i2s_chan_handle_t handle,
+                                      i2s_event_data_t* event,
+                                      void* user_context);
 
   EspI2sAudioConfig config_;
   IAudioCodecControl& codec_;
@@ -131,6 +144,14 @@ class EspI2sAudioDevice final {
   uint32_t playback_drain_wait_us_ = 0;
   uint8_t volume_percent_ = 60;
   StreamingStereoResampler playback_resampler_{};
+  PlaybackFeedMonitor playback_feed_monitor_{};
+  // ISR-owned cumulative counters. IDF places the relaxed 32-bit atomic
+  // helper and its short critical section in IRAM; callbacks never allocate,
+  // log, touch PSRAM or take a task mutex while the cache may be unavailable.
+  uint32_t playback_dma_callbacks_isr_ = 0;
+  uint32_t playback_dma_underruns_isr_ = 0;
+  uint32_t playback_dma_drain_overflows_isr_ = 0;
+  uint32_t playback_source_open_for_isr_ = 0;
   EspI2sAudioDiagnostics diagnostics_{};
 };
 

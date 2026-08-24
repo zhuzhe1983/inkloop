@@ -10,6 +10,71 @@ const audio = join(repo, "firmware/inkloop-idf/components/inkloop_audio");
 const native = join(repo, "firmware/inkloop-idf/components/inkloop_audio_idf");
 const board = join(repo, "firmware/inkloop-idf/boards/m5_papercolor_c151");
 
+const cadenceHarness = String.raw`
+#include <cassert>
+#include <cstdint>
+
+#include "inkloop/playback_feed_monitor.hpp"
+
+using namespace inkloop;
+
+int main() {
+  PlaybackFeedMonitor steady;
+  assert(!steady.begin(0, 4096));
+  assert(steady.begin(44100, 4096));
+  assert(steady.preload(2646)); // exactly 60 ms at 44.1 kHz
+  assert(steady.start(1000000));
+  for (uint64_t tick = 1; tick <= 100; ++tick) {
+    assert(steady.submit(441, 1000000 + tick * 10000));
+  }
+  steady.finishSource(2000000);
+  const auto healthy = steady.diagnostics();
+  assert(healthy.streams == 1);
+  assert(healthy.submit_calls == 100);
+  assert(healthy.max_submit_gap_us == 10000);
+  // The producer wakes every 10 ms: lead reaches 50 ms immediately before
+  // each refill and returns to 60 ms afterwards.
+  assert(healthy.minimum_queue_lead_us == 50000);
+  assert(healthy.estimated_underrun_count == 0);
+  assert(healthy.late_submit_count == 0);
+  assert(healthy.queue_clamp_count == 0);
+  assert(healthy.peak_queue_frames == 2646);
+
+  PlaybackFeedMonitor short_prompt;
+  assert(short_prompt.begin(44100, 4096));
+  assert(short_prompt.preload(2205)); // 50 ms: source closes before DMA starts
+  short_prompt.finishSource(1000000);
+  assert(short_prompt.start(1000000));
+  // start() must not reopen a source which was completely preloaded. Its
+  // eventual queue overflow is an expected drain, not an underrun.
+  assert(!short_prompt.submit(441, 1010000));
+  assert(short_prompt.diagnostics().estimated_underrun_count == 0);
+
+  PlaybackFeedMonitor delayed;
+  assert(delayed.begin(44100, 4096));
+  assert(delayed.preload(2646));
+  assert(delayed.start(0));
+  assert(delayed.submit(441, 75000));
+  const auto starved = delayed.diagnostics();
+  assert(starved.max_submit_gap_us == 75000);
+  assert(starved.late_submit_count == 1);
+  assert(starved.estimated_underrun_count == 1);
+  assert(starved.estimated_underrun_frames == 661);
+  assert(starved.minimum_queue_lead_us == 0);
+  assert(starved.current_queue_frames == 441);
+
+  PlaybackFeedMonitor bounded;
+  assert(bounded.begin(44100, 4096));
+  assert(bounded.preload(5000));
+  const auto queue = bounded.diagnostics();
+  assert(queue.queue_clamp_count == 1);
+  assert(queue.queue_overflow_frames == 904);
+  assert(queue.current_queue_frames == 4096);
+  assert(queue.peak_queue_frames == 4096);
+  return 0;
+}
+`;
+
 const harness = String.raw`
 #include <array>
 #include <cassert>
@@ -112,6 +177,31 @@ function buildAndRun(sanitized) {
   }
 }
 
+function buildAndRunCadence(sanitized) {
+  const scratch = mkdtempSync(join(tmpdir(), "inkloop-audio-cadence-"));
+  try {
+    const source = join(scratch, "cadence.cpp");
+    const binary = join(scratch, sanitized ? "sanitized" : "strict");
+    writeFileSync(source, cadenceHarness);
+    const args = [
+      "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
+      "-I", join(audio, "include"), source, "-o", binary,
+    ];
+    if (sanitized) {
+      args.splice(1, 0, "-fsanitize=address,undefined", "-fno-omit-frame-pointer");
+    }
+    execFileSync("c++", args, { stdio: "pipe" });
+    execFileSync(binary, [], {
+      env: sanitized
+        ? { ...process.env, ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1" }
+        : process.env,
+      stdio: "pipe",
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 test("bounded playback and capture flows pass strict C++17", () => {
   buildAndRun(false);
 });
@@ -120,9 +210,22 @@ test("60-second audio limits and generation cancellation pass ASan/UBSan", () =>
   buildAndRun(true);
 });
 
+test("playback feed cadence and bounded queue detect a repeatable underrun", () => {
+  buildAndRunCadence(false);
+  buildAndRunCadence(true);
+});
+
 test("native I2S and C151 codecs preserve the official PaperColor wiring", () => {
   const i2s = readFileSync(join(native, "esp_i2s_audio.cpp"), "utf8");
   const codec = readFileSync(join(board, "papercolor_audio_codec.cpp"), "utf8");
+  const voiceHeader = readFileSync(join(
+    repo,
+    "firmware/inkloop-idf/components/inkloop_product/include/inkloop/native_voice_service.hpp",
+  ), "utf8");
+  const voice = readFileSync(join(
+    repo,
+    "firmware/inkloop-idf/components/inkloop_product/native_voice_service.cpp",
+  ), "utf8");
   const cmake = readFileSync(join(native, "CMakeLists.txt"), "utf8");
 
   assert.match(i2s, /I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG/);
@@ -130,6 +233,20 @@ test("native I2S and C151 codecs preserve the official PaperColor wiring", () =>
   assert.match(i2s, /I2S_STD_SLOT_BOTH/);
   assert.match(i2s, /StreamingStereoResampler/);
   assert.match(i2s, /i2s_channel_preload_data/);
+  assert.match(i2s, /i2s_channel_register_event_callback/);
+  assert.match(i2s, /callbacks\.on_sent/);
+  assert.match(i2s, /callbacks\.on_send_q_ovf/);
+  assert.match(i2s, /IRAM_ATTR EspI2sAudioDevice::onPlaybackQueueOverflow/);
+  assert.match(i2s, /playback_dma_underruns_isr_/);
+  assert.match(i2s, /playback_feed_monitor_\.submit/);
+  assert.match(voiceHeader,
+    /unique_ptr<EspI2sAudioDevice, InternalAudioDeviceDeleter>/);
+  assert.match(voice,
+    /heap_caps_malloc\([\s\S]*MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT/);
+  assert.match(voice, /new \(audio_storage\)\s*EspI2sAudioDevice/);
+  assert.match(voice, /esp_ptr_internal\(audio_device\)/);
+  assert.match(voice,
+    /InternalAudioDeviceDeleter::operator\([\s\S]*~EspI2sAudioDevice\(\)[\s\S]*heap_caps_free/);
   assert.match(i2s, /kPlaybackPreloadMilliseconds = 60U/);
   assert.match(i2s, /kMaximumBlockingWriteMilliseconds = 20U/);
   assert.match(i2s, /playback_dma_fits_write_timeout/);

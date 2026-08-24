@@ -10,10 +10,17 @@ namespace inkloop {
 namespace settings {
 
 inline constexpr std::uint8_t kSettingsInitializedMarker = 0xB6U;
-inline constexpr std::uint16_t kSettingsRecordSchema = 2U;
+// Schema 3 adds the SKU-neutral LED-role-swap flag. The decoder continues to
+// accept schemas 1 and 2 and deterministically supplies the old default
+// (not swapped), so an installed beta29 journal upgrades without reset.
+inline constexpr std::uint16_t kSettingsRecordSchema = 3U;
 
 struct SettingsSnapshot {
   std::uint32_t generation = 0U;
+  // Observed wire schema of a decoded committed record. Fresh defaults use
+  // zero. Encoding always writes kSettingsRecordSchema; callers must not use
+  // this field to request an older format.
+  std::uint16_t decoded_record_schema = 0U;
   DeviceSettings values;
 };
 

@@ -105,7 +105,8 @@ StatusLedCore::renderHardwareTest(uint32_t elapsed_ms) const {
 }
 
 StatusLedFrame StatusLedCore::render(uint32_t now_ms,
-                                     uint8_t available_pixels) const {
+                                     uint8_t available_pixels,
+                                     bool roles_swapped) const {
   StatusLedFrame output;
   if (available_pixels == 0U) return output;
   const std::array<BoardRgbPixel, StatusLedFrame::kRoleCount> logical =
@@ -119,8 +120,12 @@ StatusLedFrame StatusLedCore::render(uint32_t now_ms,
     output.count = 1U;
     return output;
   }
-  // Two-pixel boards preserve the established physical role order.
-  output.pixels = logical;
+  // Role mapping is independent of GPIO topology. A one-pixel SKU merged the
+  // roles above; a two-pixel SKU may exchange logical Voice/Image positions.
+  output.pixels = roles_swapped
+      ? std::array<BoardRgbPixel, StatusLedFrame::kRoleCount>{{logical[1],
+                                                               logical[0]}}
+      : logical;
   output.count = static_cast<uint8_t>(output.pixels.size());
   return output;
 }

@@ -20,7 +20,12 @@ enum class BoardButton : uint8_t {
 };
 
 inline constexpr size_t kMaximumBoardIdBytes = 64U;
-inline constexpr uint8_t kMaximumBoardRgbPixels = 8U;
+// The product LED state machine currently exposes exactly two logical roles:
+// Voice and Image. Zero-pixel SKUs omit LEDs and one-pixel SKUs merge the two
+// roles. A future board with more physical pixels must first provide an
+// explicit role-to-pixel adapter contract; accepting 3+ here would let the
+// descriptor pass validation only to fail later during Product composition.
+inline constexpr uint8_t kMaximumBoardRgbPixels = 2U;
 
 constexpr uint8_t boardButtonMask(BoardButton button) {
   return static_cast<uint8_t>(1U << static_cast<uint8_t>(button));

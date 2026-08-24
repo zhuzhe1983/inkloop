@@ -118,32 +118,32 @@ test("catalog, onboarding, selection, tick and command admissions fail closed", 
     "renderOnboardingPage()",
     "!storage_maintenance_ && !catalog_refreshing_",
     "navigation_.takeSettled",
-    "renderOrdinal(ordinal)",
+    "renderOrdinal(ordinal, true)",
   ]);
 
   const handler = section(
     source,
     "WorkDisposition NativeDisplayService::handle",
-    "bool NativeDisplayService::renderOrdinal(size_t ordinal)",
+    "bool NativeDisplayService::renderOrdinal(size_t ordinal,",
   );
   ordered(handler, [
     "storage_maintenance_ || catalog_refreshing_",
     "return WorkDisposition::Busy",
-    "renderOrdinal(envelope.flags)",
+    "renderOrdinal(envelope.flags, user_initiated)",
   ]);
 });
 
 test("an admitted album render holds an explicit lease across all album I/O", () => {
   const admission = section(
     source,
-    "bool NativeDisplayService::renderOrdinal(size_t ordinal)",
-    "bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal)",
+    "bool NativeDisplayService::renderOrdinal(size_t ordinal,",
+    "bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal,",
   );
   ordered(admission, [
     "portENTER_CRITICAL(&mux_)",
     "storage_maintenance_ || catalog_refreshing_ || album_rendering_",
     "album_rendering_ = true",
-    "renderOrdinalAdmitted(ordinal)",
+    "renderOrdinalAdmitted(ordinal, user_initiated)",
     "album_rendering_ = false",
     "portEXIT_CRITICAL(&mux_)",
   ]);
@@ -167,7 +167,7 @@ test("an admitted album render holds an explicit lease across all album I/O", ()
 
   const admitted = section(
     source,
-    "bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal)",
+    "bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal,",
     "NativeDisplayDiagnostics NativeDisplayService::diagnostics() const",
   );
   ordered(admitted, [

@@ -26,7 +26,7 @@ function body(name) {
   assert.fail(`${name} body is unterminated`);
 }
 
-test("native device state is one CAS settings owner with read-only Arduino import", () => {
+test("native device state consumes only a completed migration authorization", () => {
   const nvs = readFileSync(
     join(settingsIdf, "esp_nvs_settings_store.cpp"), "utf8");
   assert.match(
@@ -36,7 +36,15 @@ test("native device state is one CAS settings owner with read-only Arduino impor
   assert.match(body("initialize"), /store_\.load\(snapshot_\)/);
   assert.match(
     body("initialize"),
-    /snapshot_\.generation == 0U[\s\S]*inspectLegacyPortalSettings[\s\S]*store_\.save\(candidate\.values, 0U, committed\)/,
+    /authorization\.kind == NativeSettingsAuthorityKind::FreshDefaults[\s\S]*snapshot_\.generation == 0U/,
+  );
+  assert.match(
+    body("initialize"),
+    /authorization\.kind == NativeSettingsAuthorityKind::NativeJournal[\s\S]*snapshot_\.generation == authorization\.observed_generation[\s\S]*authorization\.migration_generation/,
+  );
+  assert.doesNotMatch(
+    body("initialize"),
+    /inspectLegacyPortalSettings|legacy_|store_\.save/,
   );
   assert.match(
     body("commitLocked"),
@@ -58,6 +66,7 @@ test("Portal and local-tools fields map to the same validated settings snapshot"
   for (const mapping of [
     /patch\.has_volume[\s\S]*next\.volume_percent = patch\.volume/,
     /patch\.has_led_maximum_brightness[\s\S]*next\.led_maximum_brightness_percent/,
+    /patch\.has_led_roles_swapped[\s\S]*next\.led_roles_swapped/,
     /patch\.has_voice_assistance_enabled[\s\S]*next\.voice_assistance_enabled/,
     /patch\.has_assistant_prompt[\s\S]*next\.assistant_prompt/,
     /patch\.has_image_prompt_template[\s\S]*next\.aigc_prompt_template/,
@@ -73,6 +82,7 @@ test("Portal and local-tools fields map to the same validated settings snapshot"
     assert.match(body(method), /commitLocked\(next\)/);
   }
   assert.match(body("portalSnapshot"), /local_management_password_overridden/);
+  assert.match(body("portalSnapshot"), /led_roles_swapped/);
   assert.doesNotMatch(body("portalSnapshot"), /local_management_password_override\s*=/);
   assert.match(body("effectiveAssetPreference"), /boot_effective_preference_/);
   assert.doesNotMatch(body("effectiveAssetPreference"), /snapshot_/);

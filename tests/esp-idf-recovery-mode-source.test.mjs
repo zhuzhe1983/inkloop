@@ -33,6 +33,10 @@ const wifiHeader = readFileSync(
 );
 const wifi = readFileSync(join(connectivity, "esp_wifi_station.cpp"), "utf8");
 const cmake = readFileSync(join(recovery, "CMakeLists.txt"), "utf8");
+const main = readFileSync(
+  join(repo, "firmware/inkloop-idf/main/app_main.cpp"),
+  "utf8",
+);
 
 test("recovery owner composes only fixed diagnostics and sole Wi-Fi owner", () => {
   assert.match(ownerHeader, /const IRecoveryDiagnosticCache& cache_/);
@@ -120,4 +124,21 @@ test("owner is bounded caller-driven and does no mutation or outbound work", () 
   assert.match(cmake, /inkloop_connectivity/);
   assert.match(cmake, /mdns/);
   assert.doesNotMatch(cmake, /inkloop_product|inkloop_storage|inkloop_ota|inkloop_portal|inkloop_voice|inkloop_display/);
+});
+
+test("post-audit Recovery Wi-Fi is RAM-only and cannot mutate read-only NVS", () => {
+  assert.match(ownerHeader,
+    /RecoveryWifiStoragePolicy::VolatileRam/);
+  assert.match(owner,
+    /WifiCredentialStorage::VolatileRam/);
+  assert.match(wifiHeader,
+    /enum class WifiCredentialStorage[\s\S]*PersistentFlash[\s\S]*VolatileRam/);
+  assert.match(wifi,
+    /config\.nvs_enable = persistent/);
+  assert.match(wifi,
+    /persistent \? esp_wifi_set_storage\(WIFI_STORAGE_FLASH\)[\s\S]*esp_wifi_set_storage\(WIFI_STORAGE_RAM\)/);
+  assert.match(wifi,
+    /kept in RAM for Recovery/);
+  assert.match(main, /prepareRecoveryReadOnlyOrDeinit\(\)/);
+  assert.match(main, /recoveryReadOnlyReady\(\)/);
 });

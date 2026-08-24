@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -25,7 +26,11 @@ class EspRecoveryActionOwner final
   EspRecoveryActionOwner(const EspRecoveryActionOwner&) = delete;
   EspRecoveryActionOwner& operator=(const EspRecoveryActionOwner&) = delete;
 
-  bool ready() const { return mutex_ != nullptr && export_ != nullptr; }
+  bool ready() const {
+    return actions_available_.load(std::memory_order_acquire) &&
+        recovery_prepared_ && files_ != nullptr && mutex_ != nullptr &&
+        export_ != nullptr;
+  }
   recovery::RecoveryActionReadResult inspectRecoveryActions(
       recovery::RecoveryActionInventory& output) override;
   recovery::RecoveryActionResolveResult resolveRecoveryAction(
@@ -57,12 +62,19 @@ class EspRecoveryActionOwner final
   // before the recovery network is stopped.
   bool restartReady(std::uint32_t now_ms) const;
 
+  // A failed RW-to-RO remount is a terminal containment failure. Actions and
+  // cached export handles are revoked immediately, while this separate latch
+  // preserves the response grace period before the caller forces a restart.
+  bool forcedRestartReady(std::uint32_t now_ms) const;
+
  private:
   static constexpr std::size_t kFileSnapshotCount = 3U;
   struct ExportState;
 
   bool lock();
+  bool lockActions();
   void unlock();
+  void invalidateActionsAndLatchForcedRestartLocked(std::uint32_t now_ms);
   bool postActionAuditClean() const;
   void resetExportLocked();
   bool exportSessionMatches(
@@ -80,7 +92,7 @@ class EspRecoveryActionOwner final
 
   storage::EspStorageMountOwner& storage_;
   storage::EspLegacyDisplayRecovery display_;
-  storage::PosixLegacyFileTransactionRecovery files_;
+  std::unique_ptr<storage::PosixLegacyFileTransactionRecovery> files_;
   SemaphoreHandle_t mutex_ = nullptr;
   recovery::RecoveryActionInventory cached_inventory_{};
   storage::LegacyDisplayRecoverySnapshot display_snapshot_{};
@@ -88,7 +100,11 @@ class EspRecoveryActionOwner final
              kFileSnapshotCount> file_snapshots_{};
   std::array<bool, kFileSnapshotCount> file_snapshot_valid_{};
   bool display_snapshot_valid_ = false;
+  bool recovery_prepared_ = false;
+  std::atomic<bool> actions_available_{true};
   std::atomic<std::uint32_t> restart_not_before_ms_{0U};
+  std::atomic<bool> forced_restart_latched_{false};
+  std::atomic<std::uint32_t> forced_restart_not_before_ms_{0U};
   ExportState* export_ = nullptr;
 };
 

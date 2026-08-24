@@ -32,6 +32,14 @@
 
 namespace inkloop {
 
+// EspI2sAudioDevice is the I2S ISR callback's user_context. The object itself,
+// not only its callback code, must therefore live in internal SRAM while flash
+// cache is disabled. NativeVoiceService allocates it with MALLOC_CAP_INTERNAL
+// and this deleter provides the exact symmetric destruction boundary.
+struct InternalAudioDeviceDeleter final {
+  void operator()(EspI2sAudioDevice* device) const;
+};
+
 struct NativeVoiceDiagnostics {
   uint32_t command_rejections = 0;
   uint32_t audio_failures = 0;
@@ -340,7 +348,8 @@ class NativeVoiceService final : public myai::ILocalTranscriptInterceptor,
   std::unique_ptr<EspCrossCoreAudioBridge> audio_bridge_;
   DisabledAudioSink disabled_audio_sink_{};
   LocalPromptPlayer local_prompts_{};
-  std::unique_ptr<EspI2sAudioDevice> audio_device_;
+  std::unique_ptr<EspI2sAudioDevice, InternalAudioDeviceDeleter>
+      audio_device_;
   std::unique_ptr<storage::PosixChatLineStore> chat_store_;
   std::unique_ptr<storage::LocalChatLog> chat_log_;
   std::unique_ptr<myai::MyAiClient> client_;

@@ -274,6 +274,7 @@ void NativeDisplayService::shutdown() {
   portENTER_CRITICAL(&mux_);
   clearMailbox(onboarding_mailbox_);
   navigation_ = AlbumNavigationCore();
+  manual_panel_guard_.reset();
   visible_onboarding_fingerprint_ = PageFingerprint{};
   configured_ = false;
   onboarding_pending_ = false;
@@ -528,6 +529,13 @@ bool NativeDisplayService::refreshing() const {
   return value;
 }
 
+bool NativeDisplayService::manualPanelHoldActive(uint32_t now_ms) const {
+  portENTER_CRITICAL(&mux_);
+  const bool value = manual_panel_guard_.active(now_ms);
+  portEXIT_CRITICAL(&mux_);
+  return value;
+}
+
 bool NativeDisplayService::busy() const {
   portENTER_CRITICAL(&mux_);
   const bool navigation_busy = navigation_.pending() || navigation_.refreshing() ||
@@ -614,7 +622,7 @@ void NativeDisplayService::service() {
   portEXIT_CRITICAL(&mux_);
   if (!settled || !changed) return;
   postRefreshStarting(ordinal);
-  renderOrdinal(ordinal);
+  renderOrdinal(ordinal, true);
 }
 
 bool NativeDisplayService::writePanelFrame(const uint8_t* frame,
@@ -711,11 +719,26 @@ WorkDisposition NativeDisplayService::handle(
       envelope.work_class != WorkClass::Display ||
       (envelope.opcode != productOpcode(ProductOpcode::DisplayAlbumOrdinal) &&
        envelope.opcode !=
-           productOpcode(ProductOpcode::DisplayDiagnosticAigcOrdinal))) {
+           productOpcode(ProductOpcode::DisplayDiagnosticAigcOrdinal) &&
+       envelope.opcode !=
+           productOpcode(ProductOpcode::DisplayInteractiveAlbumOrdinal))) {
     return WorkDisposition::Failed;
   }
   const bool serial_diagnostic = envelope.opcode ==
       productOpcode(ProductOpcode::DisplayDiagnosticAigcOrdinal);
+  const bool user_initiated = envelope.opcode ==
+      productOpcode(ProductOpcode::DisplayInteractiveAlbumOrdinal);
+  const bool scheduled_background = envelope.opcode ==
+      productOpcode(ProductOpcode::DisplayAlbumOrdinal);
+  // The Portal lane checks the hold before admitting scheduled work, but an
+  // already-admitted command can race a user selection handled by this lane's
+  // tick. Re-check at the sole panel-consumption boundary so that a successful
+  // user refresh cannot be overwritten by queued background work. Returning
+  // Busy keeps the Inkloop task unacknowledged and lets its normal retry path
+  // run after the hold expires; interactive and diagnostic requests remain
+  // explicit and are never caught by this gate.
+  if (scheduled_background && manualPanelHoldActive(nowMs()))
+    return WorkDisposition::Busy;
   portENTER_CRITICAL(&mux_);
   const bool blocked = storage_maintenance_ || catalog_refreshing_ ||
       album_rendering_;
@@ -728,7 +751,7 @@ WorkDisposition NativeDisplayService::handle(
     emitSerialAigcPhase(
         diagnostics::SerialDiagnosticAigcPhase::DisplayStart);
   }
-  const bool rendered = renderOrdinal(envelope.flags);
+  const bool rendered = renderOrdinal(envelope.flags, user_initiated);
   if (serial_diagnostic) {
     if (rendered) {
       emitSerialAigcPhase(
@@ -740,7 +763,8 @@ WorkDisposition NativeDisplayService::handle(
   return rendered ? WorkDisposition::Complete : WorkDisposition::Failed;
 }
 
-bool NativeDisplayService::renderOrdinal(size_t ordinal) {
+bool NativeDisplayService::renderOrdinal(size_t ordinal,
+                                         bool user_initiated) {
   portENTER_CRITICAL(&mux_);
   if (storage_maintenance_ || catalog_refreshing_ || album_rendering_) {
     portEXIT_CRITICAL(&mux_);
@@ -749,7 +773,7 @@ bool NativeDisplayService::renderOrdinal(size_t ordinal) {
   album_rendering_ = true;
   portEXIT_CRITICAL(&mux_);
 
-  const bool rendered = renderOrdinalAdmitted(ordinal);
+  const bool rendered = renderOrdinalAdmitted(ordinal, user_initiated);
 
   portENTER_CRITICAL(&mux_);
   album_rendering_ = false;
@@ -757,7 +781,8 @@ bool NativeDisplayService::renderOrdinal(size_t ordinal) {
   return rendered;
 }
 
-bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal) {
+bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal,
+                                                 bool user_initiated) {
   storage::AlbumIndex index;
   const bool restore_onboarding = ordinal == AlbumNavigationCore::kNoOrdinal;
   if (!album_store_->readCatalog(index).ok() ||
@@ -909,6 +934,7 @@ bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal) {
   const uint32_t total_ms = nowMs() - total_started;
   uint32_t panel_ms = 0;
   portENTER_CRITICAL(&mux_);
+  if (user_initiated) manual_panel_guard_.noteCompletedUserRefresh(nowMs());
   navigation_.finish(index.assets.size(), ordinal);
   ++diagnostics_.completed_album_refreshes;
   diagnostics_.last_album_total_ms = total_ms;

@@ -118,7 +118,13 @@ int main() {
       false, false, false, false, 0, 0};
   constexpr BoardDescriptor excess_rgb{
       "mock-minimal", 128, 296, 2, 0x0003U,
-      false, false, false, false, 9, 0};
+      false, false, false, false, 3, 0};
+  constexpr BoardDescriptor one_rgb{
+      "mock-one-rgb", 128, 296, 2, 0x0003U,
+      false, false, false, false, 1, 0};
+  constexpr BoardDescriptor two_rgb{
+      "mock-two-rgb", 128, 296, 2, 0x0003U,
+      false, false, false, false, 2, 0};
   constexpr BoardDescriptor unknown_button{
       "mock-minimal", 128, 296, 2, 0x0003U,
       false, false, false, false, 0, 0x80};
@@ -132,6 +138,8 @@ int main() {
   static_assert(!excess_palette.valid());
   static_assert(!mismatched_palette_mask.valid());
   static_assert(!excess_rgb.valid());
+  static_assert(one_rgb.valid());
+  static_assert(two_rgb.valid());
   static_assert(!unknown_button.valid());
   static_assert(sparse_palette.valid());
   static_assert(sparse_palette.supportsNativePaletteIndex(0U));
@@ -335,7 +343,7 @@ test("composition root rejects an invalid board descriptor before hardware initi
   const main = readFileSync(appMain, "utf8");
   assert.match(contract, /constexpr bool valid\(\) const/);
   assert.match(contract, /kMaximumBoardIdBytes = 64U/);
-  assert.match(contract, /kMaximumBoardRgbPixels = 8U/);
+  assert.match(contract, /kMaximumBoardRgbPixels = 2U/);
   assert.match(main, /if \(!board\.valid\(\)\)/);
   assert.match(main, /failPendingBoot\("board_descriptor"\)/);
   const reject = main.indexOf("if (!board.valid())");

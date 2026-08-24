@@ -406,11 +406,21 @@ EspRecoveryActionOwner::EspRecoveryActionOwner(
     storage::EspStorageMountOwner& storage)
     : storage_(storage),
       display_(storage),
-      files_({storage.taskRoot() ? storage.taskRoot() : "",
-              storage.internalRoot() ? storage.internalRoot() : "",
-              storage.removableRoot() ? storage.removableRoot() : ""}),
       mutex_(xSemaphoreCreateMutex()),
-      export_(new (std::nothrow) ExportState()) {}
+      export_(new (std::nothrow) ExportState()) {
+  recovery_prepared_ = storage_.prepareRecoveryReadOnly() == ESP_OK;
+  if (!recovery_prepared_) return;
+  const char* task = storage_.recoveryReadTaskRoot();
+  const char* internal = storage_.recoveryReadInternalRoot();
+  const char* removable = storage_.recoveryReadRemovableRoot();
+  if (!task || !internal) {
+    recovery_prepared_ = false;
+    return;
+  }
+  files_.reset(new (std::nothrow) storage::PosixLegacyFileTransactionRecovery(
+      {task, internal, removable ? removable : ""}));
+  if (!files_) recovery_prepared_ = false;
+}
 
 EspRecoveryActionOwner::~EspRecoveryActionOwner() {
   if (mutex_ && lock()) {
@@ -427,6 +437,16 @@ bool EspRecoveryActionOwner::lock() {
   return mutex_ && xSemaphoreTake(mutex_, 0) == pdTRUE;
 }
 
+bool EspRecoveryActionOwner::lockActions() {
+  if (!actions_available_.load(std::memory_order_acquire) || !lock())
+    return false;
+  if (!actions_available_.load(std::memory_order_acquire)) {
+    unlock();
+    return false;
+  }
+  return true;
+}
+
 void EspRecoveryActionOwner::unlock() {
   if (mutex_) xSemaphoreGive(mutex_);
 }
@@ -439,6 +459,30 @@ void EspRecoveryActionOwner::resetExportLocked() {
   // Keep stream handles monotonic across sessions so a delayed request from a
   // prior authenticated export cannot alias the first stream of a new one.
   export_->handle = previous_handle;
+}
+
+void EspRecoveryActionOwner::invalidateActionsAndLatchForcedRestartLocked(
+    std::uint32_t now_ms) {
+  // Publish revocation first. A caller that passed ready() just before this
+  // store must still pass lockActions(), which rechecks the permanent latch
+  // while holding the mutex before it can touch any cached capability.
+  actions_available_.store(false, std::memory_order_release);
+  resetExportLocked();
+  if (export_) export_->handle = 0U;
+  cached_inventory_ = recovery::RecoveryActionInventory{};
+  display_snapshot_ = storage::LegacyDisplayRecoverySnapshot{};
+  for (auto& snapshot : file_snapshots_)
+    snapshot = storage::LegacyFileTransactionSnapshot{};
+  file_snapshot_valid_.fill(false);
+  display_snapshot_valid_ = false;
+
+  // A containment restart is deliberately distinct from the clean-audit
+  // restart. Store the deadline before publishing the latch so an acquire
+  // reader always observes a complete forced-restart truth state.
+  restart_not_before_ms_.store(0U, std::memory_order_release);
+  forced_restart_not_before_ms_.store(now_ms + kRestartResponseGraceMs,
+                                      std::memory_order_relaxed);
+  forced_restart_latched_.store(true, std::memory_order_release);
 }
 
 bool EspRecoveryActionOwner::exportSessionMatches(
@@ -508,7 +552,7 @@ bool EspRecoveryActionOwner::inspectFile(
   output.domain = domain;
   output.backend = backend;
   const storage::LegacyFileTransactionProbe probe =
-      files_.inspect(target, file_snapshots_[cache_index]);
+      files_->inspect(target, file_snapshots_[cache_index]);
   output.state = mapFileState(probe);
   output.valid_candidates = file_snapshots_[cache_index].valid_candidates;
   for (std::size_t at = 0U; at < output.candidates.size(); ++at) {
@@ -534,7 +578,7 @@ EspRecoveryActionOwner::inspectRecoveryActions(
     recovery::RecoveryActionInventory& output) {
   output = recovery::RecoveryActionInventory{};
   if (!ready()) return recovery::RecoveryActionReadResult::Unavailable;
-  if (!lock()) return recovery::RecoveryActionReadResult::Busy;
+  if (!lockActions()) return recovery::RecoveryActionReadResult::Busy;
   cached_inventory_ = recovery::RecoveryActionInventory{};
   display_snapshot_valid_ = false;
   file_snapshot_valid_.fill(false);
@@ -555,7 +599,7 @@ EspRecoveryActionOwner::inspectRecoveryActions(
       recovery::RecoveryActionBackend::Internal,
       cached_inventory_.snapshots[2]) && valid;
   cached_inventory_.count = 3U;
-  if (storage_.removableRoot()) {
+  if (storage_.recoveryReadRemovableRoot()) {
     valid = inspectFile(
         2U, {storage::LegacyFileTransactionDomain::Album,
              storage::LegacyFileTransactionBackend::Removable},
@@ -591,7 +635,7 @@ EspRecoveryActionOwner::resolveRecoveryAction(
       request.backend == recovery::RecoveryActionBackend::Removable;
   if (removable_album != request.external_backup_confirmed)
     return Result::InvalidRequest;
-  if (!lock()) return Result::Busy;
+  if (!lockActions()) return Result::Busy;
   if (export_ && export_->active) {
     unlock();
     return Result::Busy;
@@ -603,45 +647,74 @@ EspRecoveryActionOwner::resolveRecoveryAction(
     return Result::SourceChanged;
   }
 
-  Result result = Result::InvalidRequest;
-  if (request.domain == recovery::RecoveryActionDomain::Display &&
+  const bool display_request =
+      request.domain == recovery::RecoveryActionDomain::Display &&
       request.backend == recovery::RecoveryActionBackend::None &&
       request.choice != recovery::RecoveryActionChoice::Next &&
-      display_snapshot_valid_) {
+      display_snapshot_valid_;
+  std::size_t index = file_snapshots_.size();
+  storage::LegacyFileTransactionTarget target{};
+  storage::RecoveryMutationDomain mutation =
+      storage::RecoveryMutationDomain::None;
+  if (display_request) {
+    mutation = storage::RecoveryMutationDomain::Display;
+  } else if (request.domain == recovery::RecoveryActionDomain::Tasks &&
+             request.backend == recovery::RecoveryActionBackend::None) {
+    index = 0U;
+    target = {storage::LegacyFileTransactionDomain::Tasks,
+              storage::LegacyFileTransactionBackend::TaskRoot};
+    mutation = storage::RecoveryMutationDomain::Tasks;
+  } else if (request.domain == recovery::RecoveryActionDomain::Album &&
+             request.backend == recovery::RecoveryActionBackend::Internal) {
+    index = 1U;
+    target = {storage::LegacyFileTransactionDomain::Album,
+              storage::LegacyFileTransactionBackend::Internal};
+    mutation = storage::RecoveryMutationDomain::InternalAlbum;
+  } else if (request.domain == recovery::RecoveryActionDomain::Album &&
+             request.backend == recovery::RecoveryActionBackend::Removable) {
+    index = 2U;
+    target = {storage::LegacyFileTransactionDomain::Album,
+              storage::LegacyFileTransactionBackend::Removable};
+    mutation = storage::RecoveryMutationDomain::RemovableAlbum;
+  }
+  if (mutation == storage::RecoveryMutationDomain::None ||
+      (!display_request &&
+       (index >= file_snapshots_.size() || !file_snapshot_valid_[index]))) {
+    unlock();
+    return Result::InvalidRequest;
+  }
+  if (storage_.beginRecoveryMutation(mutation) != ESP_OK) {
+    unlock();
+    return Result::SourceUnavailable;
+  }
+
+  Result result = Result::InvalidRequest;
+  if (display_request) {
     result = mapDisplayResult(display_.resolve(
         display_snapshot_,
         request.choice == recovery::RecoveryActionChoice::Current
             ? storage::LegacyDisplayResolutionChoice::Target
             : storage::LegacyDisplayResolutionChoice::Previous));
   } else {
-    std::size_t index = file_snapshots_.size();
-    storage::LegacyFileTransactionTarget target{};
-    if (request.domain == recovery::RecoveryActionDomain::Tasks &&
-        request.backend == recovery::RecoveryActionBackend::None) {
-      index = 0U;
-      target = {storage::LegacyFileTransactionDomain::Tasks,
-                storage::LegacyFileTransactionBackend::TaskRoot};
-    } else if (request.domain == recovery::RecoveryActionDomain::Album &&
-               request.backend == recovery::RecoveryActionBackend::Internal) {
-      index = 1U;
-      target = {storage::LegacyFileTransactionDomain::Album,
-                storage::LegacyFileTransactionBackend::Internal};
-    } else if (request.domain == recovery::RecoveryActionDomain::Album &&
-               request.backend ==
-                   recovery::RecoveryActionBackend::Removable) {
-      index = 2U;
-      target = {storage::LegacyFileTransactionDomain::Album,
-                storage::LegacyFileTransactionBackend::Removable};
-    }
-    if (index < file_snapshots_.size() && file_snapshot_valid_[index]) {
-      result = mapFileResult(files_.resolve(
-          file_snapshots_[index], {target, mapFileChoice(request.choice)}));
-    }
+    result = mapFileResult(files_->resolve(
+        file_snapshots_[index], {target, mapFileChoice(request.choice)}));
   }
 
-  if (result == Result::Ok && postActionAuditClean()) {
-    restart_not_before_ms_.store(nowMs() + kRestartResponseGraceMs,
-                                 std::memory_order_release);
+  // Mutation authority is consumed exactly once. Regardless of executor
+  // outcome, revoke it, unmount RW internal storage, and restore the hardened
+  // RO descriptor before any audit or HTTP response.
+  const esp_err_t revoked =
+      storage_.endRecoveryMutationAndRemountReadOnly();
+  if (revoked != ESP_OK) {
+    invalidateActionsAndLatchForcedRestartLocked(nowMs());
+    result = Result::IoError;
+  } else if (result == Result::Ok) {
+    if (postActionAuditClean()) {
+      restart_not_before_ms_.store(nowMs() + kRestartResponseGraceMs,
+                                   std::memory_order_release);
+    } else {
+      result = Result::VerificationFailed;
+    }
   }
   unlock();
   return result;
@@ -654,7 +727,7 @@ EspRecoveryActionOwner::prepareRecoveryExport(
   using Result = recovery::RecoveryExportResult;
   output = recovery::RecoveryExportSnapshot{};
   if (!ready()) return Result::SourceUnavailable;
-  if (!lock()) return Result::Busy;
+  if (!lockActions()) return Result::Busy;
   if (export_->active &&
       static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0) {
     resetExportLocked();
@@ -676,7 +749,7 @@ EspRecoveryActionOwner::prepareRecoveryExport(
     unlock();
     return Result::InvalidRequest;
   }
-  const char* removable = storage_.removableRoot();
+  const char* removable = storage_.recoveryReadRemovableRoot();
   if (!removable) {
     unlock();
     return Result::SourceUnavailable;
@@ -796,7 +869,7 @@ EspRecoveryActionOwner::readRecoveryExportInventory(
   using Result = recovery::RecoveryExportResult;
   output = recovery::RecoveryExportInventoryPage{};
   if (!ready()) return Result::SourceUnavailable;
-  if (!lock()) return Result::Busy;
+  if (!lockActions()) return Result::Busy;
   if (!exportSessionMatches(session_id)) {
     if (export_->active &&
         static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0)
@@ -827,7 +900,7 @@ recovery::RecoveryExportResult EspRecoveryActionOwner::openRecoveryExport(
   using Result = recovery::RecoveryExportResult;
   output = recovery::RecoveryExportStream{};
   if (!ready()) return Result::SourceUnavailable;
-  if (!lock()) return Result::Busy;
+  if (!lockActions()) return Result::Busy;
   if (!exportSessionMatches(request.session_id)) {
     if (export_->active &&
         static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0)
@@ -845,7 +918,7 @@ recovery::RecoveryExportResult EspRecoveryActionOwner::openRecoveryExport(
     unlock();
     return Result::InvalidRequest;
   }
-  const char* removable = storage_.removableRoot();
+  const char* removable = storage_.recoveryReadRemovableRoot();
   if (!removable) {
     unlock();
     return Result::SourceUnavailable;
@@ -910,7 +983,7 @@ recovery::RecoveryExportResult EspRecoveryActionOwner::readRecoveryExport(
   if (!ready() || !output || capacity == 0U ||
       capacity > recovery::kMaximumRecoveryExportChunkBytes)
     return Result::InvalidRequest;
-  if (!lock()) return Result::Busy;
+  if (!lockActions()) return Result::Busy;
   if (!export_->active || !export_->file || export_->handle != handle) {
     unlock();
     return Result::SessionStale;
@@ -954,7 +1027,7 @@ recovery::RecoveryExportResult EspRecoveryActionOwner::readRecoveryExport(
 }
 
 void EspRecoveryActionOwner::closeRecoveryExport(uint32_t handle) {
-  if (!ready() || !lock()) return;
+  if (!ready() || !lockActions()) return;
   if (export_->file && export_->handle == handle) {
     std::fclose(export_->file);
     export_->file = nullptr;
@@ -968,7 +1041,7 @@ EspRecoveryActionOwner::finishRecoveryExport(
         session_id) {
   using Result = recovery::RecoveryExportResult;
   if (!ready()) return Result::SourceUnavailable;
-  if (!lock()) return Result::Busy;
+  if (!lockActions()) return Result::Busy;
   if (!exportSessionMatches(session_id)) {
     if (export_->active &&
         static_cast<std::int32_t>(nowMs() - export_->expires_ms) >= 0)
@@ -988,7 +1061,7 @@ EspRecoveryActionOwner::finishRecoveryExport(
       return Result::VerificationFailed;
     }
   }
-  const char* removable = storage_.removableRoot();
+  const char* removable = storage_.recoveryReadRemovableRoot();
   if (!removable) {
     unlock();
     return Result::SourceUnavailable;
@@ -1035,23 +1108,24 @@ EspRecoveryActionOwner::finishRecoveryExport(
 void EspRecoveryActionOwner::abortRecoveryExport(
     const std::array<uint8_t, recovery::kRecoveryExportSessionBytes>&
         session_id) {
-  if (!ready() || !lock()) return;
+  if (!ready() || !lockActions()) return;
   if (export_->active && constantTimeBytes(export_->session, session_id))
     resetExportLocked();
   unlock();
 }
 
 bool EspRecoveryActionOwner::postActionAuditClean() const {
+  const char* internal_root = storage_.recoveryReadTaskRoot();
   if (!storage::persistenceCompatibilityContractValid() ||
-      !storage_.taskRoot()) {
+      !internal_root) {
     return false;
   }
   const storage::EspNvsUpgradeInventory nvs;
-  const storage::PosixUpgradeInventory files(storage_.taskRoot());
+  const storage::PosixUpgradeInventory files(internal_root);
   const storage::UpgradeAuditReport internal =
       storage::auditUpgrade(files.inspect(nvs.inspect()));
   if (!internal.allowsInitialization()) return false;
-  const char* removable = storage_.removableRoot();
+  const char* removable = storage_.recoveryReadRemovableRoot();
   return !removable ||
       storage::runReadOnlyMountedFileUpgradeAudit(removable)
           .allowsInitialization();
@@ -1060,6 +1134,13 @@ bool EspRecoveryActionOwner::postActionAuditClean() const {
 bool EspRecoveryActionOwner::restartReady(std::uint32_t now_ms) const {
   return due(now_ms,
              restart_not_before_ms_.load(std::memory_order_acquire));
+}
+
+bool EspRecoveryActionOwner::forcedRestartReady(std::uint32_t now_ms) const {
+  if (!forced_restart_latched_.load(std::memory_order_acquire)) return false;
+  const std::uint32_t deadline =
+      forced_restart_not_before_ms_.load(std::memory_order_relaxed);
+  return static_cast<std::int32_t>(now_ms - deadline) >= 0;
 }
 
 }  // namespace inkloop

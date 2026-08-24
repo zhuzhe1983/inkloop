@@ -29,6 +29,7 @@ bool operator==(const DeviceSettings& left, const DeviceSettings& right) {
   return left.volume_percent == right.volume_percent &&
       left.led_maximum_brightness_percent ==
           right.led_maximum_brightness_percent &&
+      left.led_roles_swapped == right.led_roles_swapped &&
       left.voice_assistance_enabled == right.voice_assistance_enabled &&
       left.assistant_prompt == right.assistant_prompt &&
       left.aigc_prompt_template == right.aigc_prompt_template &&

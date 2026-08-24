@@ -3,9 +3,9 @@
 This procedure is mandatory before choosing a removable-album recovery slot
 when `index.json`, `index.next`, and `index.prev` are all valid and divergent.
 Only the offline whole-card workflow below satisfies the pre-flash physical TF
-custody gate. The beta29 HTTP path is an additional logical export for
-selection and content verification after beta29 is already running; it does
-not replace the whole-card image.
+custody gate. The beta30-or-newer accepted candidate's HTTP path is an
+additional logical export for selection and content verification after that
+exact candidate is already running; it does not replace the whole-card image.
 
 The current firmware mounts TF through `esp_vfs_fat_sdspi_mount`, which is a
 writable FAT mount. Although the HTTP exporter exposes no mutation operation
@@ -13,10 +13,10 @@ and the export implementation intends only reads, mounting/using that
 filesystem is not equivalent to a hardware- or VFS-enforced read-only source.
 Filesystem metadata writes cannot be excluded by this workflow. Therefore do
 not describe the HTTP path as a read-only custody path, do not use it as proof
-that TF bytes were unchanged, and do not flash beta29 in order to obtain it
-before the offline image exists.
+that TF bytes were unchanged, and do not flash a beta30-or-newer candidate in
+order to obtain it before the offline image exists.
 
-## Beta29 authenticated HTTP logical export (additional evidence only)
+## Beta30+ authenticated HTTP logical export (additional evidence only)
 
 Prerequisite: the pre-flash whole-card image and its hash have already been
 captured and verified through the offline boundary below. If they do not
@@ -84,19 +84,94 @@ first network request. A pre-existing file, directory, or symlink is refused.
 This is a complete logical export of the three indexes and their referenced
 asset union, not physical pre-flash custody, not proof of source immutability,
 and not a raw image of unused sectors or unrelated TF files. The offline
-whole-card workflow below is mandatory before any beta29 device write.
+whole-card workflow below is mandatory before writing any beta30-or-newer
+candidate to the device.
 
 ## Mandatory pre-flash offline whole-card safety boundary
 
 1. Shut the device down and remove the TF card. Do not resolve a Recovery
    action first.
-2. Capture and hash a whole-card byte image with the approved platform tool.
+2. Insert the removed card through a known card reader. Prefer a reader/adapter
+   with hardware write protection. Identify the exact external whole disk and
+   manually unmount every volume on it. Do not format, repair, initialize or
+   mount it writable. The repository tool deliberately does not unmount,
+   eject, elevate privileges or choose a disk for you.
+3. Capture and hash a whole-card byte image with the approved macOS tool below.
    Keep that image outside the repository with restricted permissions.
-3. Mount the byte image, or the card if an image mount is unavailable, as an
+   `custody.json` must say `complete: true`; merely having an `.img` or
+   `.partial` file is not custody evidence.
+4. Mount the byte image, or the card if an image mount is unavailable, as an
    explicitly read-only filesystem. Record the exact mounted device and mount
    root. A directory inside a mount is not acceptable.
-4. Put the export destination on a different filesystem. It must be a new,
+5. Put the export destination on a different filesystem. It must be a new,
    non-existing path.
+
+## Approved macOS whole-card custody tool
+
+The tool accepts only an explicit whole-device `/dev/diskN`; it rejects
+`/dev/rdiskN`, partitions, globs, internal/boot/virtual media, APFS or
+system-role media, indeterminate/non-removable media, and any mounted member.
+It also rejects an output inside this repository, an existing output, a broad
+output path, and insufficient destination capacity. No default disk or
+environment-variable fallback exists.
+
+Use macOS inventory only to identify and visually confirm the card, then
+explicitly unmount that exact whole disk. Replace `N` only after comparing the
+reported size/media with the physical card. These are separate operator
+commands; the capture tool will not run them for you:
+
+```sh
+/usr/sbin/diskutil list external physical
+/usr/sbin/diskutil info /dev/diskN
+/usr/sbin/diskutil unmountDisk /dev/diskN
+```
+
+First inspect metadata. This phase does not open the raw device or create the
+output directory:
+
+```sh
+node firmware/inkloop-idf/tools/capture_tf_whole_card_macos.mjs \
+  --mode inspect \
+  --disk /dev/diskN \
+  --output /absolute/new/custody-directory-outside-the-repository
+```
+
+Visually compare `identity`, `expectSizeBytes`, the physical card label and the
+reader you just inserted. Never copy values from an older run or guess a disk
+number. Then copy the exact byte count and lowercase fingerprint printed by
+that same inspection into capture mode:
+
+```sh
+node firmware/inkloop-idf/tools/capture_tf_whole_card_macos.mjs \
+  --mode capture \
+  --disk /dev/diskN \
+  --output /absolute/new/custody-directory-outside-the-repository \
+  --expect-size-bytes '<exact expectSizeBytes from inspect>' \
+  --confirm-fingerprint '<exact confirmFingerprint from inspect>'
+```
+
+The program never invokes `sudo`. If the raw device cannot be opened with the
+current account, it fails after leaving `custody.json` as `complete: false`;
+do not reuse that output directory. Privilege changes are an explicit operator
+decision outside this tool, never an automatic retry. Re-run both phases and
+re-confirm the live identity if anything was unplugged, remounted or changed.
+
+Capture performs one complete raw-device read into `tf-whole-card.img`, a
+second complete raw-device read into SHA-256, and an independent image hash.
+All three digests must match the exact `diskutil` capacity. It re-runs and
+compares the normalized `diskutil info` identity before, between and after the
+reads. The final durable write atomically changes `custody.json` from
+`complete: false` to `complete: true`. A short read, changed identity, remount,
+hash mismatch, destination race or write failure therefore cannot authorize
+flashing.
+
+Retain together, outside the repository:
+
+- `tf-whole-card.img` and `SHA256SUMS`;
+- `custody.json` with `complete: true`, exact byte size, source-pass hashes and
+  stable fingerprint;
+- the captured before/pre-read/between/after `diskutil` target and member
+  metadata.
 
 The repository tool never writes the source. It refuses a writable mount, an
 unexpected mounted device, a destination on the source filesystem, a missing
@@ -143,11 +218,12 @@ The exporter re-reads and re-hashes the complete source set before and after
 copying. A failure after destination creation leaves `INCOMPLETE.json`; that
 directory is not valid backup evidence and must never authorize selection.
 
-Only after the whole-card image and its hash are retained may any beta29 image
-be staged. After beta29 Recovery boots, the HTTP logical export may be used as
-additional selection evidence; the offline exporter may instead validate the
-mounted image. Before submitting exactly one Current/Next/Previous choice,
-confirm that the mandatory external whole-card custody exists. The
+Only after the whole-card image and its hash are retained may a beta30-or-newer
+image be staged. After the exact accepted candidate's Recovery boots, the HTTP
+logical export may be used as additional selection evidence; the offline
+exporter may instead validate the mounted image. Before submitting exactly one
+Current/Next/Previous choice, confirm that the mandatory external whole-card
+custody exists. The
 removable-album resolve API rejects requests without
 `backup=verified_external`. Other recovery domains require
 `backup=not_required` so the assertion cannot be accidentally reused.

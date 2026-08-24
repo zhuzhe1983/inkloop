@@ -17,6 +17,7 @@
 #include "inkloop/board.hpp"
 #include "inkloop/esp_ota_boot_health.hpp"
 #include "inkloop/native_device_state_owner.hpp"
+#include "inkloop/native_settings_migration_gate.hpp"
 #include "inkloop/ota_runtime_health.hpp"
 #include "inkloop/product_runtime.hpp"
 #include "inkloop/recovery/recovery_network_owner.hpp"
@@ -80,6 +81,7 @@ inkloop::recovery::RecoveryRecordCounts recoveryRecordCounts(
     const inkloop::storage::EspStorageMountOwner& storage) {
   inkloop::recovery::RecoveryRecordCounts output;
   const char* root = storage.taskRoot();
+  if (!root) root = storage.auditInternalRoot();
   if (root) {
     const inkloop::storage::PosixUpgradeInventory files(root);
     const auto probes = files.inspectFiles();
@@ -298,10 +300,12 @@ class PortalOtaUpdateBridge final
   const inkloop::OtaOutcomeJournal& outcomes_;
 };
 
-[[noreturn]] void runRecoveryNetwork(
+[[noreturn]] void runRecoveryNetworkWithNvsStatus(
     const inkloop::recovery::RecoveryDiagnosticSnapshot& diagnostic,
-    inkloop::storage::EspStorageMountOwner* storage = nullptr,
-    const std::string& local_access_override = {}) {
+    esp_err_t nvs_status,
+    inkloop::storage::EspStorageMountOwner* storage,
+    const std::string& local_access_override,
+    inkloop::recovery::RecoveryWifiStoragePolicy wifi_storage) {
   FixedRecoveryDiagnosticCache cache(diagnostic);
   std::unique_ptr<inkloop::EspRecoveryActionOwner> actions;
   if (storage) {
@@ -309,14 +313,15 @@ class PortalOtaUpdateBridge final
     if (!actions || !actions->ready()) actions.reset();
   }
   inkloop::recovery::RecoveryNetworkModeOwner recovery(
-      cache, actions.get(), actions.get());
+      cache, actions.get(), actions.get(), wifi_storage);
   bool initialized = false;
   uint32_t next_log_ms = 0U;
+  unsigned forced_restart_stop_attempts = 0U;
+  constexpr unsigned kMaximumForcedRestartStopAttempts = 8U;
   for (;;) {
     const uint32_t now = nowMs();
     if (!initialized) {
-      const esp_err_t nvs = nvs_flash_init();
-      esp_err_t status = nvs;
+      esp_err_t status = nvs_status;
       if (status == ESP_OK && !local_access_override.empty()) {
         status = recovery.setLocalAccessCodeOverride(local_access_override);
       }
@@ -330,11 +335,29 @@ class PortalOtaUpdateBridge final
       }
     } else {
       recovery.tick(now);
-      if (actions && actions->restartReady(now)) {
+      const bool forced_restart =
+          actions && actions->forcedRestartReady(now);
+      const bool clean_restart = actions && actions->restartReady(now);
+      if (forced_restart || clean_restart) {
         const esp_err_t stopped = recovery.stop();
         if (stopped == ESP_OK) {
-          ESP_LOGI(kTag,
-                   "recovery actions passed fresh boot audit; restarting");
+          if (forced_restart) {
+            ESP_LOGI(kTag,
+                     "recovery write revocation failed; network stopped; "
+                     "forcing fresh boot audit");
+          } else {
+            ESP_LOGI(kTag,
+                     "recovery actions passed fresh boot audit; restarting");
+          }
+          vTaskDelay(pdMS_TO_TICKS(100U));
+          esp_restart();
+        }
+        if (forced_restart &&
+            ++forced_restart_stop_attempts >=
+                kMaximumForcedRestartStopAttempts) {
+          ESP_LOGE(kTag,
+                   "recovery network would not quiesce after write "
+                   "revocation failure; forcing hardware restart");
           vTaskDelay(pdMS_TO_TICKS(100U));
           esp_restart();
         }
@@ -349,9 +372,80 @@ class PortalOtaUpdateBridge final
   }
 }
 
+// After the boot audit starts, Recovery never retries generic NVS
+// initialization, repair, or erase. Its Wi-Fi owner is explicitly RAM-only
+// (nvs_enable=false), so even blank/corrupt/uninitialized NVS must not make the
+// diagnostic Portal unreachable. A ready audit owner remains useful evidence
+// to typed recovery actions, but is not a network prerequisite.
+[[noreturn]] void runRecoveryNetwork(
+    const inkloop::recovery::RecoveryDiagnosticSnapshot& diagnostic,
+    inkloop::storage::EspNvsBootMountOwner* nvs_boot_mount,
+    inkloop::storage::EspStorageMountOwner* storage = nullptr,
+    bool recovery_actions_requested = false,
+    const std::string& local_access_override = {}) {
+  const esp_err_t nvs_read_only = nvs_boot_mount
+      ? nvs_boot_mount->prepareRecoveryReadOnlyOrDeinit()
+      : ESP_ERR_INVALID_STATE;
+  const bool nvs_inventory_available = nvs_read_only == ESP_OK &&
+      nvs_boot_mount && nvs_boot_mount->recoveryReadOnlyReady();
+  const bool nvs_writes_revoked = !nvs_boot_mount ||
+      nvs_boot_mount->recoveryWritesRevoked();
+  const esp_err_t storage_read_only = storage
+      ? storage->prepareRecoveryReadOnly()
+      : ESP_ERR_INVALID_STATE;
+  const bool storage_writes_revoked = !storage ||
+      storage->recoveryWritesRevoked();
+  const bool storage_inventory_available = storage_read_only == ESP_OK &&
+      storage && storage->recoveryReadOnlyReady();
+  if (!nvs_inventory_available) {
+    ESP_LOGW(kTag,
+             "NVS readonly inventory unavailable (%s); volatile Recovery "
+             "requires confirmed writer revocation",
+             esp_err_to_name(nvs_read_only));
+  }
+  if (!nvs_writes_revoked) {
+    ESP_LOGE(kTag,
+             "NVS Product writer could not be revoked; refusing Recovery "
+             "network startup");
+  }
+  if (storage && !storage_inventory_available) {
+    ESP_LOGW(kTag,
+             "LittleFS readonly inventory unavailable (%s); Recovery "
+             "actions disabled",
+             esp_err_to_name(storage_read_only));
+  }
+  if (!storage_writes_revoked) {
+    ESP_LOGE(kTag,
+             "LittleFS Product writer could not be revoked; refusing "
+             "Recovery network startup");
+  }
+  const bool all_product_writes_revoked =
+      nvs_writes_revoked && storage_writes_revoked;
+  const bool recovery_actions_available = recovery_actions_requested &&
+      nvs_inventory_available && storage_inventory_available &&
+      all_product_writes_revoked;
+  runRecoveryNetworkWithNvsStatus(
+      diagnostic,
+      all_product_writes_revoked ? ESP_OK : ESP_ERR_INVALID_STATE,
+      recovery_actions_available ? storage : nullptr,
+      local_access_override,
+      inkloop::recovery::RecoveryWifiStoragePolicy::VolatileRam);
+}
+
+// OTA running-image health is evaluated before any upgrade-audit owner exists.
+// This is the sole Recovery entry allowed to perform ordinary NVS init.
+[[noreturn]] void runEarlyOtaRecoveryNetwork(
+    const inkloop::recovery::RecoveryDiagnosticSnapshot& diagnostic) {
+  runRecoveryNetworkWithNvsStatus(
+      diagnostic, nvs_flash_init(), nullptr, {},
+      inkloop::recovery::RecoveryWifiStoragePolicy::PersistentFlash);
+}
+
 [[noreturn]] void runRecoveryAfterProductFailure(
     inkloop::EspProductRuntime& runtime,
     const inkloop::recovery::RecoveryDiagnosticSnapshot& diagnostic,
+    inkloop::storage::EspNvsBootMountOwner& nvs_boot_mount,
+    inkloop::storage::EspStorageMountOwner& storage,
     const std::string& local_access_override) {
   constexpr unsigned kMaximumQuiesceAttempts = 8U;
   for (unsigned attempt = 1U; attempt <= kMaximumQuiesceAttempts; ++attempt) {
@@ -359,7 +453,9 @@ class PortalOtaUpdateBridge final
     if (quiesced == ESP_OK) {
       ESP_LOGI(kTag,
                "normal product owners quiesced; entering sole-owner recovery");
-      runRecoveryNetwork(diagnostic, nullptr, local_access_override);
+      runRecoveryNetwork(
+          diagnostic, &nvs_boot_mount, &storage, false,
+          local_access_override);
     }
     ESP_LOGE(kTag, "product recovery quiesce attempt=%u/%u failed: %s",
              attempt, kMaximumQuiesceAttempts, esp_err_to_name(quiesced));
@@ -404,7 +500,7 @@ extern "C" void app_main(void) {
       ota_observation.code == inkloop::EspOtaBootHealthCode::StateReadFailed ||
       ota_observation.decision.state == inkloop::OtaBootHealthState::Refused) {
     ESP_LOGE(kTag, "OTA running-image state is unsafe; refusing startup");
-    runRecoveryNetwork(recoveryDiagnostic(
+    runEarlyOtaRecoveryNetwork(recoveryDiagnostic(
         board, inkloop::recovery::RecoveryReason::OtaHealthRefused,
         inkloop::recovery::RecoveryPhase::OtaHealth,
         inkloop::recovery::RecoveryOutcome::Failed));
@@ -425,7 +521,7 @@ extern "C" void app_main(void) {
     runRecoveryNetwork(recoveryDiagnostic(
         board, inkloop::recovery::RecoveryReason::BootAuditRefused,
         inkloop::recovery::RecoveryPhase::BootAudit,
-        inkloop::recovery::RecoveryOutcome::Failed));
+        inkloop::recovery::RecoveryOutcome::Failed), nullptr);
   }
   ESP_LOGI(kTag, "ESP-IDF scaffold board=%s", board.id);
 
@@ -436,15 +532,16 @@ extern "C" void app_main(void) {
     runRecoveryNetwork(recoveryDiagnostic(
         board, inkloop::recovery::RecoveryReason::BootAuditRefused,
         inkloop::recovery::RecoveryPhase::BootAudit,
-        inkloop::recovery::RecoveryOutcome::Failed));
+        inkloop::recovery::RecoveryOutcome::Failed), nullptr);
   }
 
   // Static lifetime is intentional: the mount owner becomes part of the
   // product runtime after this guard succeeds. A stack owner would unmount the
   // filesystems when app_main starts the long-lived worker tasks and returns.
   static inkloop::storage::EspStorageMountOwner storage;
+  static inkloop::storage::EspNvsBootMountOwner nvs_boot_mount;
   const inkloop::storage::EspUpgradeBootAuditOutcome upgrade =
-      inkloop::storage::runReadOnlyUpgradeBootAudit(storage);
+      inkloop::storage::runReadOnlyUpgradeBootAudit(storage, nvs_boot_mount);
   if (upgrade.initialization_status != ESP_OK) {
     ESP_LOGE(kTag, "read-only upgrade inventory unavailable: %s",
              esp_err_to_name(upgrade.initialization_status));
@@ -452,7 +549,8 @@ extern "C" void app_main(void) {
     runRecoveryNetwork(recoveryDiagnostic(
         board, inkloop::recovery::RecoveryReason::BootAuditRefused,
         inkloop::recovery::RecoveryPhase::BootAudit,
-        inkloop::recovery::RecoveryOutcome::Failed));
+        inkloop::recovery::RecoveryOutcome::Failed), &nvs_boot_mount,
+        &storage);
   }
   ESP_LOGI(kTag, "UPGRADE_AUDIT:%s protected=%u tasks=%s album=%s",
            inkloop::storage::upgradeAuditResultName(upgrade.report.result),
@@ -468,7 +566,73 @@ extern "C" void app_main(void) {
         board, inkloop::recovery::RecoveryReason::MigrationRefused,
         inkloop::recovery::RecoveryPhase::Migration,
         inkloop::recovery::RecoveryOutcome::Failed,
-        recoveryRecordCounts(storage)));
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
+  }
+
+  // The compatibility decision above is the only authorization for an RW
+  // internal mount.  Promotion always unregisters the real read-only VFS and
+  // registers it again as RW; no Product owner is constructed before this
+  // succeeds.  Refused/ambiguous audits remain read-only in Recovery.
+  if (!upgrade.allowsStartup()) {
+    ESP_LOGE(kTag,
+             "upgrade state needs explicit recovery; refusing RW promotion");
+    ota_stage.storage_gate_observed = true;
+    failPendingBoot("upgrade_gate");
+    runRecoveryNetwork(auditRecoveryDiagnostic(
+        board, upgrade.report, recoveryRecordCounts(storage)),
+        &nvs_boot_mount, &storage, true);
+  }
+  static inkloop::NativeSettingsMigrationGate settings_migration(
+      board, nvs_boot_mount);
+  inkloop::NativeSettingsMigrationPlan settings_migration_plan;
+  const inkloop::NativeSettingsMigrationGateCode settings_audit =
+      settings_migration.auditReadOnly(settings_migration_plan);
+  if (settings_audit != inkloop::NativeSettingsMigrationGateCode::Ok) {
+    ESP_LOGE(kTag, "read-only settings migration audit refused: %s",
+             inkloop::nativeSettingsMigrationGateCodeName(settings_audit));
+    failPendingBoot("settings_migration_audit");
+    runRecoveryNetwork(recoveryDiagnostic(
+        board, inkloop::recovery::RecoveryReason::MigrationRefused,
+        inkloop::recovery::RecoveryPhase::Migration,
+        inkloop::recovery::RecoveryOutcome::RequiresOperator,
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
+  }
+  const esp_err_t internal_promotion = storage.promoteInternalReadWrite();
+  if (internal_promotion != ESP_OK) {
+    ESP_LOGE(kTag, "internal RO-to-RW promotion failed: %s",
+             esp_err_to_name(internal_promotion));
+    failPendingBoot("internal_rw_promotion");
+    runRecoveryNetwork(recoveryDiagnostic(
+        board, inkloop::recovery::RecoveryReason::StorageIntegrityRefused,
+        inkloop::recovery::RecoveryPhase::StorageAudit,
+        inkloop::recovery::RecoveryOutcome::Failed,
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
+  }
+  const esp_err_t nvs_promotion = nvs_boot_mount.promoteReadWriteProduct();
+  if (nvs_promotion != ESP_OK) {
+    ESP_LOGE(kTag, "NVS RO-to-RW promotion failed: %s",
+             esp_err_to_name(nvs_promotion));
+    failPendingBoot("nvs_rw_promotion");
+    runRecoveryNetwork(recoveryDiagnostic(
+        board, inkloop::recovery::RecoveryReason::StorageIntegrityRefused,
+        inkloop::recovery::RecoveryPhase::StorageAudit,
+        inkloop::recovery::RecoveryOutcome::Failed,
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
+  }
+  inkloop::NativeSettingsMigrationAuthorization settings_authorization;
+  const inkloop::NativeSettingsMigrationGateCode settings_execution =
+      settings_migration.execute(
+          settings_migration_plan, settings_authorization);
+  if (settings_execution != inkloop::NativeSettingsMigrationGateCode::Ok ||
+      !settings_authorization.valid()) {
+    ESP_LOGE(kTag, "settings migration execution refused: %s",
+             inkloop::nativeSettingsMigrationGateCodeName(settings_execution));
+    failPendingBoot("settings_migration_execution");
+    runRecoveryNetwork(recoveryDiagnostic(
+        board, inkloop::recovery::RecoveryReason::MigrationRefused,
+        inkloop::recovery::RecoveryPhase::Migration,
+        inkloop::recovery::RecoveryOutcome::RequiresOperator,
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
   }
 
   const esp_err_t initialized = inkloop::board_initialize();
@@ -483,7 +647,7 @@ extern "C" void app_main(void) {
         board, inkloop::recovery::RecoveryReason::BootAuditRefused,
         inkloop::recovery::RecoveryPhase::BootAudit,
         inkloop::recovery::RecoveryOutcome::Failed,
-        recoveryRecordCounts(storage)));
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
   }
   ota_stage.board_observed = true;
   ota_stage.board_healthy = true;
@@ -509,25 +673,14 @@ extern "C" void app_main(void) {
     ESP_LOGI(kTag, "SD:UNSUPPORTED board=%s; using internal", board.id);
   }
 
-  // A refused internal audit still permits board/storage discovery so the
-  // read-only recovery mode can later expose both built-in and removable
-  // media. It must never reach settings import or any normal product writer.
-  if (!upgrade.allowsStartup()) {
-    ESP_LOGE(kTag,
-             "upgrade state needs explicit recovery; refusing all writers");
-    ota_stage.storage_gate_observed = true;
-    failPendingBoot("upgrade_gate");
-    runRecoveryNetwork(auditRecoveryDiagnostic(
-        board, upgrade.report, recoveryRecordCounts(storage)), &storage);
-  }
-
   // Operational settings are loaded before long-lived services capture their
   // storage pointers. This makes the persisted backend choice authoritative
   // for the whole boot and prevents Voice, Portal, Display and Inkloop from
   // accidentally operating on different albums. A missing requested TF card
   // falls back to Automatic without rewriting the user's saved preference.
   static inkloop::NativeDeviceStateOwner device_state(board, storage);
-  const esp_err_t settings_status = device_state.initialize();
+  const esp_err_t settings_status =
+      device_state.initialize(settings_authorization);
   if (settings_status != ESP_OK) {
     ESP_LOGE(kTag, "native settings unavailable: %s; refusing writers",
              esp_err_to_name(settings_status));
@@ -536,7 +689,7 @@ extern "C" void app_main(void) {
         board, inkloop::recovery::RecoveryReason::StorageIntegrityRefused,
         inkloop::recovery::RecoveryPhase::StorageAudit,
         inkloop::recovery::RecoveryOutcome::Failed,
-        recoveryRecordCounts(storage)));
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
   }
 
   const char* selected_asset_root = storage.selectedAssetRoot(
@@ -549,7 +702,7 @@ extern "C" void app_main(void) {
         board, inkloop::recovery::RecoveryReason::StorageIntegrityRefused,
         inkloop::recovery::RecoveryPhase::StorageAudit,
         inkloop::recovery::RecoveryOutcome::Failed,
-        recoveryRecordCounts(storage)));
+        recoveryRecordCounts(storage)), &nvs_boot_mount, &storage);
   }
   if (std::strcmp(selected_asset_root, internal_root) != 0) {
     const inkloop::storage::UpgradeAuditReport asset_upgrade =
@@ -567,7 +720,8 @@ extern "C" void app_main(void) {
       ota_stage.storage_gate_observed = true;
       failPendingBoot("removable_upgrade_gate");
       runRecoveryNetwork(auditRecoveryDiagnostic(
-          board, asset_upgrade, recoveryRecordCounts(storage)), &storage);
+          board, asset_upgrade, recoveryRecordCounts(storage)),
+          &nvs_boot_mount, &storage, true);
     }
   }
   ota_stage.storage_gate_observed = true;
@@ -626,6 +780,8 @@ extern "C" void app_main(void) {
         inkloop::recovery::RecoveryPhase::BootAudit,
         inkloop::recovery::RecoveryOutcome::Failed,
         recoveryRecordCounts(storage)),
+        nvs_boot_mount,
+        storage,
         operational_settings.values.local_management_password_override);
   }
   runtime_status = runtime.begin();
@@ -639,6 +795,8 @@ extern "C" void app_main(void) {
         inkloop::recovery::RecoveryPhase::BootAudit,
         inkloop::recovery::RecoveryOutcome::Failed,
         recoveryRecordCounts(storage)),
+        nvs_boot_mount,
+        storage,
         operational_settings.values.local_management_password_override);
   }
   logMainStackWatermark("after_product_begin");

@@ -8,6 +8,7 @@
 #include "inkloop/board.hpp"
 #include "inkloop/local_tools/local_tools.hpp"
 #include "inkloop/native_portal_owner.hpp"
+#include "inkloop/native_settings_migration_gate.hpp"
 #include "inkloop/settings/device_settings.hpp"
 #include "inkloop/settings/esp_nvs_settings_store.hpp"
 #include "inkloop/settings/settings_journal.hpp"
@@ -27,7 +28,8 @@ class NativeDeviceStateOwner final : public local_tools::ILocalToolsAdapter,
   NativeDeviceStateOwner(const BoardDescriptor& board,
                          storage::EspStorageMountOwner& storage);
 
-  esp_err_t initialize();
+  esp_err_t initialize(
+      const NativeSettingsMigrationAuthorization& authorization);
   esp_err_t attachStorageMaintenanceCoordinator(
       IStorageMaintenanceCoordinator& coordinator);
   bool ready() const { return initialized_; }
@@ -91,8 +93,6 @@ class NativeDeviceStateOwner final : public local_tools::ILocalToolsAdapter,
   settings::DeviceSettings defaults_;
   settings::EspNvsSettingsJournalStore journal_{};
   settings::SettingsStoreCore store_;
-  settings::EspNvsReadOnlyLegacyPortalSource legacy_{};
-  settings::EspPsaLegacySha256Verifier legacy_sha_{};
   mutable StaticSemaphore_t mutex_storage_{};
   mutable SemaphoreHandle_t mutex_ = nullptr;
   settings::SettingsSnapshot snapshot_{};

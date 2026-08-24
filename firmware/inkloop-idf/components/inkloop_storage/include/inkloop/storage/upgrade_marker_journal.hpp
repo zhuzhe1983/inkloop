@@ -44,6 +44,14 @@ struct RawMigrationJournalSlot {
   EncodedMigrationJournalSlot bytes{};
 };
 
+// Exposed for the one safe torn-journal recovery case: the first Prepared
+// slot was durably written but power failed before head+initialized became
+// authoritative.  Callers must still bind the decoded identity to freshly
+// audited source evidence before completing the head commit.
+MigrationMarkerCodecCode decodeMigrationJournalSlotV1(
+    const RawMigrationJournalSlot& raw, std::uint64_t& sequence,
+    MigrationMarker& marker);
+
 // One adapter read populates this complete value. A store error is returned by
 // inspectRaw rather than encoded into a partially trusted snapshot.
 struct RawMigrationMarkerJournal {

@@ -11,7 +11,9 @@
 
 #include "esp_log.h"
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
+#include "esp_memory_utils.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "inkloop/board_prompt_policy.hpp"
@@ -23,6 +25,14 @@
 #include "inkloop/voice_aigc_intent_policy.hpp"
 
 namespace inkloop {
+
+void InternalAudioDeviceDeleter::operator()(
+    EspI2sAudioDevice* device) const {
+  if (!device) return;
+  device->~EspI2sAudioDevice();
+  heap_caps_free(device);
+}
+
 namespace {
 
 constexpr char kTag[] = "ink-native-voice";
@@ -597,9 +607,16 @@ esp_err_t NativeVoiceService::initialize() {
     return ESP_ERR_NO_MEM;
   }
   if (voice_hardware_available_) {
-    audio_device_.reset(
-        new (std::nothrow) EspI2sAudioDevice(board_.audioConfig(), *codec));
-    if (!audio_device_) return ESP_ERR_NO_MEM;
+    void* audio_storage = heap_caps_malloc(
+        sizeof(EspI2sAudioDevice), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!audio_storage) return ESP_ERR_NO_MEM;
+    EspI2sAudioDevice* audio_device = new (audio_storage)
+        EspI2sAudioDevice(board_.audioConfig(), *codec);
+    if (!esp_ptr_internal(audio_device)) {
+      InternalAudioDeviceDeleter{}(audio_device);
+      return ESP_ERR_INVALID_STATE;
+    }
+    audio_device_.reset(audio_device);
   }
 
   local_tools::ILocalToolsAdapter* settings = nullptr;
@@ -2582,7 +2599,7 @@ void NativeVoiceService::serviceAigc(bool album_mutation_allowed) {
           post(WorkClass::Display,
                serial_diagnostic
                    ? ProductOpcode::DisplayDiagnosticAigcOrdinal
-                   : ProductOpcode::DisplayAlbumOrdinal,
+                   : ProductOpcode::DisplayInteractiveAlbumOrdinal,
                static_cast<uint8_t>(committed.ordinal), 0) ==
               AdmissionResult::Admitted) {
         finishAigc(true, "aigc.cached display_queued");

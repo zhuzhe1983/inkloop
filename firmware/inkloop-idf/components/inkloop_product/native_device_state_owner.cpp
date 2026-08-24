@@ -51,28 +51,24 @@ void NativeDeviceStateOwner::give() const {
   if (mutex_) xSemaphoreGive(mutex_);
 }
 
-esp_err_t NativeDeviceStateOwner::initialize() {
-  if (initialized_) return ESP_ERR_INVALID_STATE;
+esp_err_t NativeDeviceStateOwner::initialize(
+    const NativeSettingsMigrationAuthorization& authorization) {
+  if (initialized_ || !authorization.valid()) return ESP_ERR_INVALID_STATE;
   mutex_ = xSemaphoreCreateMutexStatic(&mutex_storage_);
   if (!mutex_) return ESP_ERR_NO_MEM;
-  settings::SettingsStatus loaded = store_.load(snapshot_);
+  const settings::SettingsStatus loaded = store_.load(snapshot_);
   if (!loaded.ok()) return ESP_FAIL;
-
-  // A verified Arduino journal is the user's own operational state. The
-  // product composition explicitly accepts it on a fresh native journal so
-  // the migration is painless, while the legacy source itself remains strict
-  // NVS_READONLY and rollback-safe.
-  if (snapshot_.generation == 0U) {
-    settings::LegacySettingsImport candidate;
-    loaded = settings::inspectLegacyPortalSettings(
-        legacy_, legacy_sha_, defaults_, candidate);
-    if (!loaded.ok()) return ESP_FAIL;
-    if (candidate.state == settings::LegacyImportState::Candidate) {
-      settings::SettingsSnapshot committed;
-      loaded = store_.save(candidate.values, 0U, committed);
-      if (!loaded.ok()) return ESP_FAIL;
-      snapshot_ = std::move(committed);
-    }
+  const bool authorized_fresh =
+      authorization.kind == NativeSettingsAuthorityKind::FreshDefaults &&
+      snapshot_.generation == 0U;
+  const bool authorized_native =
+      authorization.kind == NativeSettingsAuthorityKind::NativeJournal &&
+      snapshot_.generation == authorization.observed_generation &&
+      static_cast<std::uint64_t>(snapshot_.generation) >=
+          authorization.migration_generation;
+  if (!authorized_fresh && !authorized_native) {
+    snapshot_ = settings::SettingsSnapshot{};
+    return ESP_ERR_INVALID_STATE;
   }
   const storage::AssetStoragePreference requested =
       storagePreference(snapshot_.values.asset_storage_preference);
@@ -122,6 +118,7 @@ portal::PortalSettingsSnapshot NativeDeviceStateOwner::portalSnapshot(
   output.volume = value.volume_percent;
   output.led_maximum_brightness_percent =
       value.led_maximum_brightness_percent;
+  output.led_roles_swapped = value.led_roles_swapped;
   output.voice_assistance_enabled = value.voice_assistance_enabled;
   output.assistant_prompt = value.assistant_prompt;
   output.image_prompt_template = value.aigc_prompt_template;
@@ -219,6 +216,8 @@ portal::PortalResult NativeDeviceStateOwner::applyPortalSettings(
     next.led_maximum_brightness_percent =
         patch.led_maximum_brightness_percent;
   }
+  if (patch.has_led_roles_swapped)
+    next.led_roles_swapped = patch.led_roles_swapped;
   if (patch.has_voice_assistance_enabled)
     next.voice_assistance_enabled = patch.voice_assistance_enabled;
   if (patch.has_assistant_prompt) next.assistant_prompt = patch.assistant_prompt;

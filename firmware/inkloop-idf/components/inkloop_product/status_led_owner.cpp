@@ -37,6 +37,7 @@ void EspStatusLedOwner::shutdown() {
   portENTER_CRITICAL(&mux_);
   core_ = StatusLedCore();
   physical_pixels_ = 0U;
+  roles_swapped_ = false;
   configured_ = false;
   portEXIT_CRITICAL(&mux_);
 }
@@ -55,6 +56,18 @@ void EspStatusLedOwner::setMaximumBrightnessPercent(
       (static_cast<uint16_t>(bounded) * 255U) / 100U);
   portENTER_CRITICAL(&mux_);
   core_.setMaximumBrightness(raw);
+  if (run_hardware_test) core_.startHardwareTest(nowMs());
+  portEXIT_CRITICAL(&mux_);
+}
+
+void EspStatusLedOwner::setPresentation(
+    uint8_t percent, bool roles_swapped, bool run_hardware_test) {
+  const uint8_t bounded = percent > 100U ? 100U : percent;
+  const uint8_t raw = static_cast<uint8_t>(
+      (static_cast<uint16_t>(bounded) * 255U) / 100U);
+  portENTER_CRITICAL(&mux_);
+  core_.setMaximumBrightness(raw);
+  roles_swapped_ = physical_pixels_ >= 2U && roles_swapped;
   if (run_hardware_test) core_.startHardwareTest(nowMs());
   portEXIT_CRITICAL(&mux_);
 }
@@ -99,8 +112,10 @@ WorkDisposition EspStatusLedOwner::handleCommand(
 
 void EspStatusLedOwner::service() {
   StatusLedFrame frame;
+  bool swap_roles = false;
   portENTER_CRITICAL(&mux_);
-  frame = core_.render(nowMs(), physical_pixels_);
+  swap_roles = roles_swapped_;
+  frame = core_.render(nowMs(), physical_pixels_, swap_roles);
   portEXIT_CRITICAL(&mux_);
   if (frame.count > 0U) {
     board_.setRgb(frame.pixels.data(), frame.count);

@@ -31,8 +31,9 @@ class EspPsaLegacySha256Verifier final : public ILegacySha256Verifier {
  public:
   bool matches(const std::string& payload,
                const std::string& expected_lower_hex) const override;
+  bool digest(const std::string& payload,
+              std::string& output_lower_hex) const override;
 };
 
 }  // namespace settings
 }  // namespace inkloop
-

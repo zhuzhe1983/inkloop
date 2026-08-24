@@ -29,12 +29,12 @@ bool validAbsoluteRoot(const char* value) {
   return value[length - 1U] != '/';
 }
 
-bool applyCapacity(uint64_t total, uint64_t free,
+bool applyCapacity(uint64_t total, uint64_t free, bool writable,
                    MountedBackendStatus& status) {
   if (total == 0 || free > total) return false;
   status.total_bytes = total;
   status.free_bytes = free;
-  status.writable = true;
+  status.writable = writable;
   status.state = MountState::Mounted;
   return true;
 }
@@ -103,8 +103,24 @@ void EspStorageMountOwner::resetSd(MountState state) {
   snapshot_.sd.removable = true;
 }
 
+esp_err_t EspStorageMountOwner::mountInternalReadOnly() {
+  return mountInternalWithAccess(InternalMountAccess::ReadOnly);
+}
+
 esp_err_t EspStorageMountOwner::mountInternal() {
-  if (internal_registered_) return ESP_ERR_INVALID_STATE;
+  if (recovery_mode_) return ESP_ERR_INVALID_STATE;
+  return mountInternalWithAccess(InternalMountAccess::ReadWriteProduct);
+}
+
+esp_err_t EspStorageMountOwner::mountInternalWithAccess(
+    InternalMountAccess access) {
+  if (internal_registered_ ||
+      internal_access_ != InternalMountAccess::Unmounted)
+    return ESP_ERR_INVALID_STATE;
+  if (access != InternalMountAccess::ReadOnly &&
+      access != InternalMountAccess::ReadWriteProduct &&
+      access != InternalMountAccess::ReadWriteRecovery)
+    return ESP_ERR_INVALID_ARG;
   if (!validConfig() || !internal_album_.pathsValid()) {
     resetInternal(MountState::LayoutMismatch);
     return ESP_ERR_INVALID_ARG;
@@ -120,25 +136,41 @@ esp_err_t EspStorageMountOwner::mountInternal() {
 
   esp_vfs_littlefs_conf_t mount_config{};
   mount_config.base_path = config_.internal_base_path;
-  mount_config.partition_label = config_.internal_partition_label;
-  mount_config.partition = nullptr;
+  if (access == InternalMountAccess::ReadOnly) {
+    // Both enforcement layers are intentional. LittleFS/VFS rejects writable
+    // opens, while the lifetime-owned descriptor makes the partition API
+    // reject any accidental program/erase call below the filesystem.
+    internal_readonly_partition_ = *partition;
+    internal_readonly_partition_.readonly = true;
+    internal_readonly_partition_valid_ = true;
+    mount_config.partition_label = nullptr;
+    mount_config.partition = &internal_readonly_partition_;
+  } else {
+    internal_readonly_partition_valid_ = false;
+    mount_config.partition_label = config_.internal_partition_label;
+    mount_config.partition = nullptr;
+  }
   mount_config.format_if_mount_failed = false;
-  mount_config.read_only = false;
+  mount_config.read_only = access == InternalMountAccess::ReadOnly;
   mount_config.dont_mount = false;
   mount_config.grow_on_mount = false;
   const esp_err_t mounted = esp_vfs_littlefs_register(&mount_config);
   if (mounted != ESP_OK) {
+    internal_readonly_partition_valid_ = false;
     resetInternal(mounted == ESP_FAIL ? MountState::RecoveryRequired
                                       : MountState::IoError);
     return mounted;
   }
   internal_registered_ = true;
+  internal_access_ = access;
   size_t total = 0;
   size_t used = 0;
   if (esp_littlefs_info(config_.internal_partition_label, &total, &used) !=
           ESP_OK ||
       used > total ||
-      !applyCapacity(total, total - used, snapshot_.internal)) {
+      !applyCapacity(total, total - used,
+                     access != InternalMountAccess::ReadOnly,
+                     snapshot_.internal)) {
     unmountInternal();
     resetInternal(MountState::RecoveryRequired);
     return ESP_FAIL;
@@ -147,9 +179,115 @@ esp_err_t EspStorageMountOwner::mountInternal() {
   return ESP_OK;
 }
 
+esp_err_t EspStorageMountOwner::promoteInternalReadWrite() {
+  if (recovery_mode_) return ESP_ERR_INVALID_STATE;
+  if (!internal_registered_ ||
+      internal_access_ != InternalMountAccess::ReadOnly ||
+      snapshot_.internal.state != MountState::Mounted ||
+      snapshot_.internal.writable)
+    return ESP_ERR_INVALID_STATE;
+  internal_album_.abort();
+  const esp_err_t unmounted = unregisterInternal();
+  if (unmounted != ESP_OK) {
+    resetInternal(MountState::RecoveryRequired);
+    return unmounted;
+  }
+  const esp_err_t mounted =
+      mountInternalWithAccess(InternalMountAccess::ReadWriteProduct);
+  if (mounted != ESP_OK) {
+    resetInternal(MountState::RecoveryRequired);
+    return mounted;
+  }
+  return ESP_OK;
+}
+
+esp_err_t EspStorageMountOwner::prepareRecoveryReadOnly() {
+  if (recovery_mutation_domain_ != RecoveryMutationDomain::None)
+    return ESP_ERR_INVALID_STATE;
+  recovery_mode_ = true;  // Revoke Product roots before touching the VFS.
+  if (internal_registered_ &&
+      internal_access_ == InternalMountAccess::ReadOnly &&
+      auditInternalRoot()) {
+    return ESP_OK;
+  }
+  if (internal_registered_) {
+    internal_album_.abort();
+    const esp_err_t unmounted = unregisterInternal();
+    if (unmounted != ESP_OK) {
+      // One bounded second unregister attempt handles a transient VFS owner
+      // release. If it still fails, recoveryWritesRevoked() remains false and
+      // app_main refuses to start the Recovery network on a Product RW mount.
+      unmountInternal();
+      resetInternal(MountState::RecoveryRequired);
+      return unmounted;
+    }
+  }
+  const esp_err_t mounted =
+      mountInternalWithAccess(InternalMountAccess::ReadOnly);
+  if (mounted != ESP_OK) resetInternal(MountState::RecoveryRequired);
+  return mounted;
+}
+
+esp_err_t EspStorageMountOwner::beginRecoveryMutation(
+    RecoveryMutationDomain domain) {
+  if (!recovery_mode_ ||
+      recovery_mutation_domain_ != RecoveryMutationDomain::None ||
+      domain == RecoveryMutationDomain::None || !auditInternalRoot()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (domain == RecoveryMutationDomain::RemovableAlbum) {
+    if (!snapshot_.sd.healthy()) return ESP_ERR_NOT_FOUND;
+    recovery_mutation_domain_ = domain;
+    return ESP_OK;
+  }
+  internal_album_.abort();
+  const esp_err_t unmounted = unregisterInternal();
+  if (unmounted != ESP_OK) {
+    resetInternal(MountState::RecoveryRequired);
+    return unmounted;
+  }
+  const esp_err_t mounted =
+      mountInternalWithAccess(InternalMountAccess::ReadWriteRecovery);
+  if (mounted != ESP_OK) {
+    // A failed recovery promotion is never allowed to strand a writable
+    // registration. Best-effort hard-RO remount preserves inspection access;
+    // failure remains fail-closed and leaves no Product root.
+    (void)mountInternalWithAccess(InternalMountAccess::ReadOnly);
+    return mounted;
+  }
+  recovery_mutation_domain_ = domain;
+  return ESP_OK;
+}
+
+esp_err_t EspStorageMountOwner::endRecoveryMutationAndRemountReadOnly() {
+  const RecoveryMutationDomain domain = recovery_mutation_domain_;
+  if (!recovery_mode_ || domain == RecoveryMutationDomain::None)
+    return ESP_ERR_INVALID_STATE;
+  recovery_mutation_domain_ = RecoveryMutationDomain::None;
+  if (domain == RecoveryMutationDomain::RemovableAlbum) {
+    return auditInternalRoot() ? ESP_OK : ESP_ERR_INVALID_STATE;
+  }
+  if (!internal_registered_ ||
+      internal_access_ != InternalMountAccess::ReadWriteRecovery) {
+    resetInternal(MountState::RecoveryRequired);
+    return ESP_ERR_INVALID_STATE;
+  }
+  internal_album_.abort();
+  const esp_err_t unmounted = unregisterInternal();
+  if (unmounted != ESP_OK) {
+    resetInternal(MountState::RecoveryRequired);
+    return unmounted;
+  }
+  const esp_err_t mounted =
+      mountInternalWithAccess(InternalMountAccess::ReadOnly);
+  if (mounted != ESP_OK) resetInternal(MountState::RecoveryRequired);
+  return mounted;
+}
+
 esp_err_t EspStorageMountOwner::mountSd(bool power_ready,
                                         bool card_inserted) {
-  if (sd_registered_ || sd_bus_owned_) return ESP_ERR_INVALID_STATE;
+  if (recovery_mode_ || sd_registered_ || sd_bus_owned_)
+    return ESP_ERR_INVALID_STATE;
   if (!validConfig() || !sd_album_.pathsValid()) {
     resetSd(MountState::LayoutMismatch);
     return ESP_ERR_INVALID_ARG;
@@ -244,7 +382,7 @@ esp_err_t EspStorageMountOwner::mountSd(bool power_ready,
   uint64_t total = 0;
   uint64_t free = 0;
   if (esp_vfs_fat_info(config_.sd_base_path, &total, &free) != ESP_OK ||
-      !applyCapacity(total, free, snapshot_.sd)) {
+      !applyCapacity(total, free, true, snapshot_.sd)) {
     unmountSd();
     resetSd(MountState::RecoveryRequired);
     return ESP_FAIL;
@@ -254,7 +392,7 @@ esp_err_t EspStorageMountOwner::mountSd(bool power_ready,
 }
 
 esp_err_t EspStorageMountOwner::formatSdCardConfirmed() {
-  if (!validConfig() || !sd_registered_ || !sd_card_ ||
+  if (recovery_mode_ || !validConfig() || !sd_registered_ || !sd_card_ ||
       snapshot_.sd.state != MountState::Mounted) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -271,7 +409,7 @@ esp_err_t EspStorageMountOwner::formatSdCardConfirmed() {
   uint64_t total = 0;
   uint64_t free = 0;
   if (esp_vfs_fat_info(config_.sd_base_path, &total, &free) != ESP_OK ||
-      !applyCapacity(total, free, snapshot_.sd)) {
+      !applyCapacity(total, free, true, snapshot_.sd)) {
     // IDF's formatter unmounts internally and, if mounting the new FAT volume
     // fails, releases the card/driver before returning. Some IDF releases can
     // still return ESP_OK from that remount-failure path. Do not retain or
@@ -299,29 +437,115 @@ void EspStorageMountOwner::unmountSd() {
   resetSd(MountState::Unmounted);
 }
 
-void EspStorageMountOwner::unmountInternal() {
-  internal_album_.abort();
+esp_err_t EspStorageMountOwner::unregisterInternal() {
   if (internal_registered_) {
-    esp_vfs_littlefs_unregister(config_.internal_partition_label);
+    const esp_err_t status =
+        esp_vfs_littlefs_unregister(config_.internal_partition_label);
+    if (status != ESP_OK) return status;
   }
   internal_registered_ = false;
+  internal_access_ = InternalMountAccess::Unmounted;
+  internal_readonly_partition_valid_ = false;
   resetInternal(MountState::Unmounted);
+  return ESP_OK;
+}
+
+void EspStorageMountOwner::unmountInternal() {
+  internal_album_.abort();
+  recovery_mutation_domain_ = RecoveryMutationDomain::None;
+  if (unregisterInternal() != ESP_OK)
+    resetInternal(MountState::RecoveryRequired);
+}
+
+const char* EspStorageMountOwner::auditInternalRoot() const {
+  return internal_registered_ &&
+      internal_access_ == InternalMountAccess::ReadOnly &&
+      internal_readonly_partition_valid_ &&
+      internal_readonly_partition_.readonly &&
+      snapshot_.internal.state == MountState::Mounted &&
+      !snapshot_.internal.writable
+      ? config_.internal_base_path : nullptr;
 }
 
 const char* EspStorageMountOwner::taskRoot() const {
-  return snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
+  return !recovery_mode_ &&
+      internal_access_ == InternalMountAccess::ReadWriteProduct &&
+      snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
 }
 
 const char* EspStorageMountOwner::internalRoot() const {
-  return snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
+  return !recovery_mode_ &&
+      internal_access_ == InternalMountAccess::ReadWriteProduct &&
+      snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
 }
 
 const char* EspStorageMountOwner::removableRoot() const {
-  return snapshot_.sd.healthy() ? config_.sd_base_path : nullptr;
+  return !recovery_mode_ && snapshot_.sd.healthy()
+      ? config_.sd_base_path : nullptr;
+}
+
+const char* EspStorageMountOwner::recoveryReadInternalRoot() const {
+  return recovery_mode_ &&
+      recovery_mutation_domain_ == RecoveryMutationDomain::None
+      ? auditInternalRoot() : nullptr;
+}
+
+const char* EspStorageMountOwner::recoveryReadTaskRoot() const {
+  return recoveryReadInternalRoot();
+}
+
+const char* EspStorageMountOwner::recoveryReadRemovableRoot() const {
+  return recovery_mode_ &&
+      recovery_mutation_domain_ == RecoveryMutationDomain::None &&
+      snapshot_.sd.healthy() ? config_.sd_base_path : nullptr;
+}
+
+const char* EspStorageMountOwner::recoveryMutationInternalRoot(
+    RecoveryMutationDomain domain) const {
+  const bool internal_domain = domain == RecoveryMutationDomain::Display ||
+      domain == RecoveryMutationDomain::Tasks ||
+      domain == RecoveryMutationDomain::InternalAlbum;
+  return recovery_mode_ && internal_domain &&
+      recovery_mutation_domain_ == domain && internal_registered_ &&
+      internal_access_ == InternalMountAccess::ReadWriteRecovery &&
+      snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
+}
+
+const char* EspStorageMountOwner::recoveryMutationTaskRoot(
+    RecoveryMutationDomain domain) const {
+  const bool task_domain = domain == RecoveryMutationDomain::Display ||
+      domain == RecoveryMutationDomain::Tasks;
+  return recovery_mode_ && task_domain &&
+      recovery_mutation_domain_ == domain && internal_registered_ &&
+      internal_access_ == InternalMountAccess::ReadWriteRecovery &&
+      snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
+}
+
+const char* EspStorageMountOwner::recoveryMutationRemovableRoot(
+    RecoveryMutationDomain domain) const {
+  const bool removable_domain = domain == RecoveryMutationDomain::Display ||
+      domain == RecoveryMutationDomain::RemovableAlbum;
+  return recovery_mode_ && removable_domain &&
+      recovery_mutation_domain_ == domain && snapshot_.sd.healthy()
+      ? config_.sd_base_path : nullptr;
+}
+
+PosixAtomicAlbumStore* EspStorageMountOwner::recoveryMutationAlbumStore(
+    RecoveryMutationDomain domain, const char* identity) {
+  if (!identity) return nullptr;
+  if (std::strcmp(identity, "littlefs") == 0)
+    return recoveryMutationInternalRoot(domain) ? &internal_album_ : nullptr;
+  if (std::strcmp(identity, "sd") == 0)
+    return recoveryMutationRemovableRoot(domain) ? &sd_album_ : nullptr;
+  return nullptr;
 }
 
 const char* EspStorageMountOwner::selectedAssetRoot(
     AssetStoragePreference preference) const {
+  if (recovery_mode_ ||
+      internal_access_ != InternalMountAccess::ReadWriteProduct) {
+    return nullptr;
+  }
   if (preference == AssetStoragePreference::Internal)
     return snapshot_.internal.healthy() ? config_.internal_base_path : nullptr;
   if (preference == AssetStoragePreference::SdCard)
@@ -340,7 +564,10 @@ PosixAtomicAlbumStore* EspStorageMountOwner::selectedAlbumStore(
 
 PosixAtomicAlbumStore* EspStorageMountOwner::albumStoreForLegacyIdentity(
     const char* identity) {
-  if (!identity) return nullptr;
+  if (recovery_mode_ ||
+      internal_access_ != InternalMountAccess::ReadWriteProduct || !identity) {
+    return nullptr;
+  }
   if (std::strcmp(identity, "littlefs") == 0)
     return snapshot_.internal.healthy() ? &internal_album_ : nullptr;
   if (std::strcmp(identity, "sd") == 0)

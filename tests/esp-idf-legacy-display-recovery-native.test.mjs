@@ -39,6 +39,14 @@ struct Status {
 namespace inkloop {
 namespace storage {
 
+enum class RecoveryMutationDomain {
+  None,
+  Display,
+  Tasks,
+  InternalAlbum,
+  RemovableAlbum,
+};
+
 class PosixAtomicAlbumStore {
  public:
   myai::Status markCurrent(const std::string& asset_id);
@@ -53,10 +61,14 @@ class EspStorageMountOwner {
   EspStorageMountOwner(std::string task, std::string internal,
                        std::string removable);
 
-  const char* taskRoot() const;
-  const char* internalRoot() const;
-  const char* removableRoot() const;
-  PosixAtomicAlbumStore* albumStoreForLegacyIdentity(const char* identity);
+  const char* recoveryReadTaskRoot() const;
+  const char* recoveryMutationTaskRoot(RecoveryMutationDomain domain) const;
+  const char* recoveryMutationInternalRoot(
+      RecoveryMutationDomain domain) const;
+  const char* recoveryMutationRemovableRoot(
+      RecoveryMutationDomain domain) const;
+  PosixAtomicAlbumStore* recoveryMutationAlbumStore(
+      RecoveryMutationDomain domain, const char* identity);
 
   std::string task_root;
   std::string internal_root;
@@ -206,20 +218,31 @@ EspStorageMountOwner::EspStorageMountOwner(
     : task_root(std::move(task)), internal_root(std::move(internal)),
       removable_root(std::move(removable)) {}
 
-const char* EspStorageMountOwner::taskRoot() const {
+const char* EspStorageMountOwner::recoveryReadTaskRoot() const {
   return task_root.empty() ? nullptr : task_root.c_str();
 }
 
-const char* EspStorageMountOwner::internalRoot() const {
-  return internal_root.empty() ? nullptr : internal_root.c_str();
+const char* EspStorageMountOwner::recoveryMutationTaskRoot(
+    RecoveryMutationDomain domain) const {
+  return domain == RecoveryMutationDomain::Display && !task_root.empty()
+      ? task_root.c_str() : nullptr;
 }
 
-const char* EspStorageMountOwner::removableRoot() const {
-  return removable_root.empty() ? nullptr : removable_root.c_str();
+const char* EspStorageMountOwner::recoveryMutationInternalRoot(
+    RecoveryMutationDomain domain) const {
+  return domain == RecoveryMutationDomain::Display && !internal_root.empty()
+      ? internal_root.c_str() : nullptr;
 }
 
-PosixAtomicAlbumStore* EspStorageMountOwner::albumStoreForLegacyIdentity(
-    const char* identity) {
+const char* EspStorageMountOwner::recoveryMutationRemovableRoot(
+    RecoveryMutationDomain domain) const {
+  return domain == RecoveryMutationDomain::Display && !removable_root.empty()
+      ? removable_root.c_str() : nullptr;
+}
+
+PosixAtomicAlbumStore* EspStorageMountOwner::recoveryMutationAlbumStore(
+    RecoveryMutationDomain domain, const char* identity) {
+  if (domain != RecoveryMutationDomain::Display) return nullptr;
   last_identity = identity ? identity : "";
   if (last_identity == "littlefs") return &internal_album;
   if (last_identity == "sd") return &removable_album;
@@ -527,11 +550,11 @@ test("native source is exact-path, current-last and dependency isolated", () => 
   assert.match(native, /const std::size_t order\[\]\s*=\s*\{1U, 2U, 0U\}/);
   assert.match(
     native,
-    /journal\.backend == "sd"\s*\? storage_\.removableRoot\(\)\s*:\s*storage_\.internalRoot\(\)/,
+    /journal\.backend == "sd"[\s\S]*recoveryMutationRemovableRoot[\s\S]*recoveryMutationInternalRoot/,
   );
   assert.match(
     native,
-    /albumStoreForLegacyIdentity\(journal\.backend\.c_str\(\)\)/,
+    /recoveryMutationAlbumStore\([\s\S]*journal\.backend\.c_str\(\)\)/,
   );
   assert.match(
     native,

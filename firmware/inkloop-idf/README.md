@@ -8,15 +8,17 @@ Status: the native Product graph now composes the C151 board, bounded dual-core
 runtime, Wi-Fi/Portal, storage, display, Inkloop, MyAI voice/AIGC, settings,
 power, Recovery and signed-OTA owners without an Arduino compatibility layer.
 Host fault matrices and official ESP-IDF v6.0.2 C151/mock links prove the
-digital composition. The current remediation worktree is `0.4.0-beta.29`: the
-repository suite passes 452/452 and lint has zero errors (19 warnings). The
-exact beta28 independent gate failed on TF export, flash custody, build
-reproducibility, failed-wake admission and an undeclared host dependency;
+digital composition. The current candidate worktree is `0.4.0-beta.30`; the
+complete repository suite passes 481/481 and lint has zero errors (19
+warnings). The exact beta28 independent gate failed on TF export, flash
+custody, build reproducibility, failed-wake admission and an undeclared host
+dependency;
 beta29 contains remediations for those findings. Development defaults now
 remove time/path inputs, and new candidate hashes must come from the two-build
 check below. A clean exact-commit reproducibility receipt and fresh independent
-beta29 gate are still required. Beta29 has not been flashed or promoted. The
-attached device currently has only a beta27 Recovery-path physical pass;
+beta30-or-newer gate are still required. Beta29 was never flashed or promoted
+and is revoked; beta30 has not been flashed or promoted. The attached device
+currently has only a beta27 Recovery-path physical pass;
 Product Voice/AIGC/album/display evidence remains behind an explicit,
 operator-gated TF transaction choice.
 

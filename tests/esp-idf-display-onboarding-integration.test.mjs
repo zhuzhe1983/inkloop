@@ -124,9 +124,10 @@ test("album render and acknowledgement semantics remain synchronous", () => {
     "bool NativeDisplayService::renderOrdinal",
   );
   assert.match(handler, /DisplayAlbumOrdinal/);
-  assert.match(handler, /const bool rendered = renderOrdinal\(envelope\.flags\)/);
+  assert.match(handler, /const bool rendered = renderOrdinal\(envelope\.flags, user_initiated\)/);
   assert.match(handler, /return rendered \? WorkDisposition::Complete/);
   assert.match(handler, /DisplayDiagnosticAigcOrdinal/);
+  assert.match(handler, /DisplayInteractiveAlbumOrdinal/);
   assert.match(handler, /SerialDiagnosticAigcPhase::DisplayStart/);
   assert.match(handler, /SerialDiagnosticAigcPhase::DisplayComplete/);
 

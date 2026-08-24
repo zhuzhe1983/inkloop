@@ -14,7 +14,9 @@ test("app observes pending OTA before initialization and confirms only from live
   ]);
   const earlyTick = source.indexOf("ota_health.tick(");
   const topology = source.indexOf("validate_task_topology()");
-  const storageAudit = source.indexOf("runReadOnlyUpgradeBootAudit(storage)");
+  const storageAudit = source.indexOf(
+    "runReadOnlyUpgradeBootAudit(storage, nvs_boot_mount)",
+  );
   const board = source.indexOf("board_initialize()");
   const runtimeBegin = source.indexOf("runtime.begin()");
   const monitorTelemetry = source.lastIndexOf("runtime.telemetry()");

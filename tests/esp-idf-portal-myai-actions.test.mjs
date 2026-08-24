@@ -67,6 +67,36 @@ test("native Portal state copies the selected board's bounded capabilities", () 
   assert.match(admission, /boardSupportsRenderStrategy/);
 });
 
+test("Portal LED role settings stay SKU-neutral and apply through the sole LED owner", () => {
+  const initialize = body(
+    portal,
+    "esp_err_t NativePortalOwner::initialize",
+    "esp_err_t NativePortalOwner::attachSettingsOwner",
+  );
+  assert.match(
+    initialize,
+    /leds_\.setPresentation\([\s\S]*led_maximum_brightness_percent,[\s\S]*led_roles_swapped, false\)/,
+  );
+  const admission = body(
+    portal,
+    "portal::PortalResult NativePortalOwner::tryEnqueue",
+    "bool NativePortalOwner::takeCommand",
+  );
+  assert.match(
+    admission,
+    /has_led_roles_swapped[\s\S]*board_\.descriptor\(\)\.rgb_pixels < 2U/,
+  );
+  const apply = body(
+    portal,
+    "void NativePortalOwner::applySettings",
+    "void NativePortalOwner::refreshState",
+  );
+  assert.match(
+    apply,
+    /has_led_maximum_brightness \|\| patch\.has_led_roles_swapped[\s\S]*leds_\.setPresentation\([\s\S]*true\)/,
+  );
+});
+
 test("native Portal publishes mDNS readiness and never claims a failed hostname", () => {
   const refresh = body(
     portal,
@@ -175,7 +205,7 @@ test("manual image generation uses the real AIGC album/display path and saved po
   assert.match(aigc, /aigc\.render_strategy_fallback selected=official-quality/);
   assert.doesNotMatch(aigc, /storage::validRenderStrategy/);
   assert.match(aigc, /AigcAlbumSink sink\(\*album_store_[\s\S]*aigc_render_strategy_/);
-  assert.match(aigc, /DisplayAlbumOrdinal/);
+  assert.match(aigc, /DisplayInteractiveAlbumOrdinal/);
   assert.doesNotMatch(aigc, /negativePrompt\s*=\s*"细小文字/);
   assert.doesNotMatch(aigc, /AigcAlbumSink sink\([\s\S]*"reflectance-photo"/);
   const upload = body(portal, "void NativePortalOwner::finishActiveUpload", "void NativePortalOwner::serviceUpload");

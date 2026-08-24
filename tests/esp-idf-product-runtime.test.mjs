@@ -25,7 +25,7 @@ test("native composition starts pinned owners and arms buttons last", () => {
   assert.match(source, /power_\.noteButtonActivity\(nowMs\(\)\)/);
   assert.doesNotMatch(source, /unavailableHandler[\s\S]{0,400}WorkDisposition::Complete/);
   assert.match(main, /runReadOnlyUpgradeBootAudit[\s\S]*board_initialize\(\)[\s\S]*runtime\.begin\(\)/);
-  assert.match(main, /NativeDeviceStateOwner device_state[\s\S]*device_state\.initialize\(\)[\s\S]*device_state\.effectiveAssetPreference\(\)/);
+  assert.match(main, /NativeSettingsMigrationAuthorization settings_authorization[\s\S]*settings_migration\.execute[\s\S]*NativeDeviceStateOwner device_state[\s\S]*device_state\.initialize\(settings_authorization\)[\s\S]*device_state\.effectiveAssetPreference\(\)/);
   assert.match(
     main,
     /attachStorageMaintenanceCoordinator\(runtime\)[\s\S]*attachPortalSettingsOwner\(device_state\)/,

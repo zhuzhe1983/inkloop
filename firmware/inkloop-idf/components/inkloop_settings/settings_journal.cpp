@@ -14,6 +14,7 @@ constexpr std::size_t kSchema1FixedHeaderBytes = 24U;
 constexpr std::size_t kFixedHeaderBytes = 26U;
 constexpr std::size_t kChecksumBytes = 4U;
 constexpr std::uint16_t kVoiceAssistanceFlag = 1U;
+constexpr std::uint16_t kLedRolesSwappedFlag = 1U << 1U;
 
 void append16(std::uint16_t value, std::vector<std::uint8_t>& output) {
   output.push_back(static_cast<std::uint8_t>(value & 0xFFU));
@@ -68,7 +69,9 @@ SettingsStatus storage(const char* detail) {
 
 bool sameSnapshot(const SettingsSnapshot& left,
                   const SettingsSnapshot& right) {
-  return left.generation == right.generation && left.values == right.values;
+  return left.generation == right.generation &&
+      left.decoded_record_schema == right.decoded_record_schema &&
+      left.values == right.values;
 }
 
 }  // namespace
@@ -98,7 +101,8 @@ SettingsStatus encodeSettingsRecord(const SettingsSnapshot& snapshot,
   output.reserve(kFixedHeaderBytes + payload_bytes + kChecksumBytes);
   output.insert(output.end(), std::begin(kMagic), std::end(kMagic));
   append16(kSettingsRecordSchema, output);
-  append16(value.voice_assistance_enabled ? kVoiceAssistanceFlag : 0U,
+  append16((value.voice_assistance_enabled ? kVoiceAssistanceFlag : 0U) |
+               (value.led_roles_swapped ? kLedRolesSwappedFlag : 0U),
            output);
   append32(snapshot.generation, output);
   output.push_back(value.volume_percent);
@@ -138,8 +142,10 @@ SettingsStatus decodeSettingsRecord(const std::vector<std::uint8_t>& input,
   std::uint32_t generation = 0U;
   if (!read16(input, at, schema) || !read16(input, at, flags) ||
       !read32(input, at, generation) ||
-      (schema != 1U && schema != kSettingsRecordSchema) ||
-      (flags & ~kVoiceAssistanceFlag) != 0U || generation == 0U)
+      (schema != 1U && schema != 2U && schema != kSettingsRecordSchema) ||
+      (flags & ~(kVoiceAssistanceFlag |
+                 (schema >= 3U ? kLedRolesSwappedFlag : 0U))) != 0U ||
+      generation == 0U)
     return corrupt("settings record header invalid");
   if (at + 4U > input.size()) return corrupt("settings record truncated");
   DeviceSettings decoded;
@@ -181,9 +187,12 @@ SettingsStatus decodeSettingsRecord(const std::vector<std::uint8_t>& input,
   }
   decoded.voice_assistance_enabled =
       (flags & kVoiceAssistanceFlag) != 0U;
+  decoded.led_roles_swapped =
+      schema >= 3U && (flags & kLedRolesSwappedFlag) != 0U;
   if (at != checksum_at || !validDeviceSettings(decoded))
     return corrupt("settings values invalid");
   output.generation = generation;
+  output.decoded_record_schema = schema;
   output.values = std::move(decoded);
   return SettingsStatus::success();
 }
@@ -259,6 +268,7 @@ SettingsStatus SettingsStoreCore::save(
 
   SettingsSnapshot next;
   next.generation = current.generation + 1U;
+  next.decoded_record_schema = kSettingsRecordSchema;
   next.values = values;
   std::vector<std::uint8_t> encoded;
   status = encodeSettingsRecord(next, encoded);

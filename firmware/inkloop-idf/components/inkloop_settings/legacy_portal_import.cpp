@@ -6,6 +6,8 @@
 #include <limits>
 #include <utility>
 
+#include "inkloop/settings/settings_journal.hpp"
+
 namespace inkloop {
 namespace settings {
 namespace {
@@ -291,9 +293,14 @@ struct LegacyParsedSettings {
   std::uint16_t schema = 0U;
   std::uint64_t revision = 0U;
   DeviceSettings values;
+  bool portal_led_swap_present = false;
+  bool portal_local_password_present = false;
+  std::string source_fingerprint;
 };
 
-bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value) {
+bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value,
+                               bool& led_swap_present,
+                               bool& local_password_present) {
   if (!cursor.consume('{')) return false;
   bool first = true;
   bool have_storage = false;
@@ -304,6 +311,8 @@ bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value) {
   bool voice_seen = false;
   bool aigc_seen = false;
   bool brightness_seen = false;
+  bool led_swap_seen = false;
+  bool local_password_seen = false;
   while (true) {
     if (cursor.consume('}')) break;
     if (!first && !cursor.consume(',')) return false;
@@ -331,7 +340,7 @@ bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value) {
       } else {
         if (have_refresh || number > 3U) return false;
         static const char* const kStrategies[] = {
-            "official-quality", "experimental-six-color",
+            "official-quality", "classic-six-color",
             "reflectance-photo", "solid-clean"};
         value.default_render_strategy = kStrategies[number];
         have_refresh = true;
@@ -355,10 +364,23 @@ bool parseLegacySettingsObject(JsonCursor& cursor, DeviceSettings& value) {
               value.negative_prompt, kMaximumNegativePromptBytes))
         return false;
       have_negative = true;
+    } else if (key == "led_swap") {
+      if (led_swap_seen || !cursor.boolean(value.led_roles_swapped))
+        return false;
+      led_swap_seen = true;
+    } else if (key == "local_password") {
+      if (local_password_seen ||
+          !cursor.string(value.local_management_password_override,
+                         kMaximumLocalManagementPasswordBytes)) {
+        return false;
+      }
+      local_password_seen = true;
     } else if (!cursor.skipValue()) {
       return false;
     }
   }
+  led_swap_present = led_swap_seen;
+  local_password_present = local_password_seen;
   return have_storage && have_volume && have_assistant && have_negative &&
       have_refresh && validDeviceSettings(value);
 }
@@ -391,7 +413,10 @@ bool parseLegacyPayload(const std::string& input,
       if (have_revision || !cursor.unsigned64(parsed.revision)) return false;
       have_revision = true;
     } else if (key == "settings") {
-      if (have_settings || !parseLegacySettingsObject(cursor, parsed.values))
+      if (have_settings ||
+          !parseLegacySettingsObject(
+              cursor, parsed.values, parsed.portal_led_swap_present,
+              parsed.portal_local_password_present))
         return false;
       have_settings = true;
     } else if (!cursor.skipValue()) {
@@ -399,6 +424,7 @@ bool parseLegacyPayload(const std::string& input,
     }
   }
   if (!cursor.end() || !have_schema || !have_revision || !have_settings ||
+      (parsed.schema >= 2U && !parsed.portal_local_password_present) ||
       !validDeviceSettings(parsed.values))
     return false;
   output = std::move(parsed);
@@ -416,7 +442,21 @@ bool decodeLegacyRecord(const std::string& raw,
   if (!parseEnvelope(raw, payload, checksum) ||
       !verifier.matches(payload, checksum))
     return false;
-  return parseLegacyPayload(payload, defaults, output);
+  if (!parseLegacyPayload(payload, defaults, output)) return false;
+  output.source_fingerprint = checksum;
+  return true;
+}
+
+bool ledMapFingerprint(const ILegacySha256Verifier& verifier,
+                       const std::string& portal_fingerprint,
+                       std::uint8_t encoded,
+                       std::string& output) {
+  if (encoded > 2U) return false;
+  const std::string canonical = portal_fingerprint.empty()
+      ? "inkloop-v2/led-map=" + std::to_string(encoded)
+      : "ink-portal/sha256=" + portal_fingerprint +
+          ";inkloop-v2/led-map=" + std::to_string(encoded);
+  return verifier.digest(canonical, output) && validLowerSha256(output);
 }
 
 }  // namespace
@@ -451,6 +491,24 @@ SettingsStatus inspectLegacyPortalSettings(
       state.slot_present[0] || state.slot_present[1];
   if (!any_material) {
     output.values = defaults_for_missing_legacy_fields;
+    if (state.early_led_map_present) {
+      if (state.early_led_map > 2U) {
+        state.clear();
+        return corrupt("early LED role map invalid");
+      }
+      output.state = LegacyImportState::Candidate;
+      output.used_early_led_map = true;
+      if (state.early_led_map == 1U || state.early_led_map == 2U) {
+        output.values.led_roles_swapped = state.early_led_map == 2U;
+      }
+      if (!ledMapFingerprint(verifier, "", state.early_led_map,
+                             output.source_fingerprint)) {
+        state.clear();
+        output = LegacySettingsImport{};
+        return {SettingsError::Storage,
+                "early LED role map fingerprint failed"};
+      }
+    }
     state.clear();
     return SettingsStatus::success();
   }
@@ -471,16 +529,63 @@ SettingsStatus inspectLegacyPortalSettings(
                                  defaults_for_missing_legacy_fields, parsed);
     used_fallback = decoded;
   }
+  if (!decoded) {
+    state.clear();
+    return corrupt("legacy portal committed snapshot invalid");
+  }
+  if (!parsed.portal_led_swap_present && state.early_led_map_present) {
+    if (state.early_led_map > 2U) {
+      state.clear();
+      return corrupt("early LED role map invalid");
+    }
+    output.used_early_led_map = true;
+    if (state.early_led_map == 1U || state.early_led_map == 2U) {
+      parsed.values.led_roles_swapped = state.early_led_map == 2U;
+    }
+    std::string combined;
+    if (!ledMapFingerprint(verifier, parsed.source_fingerprint,
+                           state.early_led_map, combined)) {
+      state.clear();
+      return {SettingsError::Storage,
+              "legacy settings fingerprint failed"};
+    }
+    parsed.source_fingerprint = std::move(combined);
+  }
   state.clear();
-  if (!decoded) return corrupt("legacy portal committed snapshot invalid");
   output.state = LegacyImportState::Candidate;
   output.values = std::move(parsed.values);
   output.source_schema = parsed.schema;
   output.source_revision = parsed.revision;
   output.used_fallback_slot = used_fallback;
+  output.source_fingerprint = std::move(parsed.source_fingerprint);
   return SettingsStatus::success();
+}
+
+bool matchesHistoricalIncompleteImport(
+    const SettingsSnapshot& native_target,
+    const LegacySettingsImport& verified_legacy_candidate) {
+  // The old auto-importer never consumed an inkloop-v2-only calibration. A
+  // portal record (schema 1 or 2) and its stable fingerprint must both exist.
+  if (native_target.generation != 1U ||
+      (native_target.decoded_record_schema != 1U &&
+       native_target.decoded_record_schema != 2U) ||
+      verified_legacy_candidate.state != LegacyImportState::Candidate ||
+      verified_legacy_candidate.source_schema < 1U ||
+      verified_legacy_candidate.source_schema > 2U ||
+      !validLowerSha256(verified_legacy_candidate.source_fingerprint) ||
+      !validDeviceSettings(native_target.values) ||
+      !validDeviceSettings(verified_legacy_candidate.values)) {
+    return false;
+  }
+
+  DeviceSettings historical = verified_legacy_candidate.values;
+  historical.local_management_password_override.clear();
+  historical.led_roles_swapped = false;
+  if (historical.default_render_strategy == "classic-six-color") {
+    historical.default_render_strategy = "experimental-six-color";
+  }
+  return validDeviceSettings(historical) && native_target.values == historical;
 }
 
 }  // namespace settings
 }  // namespace inkloop
-

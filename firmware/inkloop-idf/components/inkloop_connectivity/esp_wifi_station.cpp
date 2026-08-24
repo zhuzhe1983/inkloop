@@ -123,10 +123,18 @@ esp_err_t EspWifiStationOwner::initialize(uint32_t now_ms) {
   if (!station_netif_) return ESP_ERR_NO_MEM;
 
   wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
+  const bool persistent = config_.credential_storage ==
+      WifiCredentialStorage::PersistentFlash;
+  // Post-audit Recovery uses VolatileRam: disabling the Wi-Fi driver's NVS
+  // integration prevents initialization/calibration/config code from writing
+  // through a read-only NVS owner. Product and pre-audit OTA Recovery retain
+  // the existing persistent behavior.
+  config.nvs_enable = persistent;
   status = esp_wifi_init(&config);
   if (status != ESP_OK) return status;
   wifi_initialized_ = true;
-  status = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+  status = persistent ? esp_wifi_set_storage(WIFI_STORAGE_FLASH)
+                      : esp_wifi_set_storage(WIFI_STORAGE_RAM);
   if (status == ESP_OK) status = esp_wifi_set_mode(WIFI_MODE_STA);
   if (status == ESP_OK) {
     status = esp_event_handler_instance_register(
@@ -293,7 +301,11 @@ void EspWifiStationOwner::serviceSubmittedCredentials(uint32_t now_ms) {
   submitted_password_.fill('\0');
   xSemaphoreGive(submission_mutex_);
 
-  esp_err_t status = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+  const bool persistent = config_.credential_storage ==
+      WifiCredentialStorage::PersistentFlash;
+  esp_err_t status = persistent
+      ? esp_wifi_set_storage(WIFI_STORAGE_FLASH)
+      : esp_wifi_set_storage(WIFI_STORAGE_RAM);
   if (status == ESP_OK) status = esp_wifi_set_config(WIFI_IF_STA, &station);
   if (status != ESP_OK) {
     ESP_LOGE(kTag, "submitted Wi-Fi credential commit failed: %s",
@@ -309,7 +321,13 @@ void EspWifiStationOwner::serviceSubmittedCredentials(uint32_t now_ms) {
   const WifiStationAction action = core_.begin(true, now_ms);
   ipv4_.fill('\0');
   portEXIT_CRITICAL(&mux_);
-  ESP_LOGI(kTag, "submitted Wi-Fi credentials persisted; connecting");
+  if (persistent) {
+    ESP_LOGI(kTag, "submitted Wi-Fi credentials persisted; connecting");
+  } else {
+    ESP_LOGI(kTag,
+             "submitted Wi-Fi credentials kept in RAM for Recovery; "
+             "connecting");
+  }
   execute(action, now_ms);
 }
 

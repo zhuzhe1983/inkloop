@@ -67,7 +67,14 @@ bool EspLegacyDisplayRecovery::readRecord(
 LegacyDisplayRecoveryProbe EspLegacyDisplayRecovery::inspect(
     LegacyDisplayRecoverySnapshot& output) const {
   output.clear();
-  const char* root = storage_.taskRoot();
+  const char* root = storage_.recoveryReadTaskRoot();
+  if (!root) {
+    // executeLegacyDisplayResolution re-inspects after the typed Display
+    // capability has been granted. This remains unavailable to every other
+    // recovery domain and to Product callers.
+    root = storage_.recoveryMutationTaskRoot(
+        RecoveryMutationDomain::Display);
+  }
   if (!root) {
     output.probe = LegacyDisplayRecoveryProbe::IoError;
     return output.probe;
@@ -104,9 +111,13 @@ LegacyDisplayResolutionAdapterCode
 EspLegacyDisplayRecovery::applyTargetCurrent(
     const LegacyDisplayJournal& journal) {
   const char* root = journal.backend == "sd"
-      ? storage_.removableRoot() : storage_.internalRoot();
+      ? storage_.recoveryMutationRemovableRoot(
+            RecoveryMutationDomain::Display)
+      : storage_.recoveryMutationInternalRoot(
+            RecoveryMutationDomain::Display);
   PosixAtomicAlbumStore* album =
-      storage_.albumStoreForLegacyIdentity(journal.backend.c_str());
+      storage_.recoveryMutationAlbumStore(
+          RecoveryMutationDomain::Display, journal.backend.c_str());
   if (!root || !album) return LegacyDisplayResolutionAdapterCode::Unavailable;
   const PosixUpgradeInventory inventory(root);
   const auto files = inventory.inspectFiles();
@@ -118,7 +129,8 @@ EspLegacyDisplayRecovery::applyTargetCurrent(
 LegacyDisplayResolutionAdapterCode EspLegacyDisplayRecovery::acknowledgeTask(
     const LegacyDisplayJournal& journal) {
   if (!journal.has_task) return LegacyDisplayResolutionAdapterCode::Ok;
-  const char* root = storage_.taskRoot();
+  const char* root = storage_.recoveryMutationTaskRoot(
+      RecoveryMutationDomain::Display);
   if (!root) return LegacyDisplayResolutionAdapterCode::Unavailable;
   const PosixUpgradeInventory inventory(root);
   const auto files = inventory.inspectFiles();
@@ -136,7 +148,8 @@ LegacyDisplayResolutionAdapterCode EspLegacyDisplayRecovery::acknowledgeTask(
 
 LegacyDisplayResolutionAdapterCode
 EspLegacyDisplayRecovery::clearJournalSet() {
-  const char* root = storage_.taskRoot();
+  const char* root = storage_.recoveryMutationTaskRoot(
+      RecoveryMutationDomain::Display);
   if (!root) return LegacyDisplayResolutionAdapterCode::Unavailable;
   // Current is deliberately removed last. A reset during cleanup therefore
   // leaves the authoritative record available for an idempotent retry.

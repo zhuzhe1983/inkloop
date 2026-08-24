@@ -43,7 +43,8 @@ class StatusLedCore final {
     hardware_test_active_ = true;
   }
 
-  StatusLedFrame render(uint32_t now_ms, uint8_t available_pixels) const;
+  StatusLedFrame render(uint32_t now_ms, uint8_t available_pixels,
+                        bool roles_swapped = false) const;
   bool hardwareTestActive(uint32_t now_ms) const;
   VoiceLedMode voiceMode() const { return voice_mode_; }
   ImageLedMode imageMode() const { return image_mode_; }

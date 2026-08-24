@@ -115,7 +115,7 @@ test("authoritative onboarding cannot cache Unchanged during album replacement",
 test("restore resolves persisted current, falls back to zero, and is empty-safe", () => {
   const render = section(
     display,
-    "bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal)",
+    "bool NativeDisplayService::renderOrdinalAdmitted(size_t ordinal,",
     "NativeDisplayDiagnostics NativeDisplayService::diagnostics() const",
   );
   ordered(render, [

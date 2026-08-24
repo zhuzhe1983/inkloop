@@ -7,6 +7,7 @@
 #include "inkloop/album_navigation_core.hpp"
 #include "inkloop/board.hpp"
 #include "inkloop/diagnostics/serial_diagnostic_events.hpp"
+#include "inkloop/manual_panel_guard.hpp"
 #include "inkloop/runtime_supervisor.hpp"
 #include "inkloop/storage/posix_atomic_album_store.hpp"
 
@@ -100,6 +101,10 @@ class NativeDisplayService final {
   AlbumStepResult selectRelative(int direction, size_t& ordinal);
   bool busy() const;
   bool refreshing() const;
+  // True while the last real user-requested panel write must remain visible.
+  // Background download/synchronization is still allowed; only another
+  // background panel replacement is deferred by the Power owner.
+  bool manualPanelHoldActive(uint32_t now_ms) const;
   NativeDisplayDiagnostics diagnostics() const;
 
  private:
@@ -108,8 +113,8 @@ class NativeDisplayService final {
   WorkDisposition handle(const WorkEnvelope& envelope);
   void service();
   bool synchronizeCatalog();
-  bool renderOrdinal(size_t ordinal);
-  bool renderOrdinalAdmitted(size_t ordinal);
+  bool renderOrdinal(size_t ordinal, bool user_initiated = false);
+  bool renderOrdinalAdmitted(size_t ordinal, bool user_initiated);
   bool renderOnboardingPage();
   bool writePanelFrame(const uint8_t* frame, size_t frame_bytes);
   AdmissionResult postRefreshStarting(size_t ordinal);
@@ -159,6 +164,7 @@ class NativeDisplayService final {
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   NativeDisplayDiagnostics diagnostics_{};
   AlbumNavigationCore navigation_{};
+  ManualPanelGuard manual_panel_guard_{};
   OnboardingMailbox onboarding_mailbox_{};
   PageFingerprint visible_onboarding_fingerprint_{};
   uint64_t sequence_ = 0;

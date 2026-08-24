@@ -473,8 +473,9 @@ esp_err_t NativePortalOwner::initialize() {
           state_cache_.settings.assistant_prompt) != ESP_OK) {
     return ESP_FAIL;
   }
-  leds_.setMaximumBrightnessPercent(
-      state_cache_.settings.led_maximum_brightness_percent, false);
+  leds_.setPresentation(
+      state_cache_.settings.led_maximum_brightness_percent,
+      state_cache_.settings.led_roles_swapped, false);
   refreshState();
   refreshAlbum();
   refreshChat();
@@ -757,6 +758,10 @@ portal::PortalResult NativePortalOwner::tryEnqueue(
       }
       if (command.settings.has_led_maximum_brightness &&
           board_.descriptor().rgb_pixels == 0U) {
+        return portal::PortalResult::InvalidData;
+      }
+      if (command.settings.has_led_roles_swapped &&
+          board_.descriptor().rgb_pixels < 2U) {
         return portal::PortalResult::InvalidData;
       }
       if (command.settings.has_asset_storage_preference &&
@@ -1113,7 +1118,8 @@ AdmissionResult NativePortalOwner::requestDisplay(size_t ordinal) {
   WorkEnvelope command{};
   command.generation = 1;
   command.request_id = nextRequestId();
-  command.opcode = productOpcode(ProductOpcode::DisplayAlbumOrdinal);
+  command.opcode =
+      productOpcode(ProductOpcode::DisplayInteractiveAlbumOrdinal);
   command.work_class = WorkClass::Display;
   command.kind = EnvelopeKind::Command;
   command.disposition = WorkDisposition::Accepted;
@@ -1235,7 +1241,10 @@ void NativePortalOwner::applySettings(
     state_cache_.settings = next;
     giveMutex(cache_mutex_);
   }
-  leds_.setMaximumBrightnessPercent(next.led_maximum_brightness_percent);
+  if (patch.has_led_maximum_brightness || patch.has_led_roles_swapped) {
+    leds_.setPresentation(next.led_maximum_brightness_percent,
+                          next.led_roles_swapped, true);
+  }
   voice_.enqueuePersistedVoiceSettings(
       next.volume, next.voice_assistance_enabled, next.assistant_prompt);
 }

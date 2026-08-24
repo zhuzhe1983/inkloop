@@ -54,7 +54,9 @@ test("OTA uses two-phase Product quiesce and always closes retained STA before r
 test("OTA outcome mutation begins only after read-only storage gates", () => {
   const boot = main.slice(main.indexOf('extern "C" void app_main'));
   const pending = boot.indexOf("ota_health.tick(");
-  const upgradeAudit = boot.indexOf("runReadOnlyUpgradeBootAudit(storage)");
+  const upgradeAudit = boot.indexOf(
+    "runReadOnlyUpgradeBootAudit(storage, nvs_boot_mount)",
+  );
   const compatibility = boot.indexOf("persistenceCompatibilityContractValid()");
   const startupGate = boot.indexOf("upgrade.allowsStartup()");
   const removableAudit = boot.indexOf("runReadOnlyMountedFileUpgradeAudit(");

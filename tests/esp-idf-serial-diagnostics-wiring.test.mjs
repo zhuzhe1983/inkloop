@@ -130,6 +130,6 @@ test("commands route through the real product owners without a MyAI bypass", () 
   assert.ok(displayHandler);
   assert.match(
     displayHandler,
-    /const bool rendered = renderOrdinal\(envelope\.flags\);[\s\S]*if \(rendered\)[\s\S]*DisplayComplete/,
+    /const bool rendered = renderOrdinal\(envelope\.flags, user_initiated\);[\s\S]*if \(rendered\)[\s\S]*DisplayComplete/,
   );
 });

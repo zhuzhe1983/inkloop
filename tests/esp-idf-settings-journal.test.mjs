@@ -137,6 +137,7 @@ int main() {
   encoded_input.values = paper;
   encoded_input.values.volume_percent = 0;
   encoded_input.values.led_maximum_brightness_percent = 100;
+  encoded_input.values.led_roles_swapped = true;
   encoded_input.values.voice_assistance_enabled = false;
   encoded_input.values.asset_storage_preference =
       AssetStoragePreference::Removable;
@@ -148,7 +149,59 @@ int main() {
   SettingsSnapshot decoded;
   assert(decodeSettingsRecord(encoded, decoded).ok());
   assert(decoded.generation == encoded_input.generation);
+  assert(decoded.decoded_record_schema == kSettingsRecordSchema);
   assert(decoded.values == encoded_input.values);
+
+  // Schema 2 journals predate role swapping. They remain readable and get
+  // the old physical order without interpreting an unknown flag.
+  std::vector<std::uint8_t> schema_two = encoded;
+  schema_two[4] = 2;
+  schema_two[5] = 0;
+  schema_two[6] &= static_cast<std::uint8_t>(~2U);
+  auto test_crc32 = [](const std::uint8_t* bytes, std::size_t length) {
+    std::uint32_t value = 0xFFFFFFFFU;
+    for (std::size_t at = 0; at < length; ++at) {
+      value ^= bytes[at];
+      for (std::uint8_t bit = 0; bit < 8U; ++bit) {
+        const std::uint32_t mask =
+            0U - static_cast<std::uint32_t>(value & 1U);
+        value = (value >> 1U) ^ (0xEDB88320U & mask);
+      }
+    }
+    return value ^ 0xFFFFFFFFU;
+  };
+  const std::uint32_t schema_two_crc =
+      test_crc32(schema_two.data(), schema_two.size() - 4U);
+  for (std::size_t byte = 0; byte < 4U; ++byte) {
+    schema_two[schema_two.size() - 4U + byte] =
+        static_cast<std::uint8_t>(schema_two_crc >> (byte * 8U));
+  }
+  assert(decodeSettingsRecord(schema_two, decoded).ok());
+  assert(decoded.decoded_record_schema == 2);
+  assert(!decoded.values.led_roles_swapped);
+
+  // Schema 1 had four strings and no local-password length/payload. Preserve
+  // the observed wire schema so the installed-upgrade matcher can safely
+  // distinguish it from a new schema-3 save.
+  std::vector<std::uint8_t> schema_one = schema_two;
+  schema_one[4] = 1;
+  schema_one[5] = 0;
+  const std::uint16_t old_password_bytes =
+      static_cast<std::uint16_t>(schema_one[24]) |
+      (static_cast<std::uint16_t>(schema_one[25]) << 8U);
+  schema_one.erase(schema_one.begin() + 24, schema_one.begin() + 26);
+  schema_one.erase(schema_one.end() - 4U - old_password_bytes,
+                   schema_one.end() - 4U);
+  const std::uint32_t schema_one_crc =
+      test_crc32(schema_one.data(), schema_one.size() - 4U);
+  for (std::size_t byte = 0; byte < 4U; ++byte) {
+    schema_one[schema_one.size() - 4U + byte] =
+        static_cast<std::uint8_t>(schema_one_crc >> (byte * 8U));
+  }
+  assert(decodeSettingsRecord(schema_one, decoded).ok());
+  assert(decoded.decoded_record_schema == 1);
+  assert(decoded.values.local_management_password_override.empty());
+  assert(!decoded.values.led_roles_swapped);
 
   // Every single-bit mutation is caught by header/value validation or CRC32.
   for (std::size_t at = 0; at < encoded.size(); ++at) {
@@ -165,13 +218,16 @@ int main() {
   SettingsStoreCore store(journal, generic);
   SettingsSnapshot snapshot;
   assert(store.load(snapshot).ok());
-  assert(snapshot.generation == 0 && snapshot.values == generic);
+  assert(snapshot.generation == 0 && snapshot.decoded_record_schema == 0 &&
+         snapshot.values == generic);
 
   DeviceSettings first = generic;
   first.volume_percent = 0;
   first.led_maximum_brightness_percent = 100;
   assert(store.save(first, 0, snapshot).ok());
-  assert(snapshot.generation == 1 && snapshot.values == first);
+  assert(snapshot.generation == 1 &&
+         snapshot.decoded_record_schema == kSettingsRecordSchema &&
+         snapshot.values == first);
   assert(journal.state.head_generation == 1 &&
          journal.state.slot_present[1]);
   assert(store.load(snapshot).ok() && snapshot.values == first);

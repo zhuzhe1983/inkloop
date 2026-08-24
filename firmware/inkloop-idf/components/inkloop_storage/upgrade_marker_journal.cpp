@@ -93,7 +93,7 @@ MigrationMarkerCodecCode encodeJournalSlot(
   return MigrationMarkerCodecCode::Ok;
 }
 
-MigrationMarkerCodecCode decodeJournalSlot(
+MigrationMarkerCodecCode decodeJournalSlotInternal(
     const RawMigrationJournalSlot& raw, std::uint64_t& sequence,
     MigrationMarker& marker) {
   sequence = 0U;
@@ -144,7 +144,7 @@ MigrationMarkerJournalCode classifyRaw(
   }
   std::uint64_t decoded_sequence = 0U;
   MigrationMarker decoded;
-  const MigrationMarkerCodecCode decoded_code = decodeJournalSlot(
+  const MigrationMarkerCodecCode decoded_code = decodeJournalSlotInternal(
       raw.slots[selected], decoded_sequence, decoded);
   if (decoded_code != MigrationMarkerCodecCode::Ok ||
       decoded_sequence != raw.head_sequence) {
@@ -193,7 +193,12 @@ bool phaseTransitionAllowed(MigrationPhase from, MigrationPhase to) {
 bool commitTransitionAllowed(const MigrationMarkerJournalInspection& current,
                              const MigrationMarker& next) {
   if (current.probe == MigrationMarkerJournalProbe::Missing)
-    return next.generation == 1U && next.phase == MigrationPhase::Prepared;
+    // The journal may be introduced after an older firmware already created
+    // one or more native target generations.  The product gate owns the
+    // read-only proof that an arbitrary first generation is the exact next
+    // settings generation; the journal only requires a nonzero Prepared
+    // identity here.
+    return next.generation != 0U && next.phase == MigrationPhase::Prepared;
   if (current.probe != MigrationMarkerJournalProbe::Valid) return false;
   if (markerEqual(current.marker, next)) return true;
   if (sameMigrationIdentity(current.marker, next))
@@ -268,6 +273,12 @@ MigrationMarkerCodecCode decodeMigrationMarkerV1(
   return MigrationMarkerCodecCode::Ok;
 }
 
+MigrationMarkerCodecCode decodeMigrationJournalSlotV1(
+    const RawMigrationJournalSlot& raw, std::uint64_t& sequence,
+    MigrationMarker& marker) {
+  return decodeJournalSlotInternal(raw, sequence, marker);
+}
+
 MigrationMarkerJournalCode MigrationMarkerJournalCore::inspect(
     MigrationMarkerJournalInspection& output) const {
   output = MigrationMarkerJournalInspection{};
@@ -322,8 +333,9 @@ MigrationMarkerJournalCode MigrationMarkerJournalCore::commit(
     return MigrationMarkerJournalCode::ReadBackFailed;
   std::uint64_t read_sequence = 0U;
   MigrationMarker read_marker;
-  if (decodeJournalSlot(read_back.slots[next_slot], read_sequence,
-                        read_marker) != MigrationMarkerCodecCode::Ok ||
+  if (decodeJournalSlotInternal(read_back.slots[next_slot], read_sequence,
+                                read_marker) !=
+          MigrationMarkerCodecCode::Ok ||
       read_sequence != next_sequence || !markerEqual(read_marker, marker))
     return MigrationMarkerJournalCode::ReadBackFailed;
 

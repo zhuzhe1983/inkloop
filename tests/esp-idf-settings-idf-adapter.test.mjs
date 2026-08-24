@@ -98,6 +98,7 @@ using namespace inkloop::settings;
 static bool missing = true;
 static std::string opened_namespace;
 static int opened_mode = 0;
+static std::vector<std::string> opened_namespaces;
 static unsigned blob_writes = 0;
 static unsigned head_writes = 0;
 static unsigned marker_writes = 0;
@@ -106,6 +107,7 @@ static unsigned commits = 0;
 extern "C" esp_err_t nvs_open(const char* name, int mode, nvs_handle_t* handle) {
   opened_namespace = name ? name : "";
   opened_mode = mode;
+  opened_namespaces.push_back(opened_namespace);
   if (handle) *handle = 1;
   return missing ? ESP_ERR_NVS_NOT_FOUND : ESP_OK;
 }
@@ -156,7 +158,10 @@ int main() {
   LegacyPortalJournalState legacy_state;
   assert(legacy.inspect(legacy_state).ok());
   assert(legacy_state.namespace_available);
-  assert(opened_namespace == "ink-portal" && opened_mode == NVS_READONLY);
+  assert(opened_namespaces.size() == 2);
+  assert(opened_namespaces[0] == "ink-portal");
+  assert(opened_namespaces[1] == "inkloop-v2");
+  assert(opened_mode == NVS_READONLY);
   assert(blob_writes == 0 && head_writes == 0 && marker_writes == 0 &&
          commits == 0);
 
@@ -183,6 +188,8 @@ int main() {
       "000102030405060708090a0b0c0d0e0f"
       "101112131415161718191a1b1c1d1e1f";
   assert(verifier.matches("payload", expected));
+  std::string digest;
+  assert(verifier.digest("payload", digest) && digest == expected);
   assert(!verifier.matches("payload", std::string(64, '0')));
   assert(!verifier.matches("payload", "BAD"));
   return 0;
@@ -212,4 +219,3 @@ int main() {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
-

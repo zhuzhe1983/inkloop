@@ -14,6 +14,15 @@
 namespace inkloop {
 namespace recovery {
 
+enum class RecoveryWifiStoragePolicy : uint8_t {
+  // Required after a boot audit has established read-only NVS ownership.
+  // Existing Wi-Fi credentials are intentionally not loaded or replaced;
+  // provisioning, if needed, applies only for this Recovery boot.
+  VolatileRam,
+  // Allowed only in the pre-audit OTA-health refusal path.
+  PersistentFlash,
+};
+
 struct RecoveryNetworkModeSnapshot {
   bool initialized = false;
   bool station_online = false;
@@ -31,7 +40,9 @@ class RecoveryNetworkModeOwner final {
   explicit RecoveryNetworkModeOwner(
       const IRecoveryDiagnosticCache& cache,
       IRecoveryActionOwner* action_owner = nullptr,
-      IRecoveryExportOwner* export_owner = nullptr);
+      IRecoveryExportOwner* export_owner = nullptr,
+      RecoveryWifiStoragePolicy wifi_storage =
+          RecoveryWifiStoragePolicy::VolatileRam);
   ~RecoveryNetworkModeOwner();
 
   RecoveryNetworkModeOwner(const RecoveryNetworkModeOwner&) = delete;
@@ -58,6 +69,8 @@ class RecoveryNetworkModeOwner final {
   const IRecoveryDiagnosticCache& cache_;
   IRecoveryActionOwner* action_owner_ = nullptr;
   IRecoveryExportOwner* export_owner_ = nullptr;
+  RecoveryWifiStoragePolicy wifi_storage_ =
+      RecoveryWifiStoragePolicy::VolatileRam;
   std::unique_ptr<EspWifiStationOwner> wifi_;
   std::unique_ptr<RecoveryPortalCore> core_;
   std::unique_ptr<EspRecoveryServer> server_;

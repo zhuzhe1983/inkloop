@@ -84,8 +84,12 @@ std::array<char, 16> readyAddress(const EspWifiStationSnapshot& wifi) {
 RecoveryNetworkModeOwner::RecoveryNetworkModeOwner(
     const IRecoveryDiagnosticCache& cache,
     IRecoveryActionOwner* action_owner,
-    IRecoveryExportOwner* export_owner)
-    : cache_(cache), action_owner_(action_owner), export_owner_(export_owner) {}
+    IRecoveryExportOwner* export_owner,
+    RecoveryWifiStoragePolicy wifi_storage)
+    : cache_(cache),
+      action_owner_(action_owner),
+      export_owner_(export_owner),
+      wifi_storage_(wifi_storage) {}
 
 RecoveryNetworkModeOwner::~RecoveryNetworkModeOwner() {
   esp_err_t status = ESP_FAIL;
@@ -106,7 +110,12 @@ RecoveryNetworkModeOwner::~RecoveryNetworkModeOwner() {
 esp_err_t RecoveryNetworkModeOwner::ensureWifiOwner() {
   if (stop_requested_) return ESP_ERR_INVALID_STATE;
   if (wifi_) return ESP_OK;
-  wifi_.reset(new (std::nothrow) EspWifiStationOwner());
+  EspWifiStationConfig wifi_config;
+  wifi_config.credential_storage =
+      wifi_storage_ == RecoveryWifiStoragePolicy::PersistentFlash
+      ? WifiCredentialStorage::PersistentFlash
+      : WifiCredentialStorage::VolatileRam;
+  wifi_.reset(new (std::nothrow) EspWifiStationOwner(wifi_config));
   return wifi_ ? ESP_OK : ESP_ERR_NO_MEM;
 }
 

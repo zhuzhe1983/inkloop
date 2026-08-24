@@ -15,6 +15,7 @@ const harness = String.raw`
 
 #include "inkloop/settings/device_settings.hpp"
 #include "inkloop/settings/legacy_portal_import.hpp"
+#include "inkloop/settings/settings_journal.hpp"
 
 using namespace inkloop::settings;
 
@@ -56,6 +57,13 @@ std::string envelope(const std::string& payload, bool valid = true) {
       ",\"sha256\":\"" + checksum + "\"}";
 }
 
+std::string withoutMember(std::string input, const std::string& exact) {
+  const std::size_t at = input.find(exact);
+  assert(at != std::string::npos);
+  input.erase(at, exact.size());
+  return input;
+}
+
 std::string payload(
     unsigned schema = 2, unsigned storage = 2, unsigned volume = 77,
     const std::string& prompt = "你好 Inkloop", bool include_image = true,
@@ -85,6 +93,11 @@ struct Verifier final : ILegacySha256Verifier {
                const std::string& expected) const override {
     ++calls;
     return testChecksum(payload) == expected;
+  }
+  bool digest(const std::string& payload,
+              std::string& output) const override {
+    output = testChecksum(payload);
+    return true;
   }
 };
 
@@ -142,11 +155,79 @@ int main() {
   assert(imported.values.asset_storage_preference ==
          AssetStoragePreference::Removable);
   assert(imported.values.default_render_strategy == "solid-clean");
+  assert(imported.values.led_roles_swapped);
+  assert(imported.values.local_management_password_override ==
+         "not-imported");
+  assert(imported.source_fingerprint == testChecksum(valid_payload));
+
+  // Arduino's enum value 1 was ExperimentalSixColor. Native C151 publishes
+  // the stable adapter ID "classic-six-color"; migration must not produce the
+  // obsolete string that Portal would later replace with official quality.
+  Source classic = populated(envelope(payload(2, 0, 60, "agent", true, 1)));
+  assert(inspectLegacyPortalSettings(
+      classic, verifier, defaults, imported).ok());
+  assert(imported.values.default_render_strategy == "classic-six-color");
+
+  // An installed beta27/beta29 may already contain the old direct-import
+  // projection without a migration marker. Only the exact projection is
+  // eligible for the marker-backed completion migration: password and role
+  // remained at their old defaults and refresh enum 1 used its obsolete ID.
+  const LegacySettingsImport classic_candidate = imported;
+  SettingsSnapshot historical_target;
+  historical_target.generation = 1;
+  historical_target.decoded_record_schema = 1;
+  historical_target.values = classic_candidate.values;
+  historical_target.values.local_management_password_override.clear();
+  historical_target.values.led_roles_swapped = false;
+  historical_target.values.default_render_strategy =
+      "experimental-six-color";
+  assert(matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+
+  // The old auto-import was the unique first native save. Generation two is
+  // necessarily a later user/Portal save and cannot be auto-completed even if
+  // every value still collides with the historical projection.
+  historical_target.generation = 2;
+  historical_target.decoded_record_schema = 2;
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+  historical_target.values.volume_percent++;
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+  historical_target.values.volume_percent--;
+  historical_target.values.local_management_password_override = "new-pass";
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+  historical_target.values.local_management_password_override.clear();
+  historical_target.values.led_roles_swapped = true;
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+  historical_target.values.led_roles_swapped = false;
+  historical_target.values.default_render_strategy = "official-quality";
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+  historical_target.values.default_render_strategy =
+      "experimental-six-color";
+  historical_target.decoded_record_schema = kSettingsRecordSchema;
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+  historical_target.decoded_record_schema = 2;
+  historical_target.generation = 0;
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, classic_candidate));
+
+  LegacySettingsImport unverified_candidate = classic_candidate;
+  unverified_candidate.source_fingerprint.clear();
+  historical_target.generation = 1;
+  assert(!matchesHistoricalIncompleteImport(
+      historical_target, unverified_candidate));
 
   // Released schema 1 lacked an image prompt. Candidate decoding preserves
   // the caller's reviewed default instead of synthesizing a SKU assumption.
-  Source schema_one = populated(envelope(payload(1, 0, 0, "agent", false, 0,
-                                                 100, "")));
+  const std::string schema_one_payload = withoutMember(
+      payload(1, 0, 0, "agent", false, 0, 100, ""),
+      ",\"local_password\":\"not-imported\"");
+  Source schema_one = populated(envelope(schema_one_payload));
   assert(inspectLegacyPortalSettings(
       schema_one, verifier, defaults, imported).ok());
   assert(imported.source_schema == 1);
@@ -158,6 +239,85 @@ int main() {
   assert(imported.values.asset_storage_preference ==
          AssetStoragePreference::Automatic);
   assert(imported.values.default_render_strategy == "official-quality");
+
+  // Schema 2 made the local password explicit. Missing, duplicate, or an
+  // invalid short override is corrupt rather than silently falling back.
+  const std::string password_member =
+      ",\"local_password\":\"not-imported\"";
+  Source missing_password = populated(envelope(
+      withoutMember(valid_payload, password_member)));
+  assert(inspectLegacyPortalSettings(
+      missing_password, verifier, defaults, imported).code ==
+         SettingsError::Corrupt);
+  std::string duplicate_password_payload = valid_payload;
+  const std::size_t password_at = duplicate_password_payload.find(
+      password_member);
+  assert(password_at != std::string::npos);
+  duplicate_password_payload.insert(password_at, password_member);
+  Source duplicate_password = populated(envelope(duplicate_password_payload));
+  assert(inspectLegacyPortalSettings(
+      duplicate_password, verifier, defaults, imported).code ==
+         SettingsError::Corrupt);
+  std::string short_password_payload = valid_payload;
+  short_password_payload.replace(
+      short_password_payload.find("not-imported"),
+      std::string("not-imported").size(), "short");
+  Source short_password = populated(envelope(short_password_payload));
+  assert(inspectLegacyPortalSettings(
+      short_password, verifier, defaults, imported).code ==
+         SettingsError::Corrupt);
+
+  // Before ink-portal existed, only the calibrated logical Voice pixel was
+  // durable. All three encodings are deterministic and no retired feature
+  // flag participates in this narrow read-only input.
+  for (unsigned encoded = 0; encoded <= 2; ++encoded) {
+    Source early;
+    early.state.early_led_map_present = true;
+    early.state.early_led_map = static_cast<std::uint8_t>(encoded);
+    assert(inspectLegacyPortalSettings(
+        early, verifier, defaults, imported).ok());
+    assert(imported.state == LegacyImportState::Candidate);
+    assert(imported.used_early_led_map);
+    assert(imported.values.led_roles_swapped == (encoded == 2));
+    assert(imported.source_fingerprint == testChecksum(
+        "inkloop-v2/led-map=" + std::to_string(encoded)));
+    SettingsSnapshot early_target;
+    early_target.generation = 1;
+    early_target.decoded_record_schema = 2;
+    early_target.values = defaults;
+    assert(!matchesHistoricalIncompleteImport(early_target, imported));
+  }
+  Source invalid_led_map;
+  invalid_led_map.state.early_led_map_present = true;
+  invalid_led_map.state.early_led_map = 3;
+  assert(inspectLegacyPortalSettings(
+      invalid_led_map, verifier, defaults, imported).code ==
+         SettingsError::Corrupt);
+
+  // An authoritative portal role always wins over an older calibration key.
+  Source portal_wins = populated(envelope(valid_payload));
+  portal_wins.state.early_led_map_present = true;
+  portal_wins.state.early_led_map = 1;
+  assert(inspectLegacyPortalSettings(
+      portal_wins, verifier, defaults, imported).ok());
+  assert(imported.values.led_roles_swapped);
+  assert(!imported.used_early_led_map);
+  assert(imported.source_fingerprint == testChecksum(valid_payload));
+
+  // A portal record from before led_swap existed consumes only the calibrated
+  // inkloop-v2 key, binding both verified inputs into one stable fingerprint.
+  const std::string no_portal_led = withoutMember(
+      valid_payload, ",\"led_swap\":true");
+  Source early_fallback = populated(envelope(no_portal_led));
+  early_fallback.state.early_led_map_present = true;
+  early_fallback.state.early_led_map = 2;
+  assert(inspectLegacyPortalSettings(
+      early_fallback, verifier, defaults, imported).ok());
+  assert(imported.values.led_roles_swapped);
+  assert(imported.used_early_led_map);
+  assert(imported.source_fingerprint == testChecksum(
+      "ink-portal/sha256=" + testChecksum(no_portal_led) +
+      ";inkloop-v2/led-map=2"));
 
   // The Arduino loader accepts a checksum-valid alternate slot if its selected
   // slot is torn. We surface that fact for explicit migration review.

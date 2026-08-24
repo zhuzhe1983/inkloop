@@ -28,7 +28,9 @@ inline constexpr size_t kMaximumNegativePromptBytes = 384U;
 inline constexpr size_t kMaximumGeneratePromptBytes = 1024U;
 inline constexpr size_t kMaximumLocalManagementPasswordBytes = 63U;
 inline constexpr size_t kMaximumPortalRenderStrategies = 4U;
-inline constexpr uint8_t kMaximumPortalRgbPixels = 8U;
+// Portal exposes the same two logical roles as the product LED owner. Boards
+// with more physical pixels need a role adapter before this contract expands.
+inline constexpr uint8_t kMaximumPortalRgbPixels = 2U;
 inline constexpr size_t kPortalRuntimeLaneCount = 8U;
 
 enum class PortalResult : uint8_t {
@@ -175,6 +177,7 @@ struct PortalFirmwareUpdateSnapshot {
 struct PortalSettingsSnapshot {
   uint8_t volume = 60U;
   uint8_t led_maximum_brightness_percent = 60U;
+  bool led_roles_swapped = false;
   bool voice_assistance_enabled = true;
   std::string assistant_prompt;
   std::string image_prompt_template;
@@ -323,6 +326,8 @@ struct PortalSettingsPatch {
   uint8_t volume = 0;
   bool has_led_maximum_brightness = false;
   uint8_t led_maximum_brightness_percent = 0;
+  bool has_led_roles_swapped = false;
+  bool led_roles_swapped = false;
   bool has_voice_assistance_enabled = false;
   bool voice_assistance_enabled = false;
   bool has_assistant_prompt = false;

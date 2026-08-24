@@ -17,6 +17,16 @@
 
 namespace inkloop {
 
+enum class WifiCredentialStorage : uint8_t {
+  PersistentFlash,
+  VolatileRam,
+};
+
+struct EspWifiStationConfig {
+  WifiCredentialStorage credential_storage =
+      WifiCredentialStorage::PersistentFlash;
+};
+
 struct EspWifiStationSnapshot {
   WifiStationPhase phase = WifiStationPhase::Uninitialized;
   std::array<char, 16> ipv4{};
@@ -37,7 +47,8 @@ struct EspWifiStationSnapshot {
 // retry, AP provisioning and credential commit are non-blocking.
 class EspWifiStationOwner final : public IWifiProvisioningSink {
  public:
-  EspWifiStationOwner() = default;
+  explicit EspWifiStationOwner(EspWifiStationConfig config = {})
+      : config_(config) {}
   ~EspWifiStationOwner();
 
   EspWifiStationOwner(const EspWifiStationOwner&) = delete;
@@ -79,6 +90,7 @@ class EspWifiStationOwner final : public IWifiProvisioningSink {
   void deriveLocalAccessCode(const wifi_config_t& station);
   static bool credentialFailure(uint16_t reason);
 
+  EspWifiStationConfig config_{};
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   WifiStationCore core_{};
   std::array<char, 16> ipv4_{};

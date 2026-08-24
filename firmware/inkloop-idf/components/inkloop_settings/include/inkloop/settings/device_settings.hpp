@@ -49,6 +49,10 @@ enum class AssetStoragePreference : std::uint8_t {
 struct DeviceSettings {
   std::uint8_t volume_percent = 60U;
   std::uint8_t led_maximum_brightness_percent = 60U;
+  // Logical roles stay SKU-neutral: false maps Voice/Image to logical pixels
+  // 0/1, true maps them to 1/0. The board adapter remains the sole owner of
+  // physical GPIO/strip topology.
+  bool led_roles_swapped = false;
   bool voice_assistance_enabled = true;
   std::string assistant_prompt;
   std::string aigc_prompt_template;

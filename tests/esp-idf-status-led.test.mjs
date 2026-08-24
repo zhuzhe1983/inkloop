@@ -40,6 +40,10 @@ int main() {
   pixels = leds.render(0, 2).pixels;
   assert(pixels[0].green > pixels[0].red && pixels[0].green > pixels[0].blue);
   assert(pixels[1].red == 0 && pixels[1].green == 0 && pixels[1].blue == 0);
+  auto swapped = leds.render(0, 2, true).pixels;
+  assert(swapped[1].green == pixels[0].green);
+  assert(swapped[0].red == 0 && swapped[0].green == 0 &&
+         swapped[0].blue == 0);
 
   leds.setVoiceMode(VoiceLedMode::Blocked);
   pixels = leds.render(0, 2).pixels;
@@ -78,6 +82,10 @@ int main() {
   const StatusLedFrame one_pixel_test = leds.render(4000, 1);
   assert(one_pixel_test.count == 1 && one_pixel_test.pixels[0].red > 0 &&
          one_pixel_test.pixels[0].green > 0);
+  const StatusLedFrame swapped_test = leds.render(4000, 2, true);
+  assert(swapped_test.pixels[0].red > 0 &&
+         swapped_test.pixels[0].green > 0 &&
+         swapped_test.pixels[1].red == 0);
   assert(leds.hardwareTestActive(5599));
   assert(!leds.hardwareTestActive(5600));
   pixels = leds.render(5600, 2).pixels;
@@ -138,15 +146,17 @@ test("native LED owner is non-blocking and the only product RGB writer", () => {
     .join("\n");
   assert.match(owner, /registerTickHandler[\s\S]*20/);
   assert.match(owner, /board_\.descriptor\(\)\.rgb_pixels/);
-  assert.match(owner, /core_\.render\(nowMs\(\), physical_pixels_\)/);
+  assert.match(owner, /core_\.render\(nowMs\(\), physical_pixels_, swap_roles\)/);
   assert.match(owner, /if \(frame\.count > 0U\)[\s\S]*board_\.setRgb\(frame\.pixels\.data\(\), frame\.count\)/);
   assert.match(owner, /void EspStatusLedOwner::shutdown\(\)[\s\S]*BoardRgbPixel[^;]+dark\{\}[\s\S]*board_\.setRgb\(dark\.data\(\), physical_pixels_\)/);
   assert.match(core, /available_pixels == 0U/);
   assert.match(core, /available_pixels == 1U[\s\S]*merge\(logical\[0\], logical\[1\]\)/);
-  assert.match(core, /output\.pixels = logical;[\s\S]*output\.pixels\.size\(\)/);
+  assert.match(core, /output\.pixels = roles_swapped[\s\S]*output\.pixels\.size\(\)/);
   assert.match(owner, /ProductOpcode::SetLedMaximumBrightness/);
   assert.match(owner, /envelope\.flags\) \* 255U \/ 100U/);
   assert.match(owner, /core_\.startHardwareTest\(nowMs\(\)\)/);
+  assert.match(owner, /setPresentation[\s\S]*roles_swapped_ = physical_pixels_ >= 2U/);
+  assert.match(core, /roles_swapped[\s\S]*logical\[1\][\s\S]*logical\[0\]/);
   assert.equal((owner.match(/board_\.setRgb\(/g) ?? []).length, 2);
   assert.equal((allProduct.match(/\.setRgb\(/g) ?? []).length, 2);
   assert.equal((otherProduct.match(/\.setRgb\(/g) ?? []).length, 0);

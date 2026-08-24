@@ -229,6 +229,19 @@ int main() {
   MigrationMarkerJournalInspection journal = inspect(empty);
   assert(journal.probe == MigrationMarkerJournalProbe::Missing);
 
+  // The marker journal can first be introduced after an older release has
+  // already committed native generations. Product policy proves that the
+  // chosen generation is the exact next target; the journal preserves it
+  // rather than incorrectly forcing every first marker to generation one.
+  FakeJournalStore installed_upgrade;
+  MigrationMarkerJournalCore installed_core(installed_upgrade);
+  MigrationMarkerJournalInspection installed_committed;
+  assert(installed_core.commit(
+      marker(MigrationPhase::Prepared, 7U), 0U, installed_committed) ==
+      MigrationMarkerJournalCode::Ok);
+  assert(installed_committed.sequence == 1U &&
+         installed_committed.marker.generation == 7U);
+
   FakeJournalStore partial = empty;
   partial.state.initialized_present = true;
   partial.state.initialized = kMigrationJournalInitializedMarker;

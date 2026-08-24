@@ -106,7 +106,8 @@ bool NativePowerOwner::deferBackgroundPanel(uint32_t now_ms) const {
   portENTER_CRITICAL(&mux_);
   const uint32_t deadline = preserve_panel_until_ms_;
   portEXIT_CRITICAL(&mux_);
-  return deadline != 0U && !due(now_ms, deadline);
+  const bool wake_hold = deadline != 0U && !due(now_ms, deadline);
+  return wake_hold || display_.manualPanelHoldActive(now_ms);
 }
 
 void NativePowerOwner::refreshBlockers(uint32_t now_ms) {

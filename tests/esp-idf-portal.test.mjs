@@ -198,6 +198,7 @@ struct Cache final : IPortalReadCache {
     if (bad_runtime_core) value.runtime.lanes[1].observed_core = 2;
     value.settings.volume = 60;
     value.settings.led_maximum_brightness_percent = 55;
+    value.settings.led_roles_swapped = !minimal_capabilities;
     value.settings.voice_assistance_enabled = !minimal_capabilities;
     value.settings.assistant_prompt = "简洁回答";
     value.settings.image_prompt_template = "六色海报：{prompt}";
@@ -342,6 +343,8 @@ int main() {
   assert(rendered.body.find("name=\"storage_preference\"") != std::string::npos);
   assert(rendered.body.find("name=\"default_render_strategy\"") != std::string::npos);
   assert(rendered.body.find("name=\"local_password\"") != std::string::npos);
+  assert(rendered.body.find("name=\"led_swap\"") != std::string::npos);
+  assert(rendered.body.find("c.rgbPixels>1") != std::string::npos);
   assert(rendered.body.find("画面、保存与刷新") != std::string::npos);
   assert(rendered.body.find("声音与状态灯") != std::string::npos);
   assert(rendered.body.find("__inkloopPortalRefresh") != std::string::npos);
@@ -420,6 +423,8 @@ int main() {
   assert(state_response.body.find("\"reflectance-photo\"") != std::string::npos);
   assert(state_response.body.find("\"displayName\":\"照片优化\"") != std::string::npos);
   assert(state_response.body.find("localManagementPasswordOverridden\":true") != std::string::npos);
+  assert(state_response.body.find("ledRolesSwapped\":true") !=
+         std::string::npos);
   assert(state_response.body.find("portal pass 42") == std::string::npos);
   cache.bad_runtime_count = true;
   assert(portal.handle(state).status == 422);
@@ -573,7 +578,7 @@ int main() {
   cache.firmware_update.phase = PortalFirmwareUpdatePhase::Ready;
 
   PortalRequest settings = authenticated("POST", "/api/settings", cookie);
-  settings.body = "volume=72&led_brightness=44&voice_assistance=1&assistant_prompt=%E7%AE%80%E6%B4%81&image_prompt_template=%7Bprompt%7D&negative_prompt=watermark&storage_preference=internal&default_render_strategy=solid-clean&local_password=portal%20pass%2042&local_password_confirm=portal%20pass%2042";
+  settings.body = "volume=72&led_brightness=44&led_swap=1&voice_assistance=1&assistant_prompt=%E7%AE%80%E6%B4%81&image_prompt_template=%7Bprompt%7D&negative_prompt=watermark&storage_preference=internal&default_render_strategy=solid-clean&local_password=portal%20pass%2042&local_password_confirm=portal%20pass%2042";
   PortalResponse queued = portal.handle(settings);
   assert(queued.status == 202);
   assert(commands.received.back().type == PortalCommandType::UpdateSettings);
@@ -581,6 +586,8 @@ int main() {
   assert(commands.received.back().settings.volume == 72);
   assert(commands.received.back().settings.has_led_maximum_brightness);
   assert(commands.received.back().settings.led_maximum_brightness_percent == 44);
+  assert(commands.received.back().settings.has_led_roles_swapped);
+  assert(commands.received.back().settings.led_roles_swapped);
   assert(commands.received.back().settings.assistant_prompt == "简洁");
   assert(commands.received.back().settings.asset_storage_preference == "internal");
   assert(commands.received.back().settings.default_render_strategy == "solid-clean");
@@ -599,6 +606,7 @@ int main() {
   assert(myai_patch.has_negative_prompt &&
          myai_patch.negative_prompt == "watermark");
   assert(!myai_patch.has_volume && !myai_patch.has_led_maximum_brightness &&
+         !myai_patch.has_led_roles_swapped &&
          !myai_patch.has_asset_storage_preference &&
          !myai_patch.has_local_management_password_override);
 
@@ -611,6 +619,9 @@ int main() {
   PortalRequest bad_led = authenticated("POST", "/api/settings", cookie);
   bad_led.body = "led_brightness=101";
   assert(portal.handle(bad_led).status == 422);
+  PortalRequest bad_led_swap = authenticated("POST", "/api/settings", cookie);
+  bad_led_swap.body = "led_swap=2";
+  assert(portal.handle(bad_led_swap).status == 422);
   PortalRequest reset_password = authenticated("POST", "/api/settings", cookie);
   reset_password.body = "reset_local_password=1";
   assert(portal.handle(reset_password).status == 202);
@@ -737,6 +748,10 @@ int main() {
       "POST", "/api/settings", minimal_cookie);
   minimal_led.body = "led_brightness=18";
   assert(minimal_portal.handle(minimal_led).status == 422);
+  PortalRequest minimal_led_swap = authenticated(
+      "POST", "/api/settings", minimal_cookie);
+  minimal_led_swap.body = "led_swap=1";
+  assert(minimal_portal.handle(minimal_led_swap).status == 422);
   PortalRequest minimal_tutorial = authenticated(
       "POST", "/api/tutorial/restart", minimal_cookie);
   assert(minimal_portal.handle(minimal_tutorial).status == 422);
